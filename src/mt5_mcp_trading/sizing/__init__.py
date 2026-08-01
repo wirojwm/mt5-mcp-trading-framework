@@ -4,5 +4,6 @@ tests/test_architecture.py).
 money.py ported in Phase 4 (see its module docstring for exactly what was and wasn't
 preserved from the legacy project, including a real crash bug that was found and fixed
 rather than reproduced). Does not clamp against broker volume_min/max/step -- that is
-order_planning's job, not yet migrated.
+order_planning's job (order_planning/plan.py). Also provides to_sized_intent(), the
+TradeIntent + LotDecision -> SizedIntent assembly used by the grid end-to-end wiring.
 """

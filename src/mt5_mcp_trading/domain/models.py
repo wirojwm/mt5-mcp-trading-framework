@@ -111,15 +111,24 @@ class Signal:
 
 @dataclass(frozen=True, slots=True)
 class TradeIntent:
-    """Expresses *what* a strategy wants, not how much or at what price."""
+    """
+    Expresses *what* a strategy wants, not how much or at what price.
+
+    signal_ref is Optional: originally required, on the assumption every strategy's output is
+    a directional Signal. Found to be wrong the first time something tried to actually
+    construct a TradeIntent from grid's output (trade_intent/grid.py) -- grid produces
+    GridLevels, not a Signal, by design (see GridLevels' docstring: it proposes both sides
+    regardless of directional belief, which doesn't fit LONG/SHORT/FLAT). Fixed here rather
+    than forcing grid to fabricate a meaningless Signal just to satisfy the type.
+    """
 
     symbol: str
     side: Side
     strategy_name: str
-    signal_ref: Signal
     desired_order_type: OrderType
     timestamp: datetime
     reference_price: Optional[float] = None
+    signal_ref: Optional[Signal] = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -43,7 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from mt5_mcp_trading.domain.models import LotDecision
+from mt5_mcp_trading.domain.models import LotDecision, SizedIntent, TradeIntent
 
 
 def _nz(x: object, alt: float = 0.0) -> float:
@@ -147,3 +147,15 @@ def decide_lot(
         )
 
     return LotDecision(lot=lot, mode=mode, reasons=tuple(reasons))
+
+
+def to_sized_intent(intent: TradeIntent, decision: LotDecision) -> SizedIntent:
+    """Mechanical assembly: a LotDecision's lot/mode/reasons folded onto the TradeIntent it
+    was sized for. Kept as its own function (LotDecision's docstring calls this "a later-phase
+    decision") rather than inlined at every call site, now that there's a real caller."""
+    return SizedIntent(
+        intent=intent,
+        volume=decision.lot,
+        sizing_mode=decision.mode,
+        sizing_rationale="; ".join(decision.reasons),
+    )

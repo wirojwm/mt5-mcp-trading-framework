@@ -6,9 +6,12 @@ from importing the legacy code.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
-from mt5_mcp_trading.sizing.money import MoneyConfig, decide_lot
+from mt5_mcp_trading.domain.models import TradeIntent
+from mt5_mcp_trading.sizing.money import MoneyConfig, decide_lot, to_sized_intent
 
 
 def test_fixed_mode_returns_fixed_lot() -> None:
@@ -130,3 +133,29 @@ def test_account_balance_defaults_to_zero_not_a_live_adapter_call() -> None:
     result = decide_lot(config, point_value_per_lot=1.0, price_point=0.01)  # account_balance omitted
     assert "insufficient inputs" not in result.reasons[0]  # confirms it took the formula path, not fallback
     assert result.lot == pytest.approx(0.01, abs=1e-12)  # risk_dollar=0 -> lot_raw=0 -> clamped to min
+
+
+def _intent() -> TradeIntent:
+    return TradeIntent(
+        symbol="BTCUSD", side="BUY", strategy_name="grid", desired_order_type="LIMIT",
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc), reference_price=63000.0,
+    )
+
+
+def test_to_sized_intent_carries_lot_mode_and_joined_reasons() -> None:
+    config = MoneyConfig(lot_size_mode="fixed", fixed_lot=0.02)
+    decision = decide_lot(config)
+    sized = to_sized_intent(_intent(), decision)
+
+    assert sized.intent is not None
+    assert sized.intent.symbol == "BTCUSD"
+    assert sized.volume == 0.02
+    assert sized.sizing_mode == "fixed"
+    assert sized.sizing_rationale == "; ".join(decision.reasons)
+
+
+def test_to_sized_intent_preserves_the_original_intent_object() -> None:
+    intent = _intent()
+    decision = decide_lot(MoneyConfig(lot_size_mode="fixed"))
+    sized = to_sized_intent(intent, decision)
+    assert sized.intent is intent

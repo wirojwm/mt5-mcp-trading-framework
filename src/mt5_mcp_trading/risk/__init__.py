@@ -4,8 +4,10 @@ guard passing.
 
 symbol_guards.py (duplicate-order prevention) and portfolio_guards.py (exposure caps) ported
 in Phase 4's wiring step -- see each module's docstring for what was preserved vs. deliberately
-strengthened. Each guard is independent and composable; nothing here yet decides how multiple
-guards combine into one accept/reject outcome for a real pipeline run -- that's a later step.
+strengthened. Each guard is independent and composable; combine.py (added in the grid
+end-to-end wiring step) folds multiple RiskDecisions into one: reject if any guard rejects,
+approve only if all do.
+
 Margin guards, spread filters, and daily shutdown rules do not exist in the legacy project
 (confirmed absent in the Phase 0 audit) and are not ported here since there's nothing to port;
 they'd be new functionality, not a migration.
