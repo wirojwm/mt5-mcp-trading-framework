@@ -22,12 +22,23 @@ script's project root — see .env.example):
                          It exists so that launching this process at all requires a conscious,
                          separate acknowledgement — not just naming a variable MT5_DEMO_*.
 
+Optional:
+    MT5_PATH           - absolute path to terminal64.exe. metatrader-mcp-server tries to
+                         auto-detect this from a fixed list of "standard" MetaQuotes install
+                         paths; white-labeled broker terminals (e.g. a broker-branded
+                         "<Broker> MetaTrader 5 Terminal" folder) are not in that list, auto-
+                         detection fails, and the underlying MetaTrader5.initialize(path=None)
+                         call itself then fails with "Invalid path argument" (error -2) --
+                         a real, credential-independent bug in that package. Set this to avoid
+                         it. Not a secret; safe to store anywhere.
+
 This script never logs, prints, or otherwise exposes MT5_DEMO_PASSWORD.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -93,6 +104,7 @@ def main() -> None:
     login = os.environ["MT5_DEMO_LOGIN"]
     password = os.environ["MT5_DEMO_PASSWORD"]
     server = os.environ["MT5_DEMO_SERVER"]
+    path = os.environ.get("MT5_PATH")
 
     argv = [
         str(server_path),
@@ -101,10 +113,16 @@ def main() -> None:
         "--server", server,
         "--transport", "stdio",
     ]
+    if path:
+        argv += ["--path", path]
 
-    # Replace this process entirely -- no wrapper process left running alongside it, and
-    # no risk of this script's own stdout ever interleaving with the MCP stdio stream.
-    os.execv(str(server_path), argv)
+    # Note: NOT os.execv here. CPython's os.execv on Windows does not reliably preserve
+    # argv entries containing spaces (there is no real exec() on Windows -- CPython
+    # emulates it), which silently corrupted the --path argument during testing (a
+    # space-containing terminal install path got split into multiple bogus arguments).
+    # subprocess.run() uses Windows-correct argument quoting (list2cmdline) instead.
+    result = subprocess.run(argv)
+    sys.exit(result.returncode)
 
 
 if __name__ == "__main__":
