@@ -77,6 +77,29 @@ class GridLevels:
     sell_price: float
 
 
+GuardActionKind = Literal["NONE", "PARTIAL_CLOSE", "FLATTEN"]
+
+
+@dataclass(frozen=True, slots=True)
+class GuardState:
+    """Carried across successive evaluate_guard() calls by whatever stateful caller invokes
+    it repeatedly (out of scope for this migration, same as GridLevels->TradeIntent and
+    runner's insufficient-bars case) -- a pure function has no memory of its own."""
+
+    deadline_bars_remaining: int = 0
+    last_evaluated_bar_time: Optional[datetime] = None
+
+
+@dataclass(frozen=True, slots=True)
+class GuardAction:
+    """What the guard wants done. ratio is only meaningful for PARTIAL_CLOSE. Executing this
+    (closing positions, freezing/unfreezing the grid worker, restoring its levels cap) is an
+    adapter/orchestration concern, deliberately not this type's job."""
+
+    kind: GuardActionKind
+    ratio: Optional[float] = None
+
+
 @dataclass(frozen=True, slots=True)
 class Signal:
     symbol: str
