@@ -7,6 +7,17 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# metatrader-mcp-server can place, modify, and close real orders once connected to an
+# account (see src/mt5_mcp_trading/mcp_adapter/ and scripts/run_metatrader_mcp_stdio.py for
+# how this project constrains that). Installing it does not, by itself, enable any trading
+# capability in this codebase.
+#
+# mcp is pinned <2.0 deliberately: metatrader-mcp-server==0.5.1 imports
+# mcp.server.fastmcp.FastMCP, which does not exist in mcp>=2.0.0 (the module was
+# restructured there). metatrader-mcp-server's own packaging does not pin this, so an
+# unconstrained install resolves mcp==2.0.0 and breaks at import time. Revisit this pin
+# if/when metatrader-mcp-server ships a release compatible with mcp 2.x.
+mcp = ["metatrader-mcp-server>=0.5.1", "mcp>=1.9.0,<2.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
