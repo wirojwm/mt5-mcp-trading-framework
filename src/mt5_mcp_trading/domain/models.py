@@ -100,6 +100,19 @@ class TradeIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class LotDecision:
+    """Output of a sizing-stage function (sizing/money.py): the proposed lot size plus a
+    trace of why. Deliberately returned as its own value rather than mutated onto a config
+    object (the legacy money_management.MoneyConfig._last_calc pattern) -- callers get the
+    explanation directly from the call that produced it. How a LotDecision becomes a
+    SizedIntent is a later-phase decision, same as GridLevels -> TradeIntent."""
+
+    lot: float
+    mode: str
+    reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class SizedIntent:
     intent: TradeIntent
     volume: float
