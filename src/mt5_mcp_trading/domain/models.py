@@ -198,12 +198,25 @@ class ExecutionResult:
 
 @dataclass(frozen=True, slots=True)
 class AccountState:
-    login: int
-    server: str
+    """
+    login and server are Optional: originally required, on the assumption every AccountReader
+    implementation could identify the connected account. Found wrong wiring the first real
+    (MCP-backed) AccountReader -- metatrader-mcp-server's get_account_info tool exposes
+    balance/equity/margin/trade_mode but no login or server field at all, and no other tool
+    fills the gap. Same pattern as TradeIntent.signal_ref: a real implementation revealed an
+    unstated assumption in the domain model, fixed here rather than faked with a sentinel.
+
+    trade_mode itself should also be treated with caution when sourced from
+    metatrader-mcp-server: see mt5_adapter/mcp_account.py's module docstring for a confirmed
+    bug in how that server reports account type.
+    """
+
     balance: float
     equity: float
     margin_free: float
     trade_mode: TradeMode
+    login: Optional[int] = None
+    server: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
