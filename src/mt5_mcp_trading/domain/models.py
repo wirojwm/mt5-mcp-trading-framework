@@ -58,6 +58,26 @@ class FeatureSet:
 
 
 @dataclass(frozen=True, slots=True)
+class GridLevels:
+    """
+    Output of the grid strategy (strategy/grid.py): a center price plus one candidate
+    BUY_LIMIT/SELL_LIMIT level on each side, not a directional Signal. Grid seeds both sides
+    regardless of directional belief, which doesn't fit LONG/SHORT/FLAT -- deliberately kept
+    as its own type rather than forced into Signal. How GridLevels becomes TradeIntents is a
+    later-phase decision (see strategy/grid.py's module docstring).
+    """
+
+    symbol: str
+    timestamp: datetime
+    center: float
+    atr: float
+    step_price: float
+    tp_price: float
+    buy_price: float
+    sell_price: float
+
+
+@dataclass(frozen=True, slots=True)
 class Signal:
     symbol: str
     strategy_name: str
