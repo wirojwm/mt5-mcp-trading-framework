@@ -1,11 +1,61 @@
+# Python bytecode
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Virtual environments
 .venv/
-.pytest_cache/
+venv/
+env/
+
+# Python packaging
 *.egg-info/
+.eggs/
 build/
 dist/
+pip-wheel-metadata/
+
+# Test and quality-tool caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Environment variables and secrets
 .env
-# Local, persistent Phase 6 order-state records -- can hold real-demo-account-shaped ticket
-# data (see src/mt5_mcp_trading/state/). Never commit.
+.env.*
+!.env.example
+secrets/
+credentials/
+*.key
+*.pem
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
+
+# Local databases and runtime state
+*.db
+*.sqlite
+*.sqlite3
+
+# Local Phase 6 execution state.
+# May contain real demo-account tickets and execution records.
 var/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini

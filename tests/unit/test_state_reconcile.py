@@ -19,7 +19,7 @@ def _local(ticket: int, symbol: str = "BTCUSD") -> LocalOrderRecord:
         requested_filling_mode="FOK", requested_expiry=None, retcode=10009,
         executed_price=63000.0, executed_volume=0.01, broker_comment="Request executed",
         submitted_at=datetime(2026, 8, 2, tzinfo=timezone.utc), closed_at=None,
-        status="OPEN", closed_reason=None,
+        status="OPEN", closed_reason=None, origin="system_owned",
     )
 
 

@@ -9,6 +9,18 @@ comment="MCP" on the resulting real position/order; this record is the only plac
 values still exist. Never treat a LocalOrderRecord as more trustworthy than the real MT5 state
 it describes -- it's what we asked for, not proof of what happened. reconcile() (reconcile.py)
 is what cross-checks it against reality, by ticket only, never by symbol/side/timing.
+
+`origin` distinguishes HOW a record came to exist:
+- "system_owned": created by StateStore.record_submission() after a real McpOrderExecutor
+  submission. `retcode`/`requested_*`/`executed_*` reflect an actual request/response cycle.
+- "manual_adoption": created by StateStore.record_manual_adoption() for a position opened
+  directly in the MT5 terminal, outside McpOrderExecutor entirely -- NEVER fabricated to look
+  like a system submission. `retcode` is `None` (no submission ever happened), and
+  `requested_*`/`executed_*` fields hold values independently OBSERVED via a live read, not
+  values this project asked MT5 for. This exists for one narrow, explicitly-scoped case (Phase
+  6 Step 5's demo smoke test, see docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md) where a
+  human manually opened a position and explicitly approved treating it as locally attributed,
+  after an exact live-verified match -- not a general "claim any position" mechanism.
 """
 
 from __future__ import annotations
@@ -18,20 +30,23 @@ from datetime import datetime
 from typing import Literal, Optional
 
 OrderRecordStatus = Literal["OPEN", "CANCELLED", "CLOSED"]
+OrderRecordOrigin = Literal["system_owned", "manual_adoption"]
 
 
 @dataclass(frozen=True, slots=True)
 class LocalOrderRecord:
     ticket: int
-    # Explicit, caller-supplied identifier (e.g. "grid", "runner", "smoke_test") -- never
-    # derived by guessing from symbol/comment text. See state/strategy_registry.py.
+    # Explicit, caller-supplied identifier (e.g. "grid", "runner", "smoke_test",
+    # "manual_adoption") -- never derived by guessing from symbol/comment text. See
+    # state/strategy_registry.py.
     strategy: str
     magic: int
     comment: str
     symbol: str
     side: str
     order_type: str
-    # What was requested -- not what MT5 necessarily honored (see this module's docstring).
+    # What was requested (system_owned) or independently observed (manual_adoption) -- see
+    # this module's docstring. Never what MT5 necessarily honored.
     requested_volume: float
     requested_price: Optional[float]
     requested_sl: float
@@ -39,8 +54,9 @@ class LocalOrderRecord:
     requested_deviation: int
     requested_filling_mode: Optional[str]
     requested_expiry: Optional[datetime]
-    # The raw execution response actually received.
-    retcode: int
+    # The raw execution response actually received -- None for manual_adoption, since no
+    # submission ever happened to receive a response from.
+    retcode: Optional[int]
     executed_price: Optional[float]
     executed_volume: Optional[float]
     broker_comment: str
@@ -48,6 +64,7 @@ class LocalOrderRecord:
     closed_at: Optional[datetime]
     status: OrderRecordStatus
     closed_reason: Optional[str]
+    origin: OrderRecordOrigin
 
 
 @dataclass(frozen=True, slots=True)

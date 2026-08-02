@@ -175,14 +175,143 @@ item from Steps 0–3 ("the success/verification/state-recording path has never 
 live") — it now has. Legacy project confirmed untouched before and after. No code was changed
 by this retry; `var/order_state.json` (gitignored) is the only file that changed on disk.
 
+## Step 5 — close_position(), implemented and unit-tested; live attempt #1 correctly refused
+
+Approved scope, explicitly bounded by the user: `close_position()` only. No MARKET-order
+testing. No pipeline wiring. Inspect and document the close path before writing code. Tests
+before any live call.
+
+**Research** (read `metatrader_client/order/close_position.py`/`client_order.py` directly, not
+assumed): `close_position(id)` takes only a ticket, **no volume parameter anywhere in the
+stack** — it always closes a position's full size; there is no partial-close capability to
+call even if wanted. It looks up the position first (a real read), then sends a DEAL-action
+`order_send()` with `"position": ticket` set explicitly — the same detail the legacy project's
+own comments flagged as important for hedging accounts (omitting it can open a new position
+instead of closing the existing one); this implementation already gets it right. Response
+reuses the exact same `OrderSendResult`-shaped payload already confirmed live in Step 4 (a
+positional list) — no new parsing work needed in `metatrader_retcodes.py`.
+
+**Implemented**: `McpOrderExecutor.close_position(ticket, volume=None)` in
+`mt5_adapter/mcp_order_executor.py` — same gating pattern as `submit()`/`cancel()`
+(`require_demo_account_kind` hard gate, informational `require_demo_account`, fresh posture
+check, `BLOCKED`/`MANAGE_ONLY` enforcement identical to `cancel()`'s unattributed-ticket
+refusal). If a caller passes an explicit `volume` that doesn't match the position's live full
+size, raises `NotImplementedError` *before* any MCP call — never silently closes the whole
+position when a different amount was asked for. On a confirmed-done retcode, calls
+`state_store.record_closed(...)` and verifies by re-reading live positions, matching by ticket
+only.
+
+**Tests**: `tests/unit/test_mt5_adapter_mcp_order_executor.py` — 9 new tests (full-close
+success with state recording, explicit-volume-matches-full-size allowed, partial-volume
+request rejected before any MCP call, retcode-trust regression (a live-plausible "Market
+closed" `10018` rejection reported cleanly, not as success), an "invalid position ID" case
+with no retcode at all, verification-fails-when-still-present, the demo-account hard gate, and
+both `MANAGE_ONLY` cases (allowed for a matched ticket, refused for an unattributed one)).
+Registry-classification test extended to cover `close_position` too.
+
+```
+pytest -q                        -> 286 passed (277 previously + 9 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+New script `scripts/run_demo_execution_close_smoke_test.py` — deliberately does NOT open a
+position itself (per the approved scope); requires the user to open exactly one minimum-lot
+position on `TARGET_SYMBOL` manually first, lists live positions and refuses to proceed unless
+exactly one match exists, warns (doesn't silently proceed past) if its volume isn't the
+symbol's live `volume_min`, performs exactly one `close_position()` call, and stops.
+
+**Live attempt #1 — correctly refused, no MT5 action taken.** User manually opened one BTCUSD
+position (ticket `171604527`, `BUY`, `0.01` lots — confirmed via a live read before the close
+attempt). The script called `close_position(171604527, volume=0.01)`, and `McpOrderExecutor`
+refused it **before any RPC was sent** — `state/order_state.json` had no record for this
+ticket (it was opened directly in the terminal, not through `McpOrderExecutor.submit()`), so
+reconciliation correctly classified it `unknown_real` → `ExecutionPosture.MANAGE_ONLY`, which
+by design refuses to touch any ticket it can't attribute to a local record. **This is the
+safety mechanism working exactly as designed, not a bug** — but it means the manual-position
+approach chosen for Step 5 has a real consequence: a position opened outside
+`McpOrderExecutor` has no path to being closed by it without some explicit attribution step.
+The position remains open and untouched; no MT5 state changed.
+
+**Proposed, not yet done, awaiting approval**: write one local state record for ticket
+`171604527` based on the human-verified detail already confirmed (ticket/symbol/side/volume
+read live and stated by the user) — not a guess, an explicit attribution — then a fresh,
+separately-approved single close attempt. The "one attempt, no automatic retry" instruction
+for attempt #1 was fully honored (no MCP trading-tool call was made at all); a second attempt
+requires new, separate approval, not a continuation of the first.
+
+Legacy project confirmed untouched. No code was changed by this live attempt.
+`git status` at this point: `mcp_order_executor.py` and its test file modified,
+`run_demo_execution_close_smoke_test.py` new — none of this step's code committed yet.
+
+## Step 5, manual-adoption workflow — SUCCESS: real position closed for real, honestly recorded
+
+User approved an explicit, narrowly-scoped manual-adoption workflow for this one ticket only,
+with hard requirements: never fabricate the position as system-originated; record it as an
+explicit, clearly-marked external adoption; require an exact match on ticket/symbol/side/volume
+against a fresh live read before adopting; abort without sending any close request on any
+mismatch; one close attempt, no retry; report request/retcode/execution result/state
+before-and-after; never commit real ticket data.
+
+**Schema change** (`state/models.py`, `state/store.py`): added `LocalOrderRecord.origin:
+Literal["system_owned", "manual_adoption"]` and made `retcode: Optional[int]` (was `int`) --
+`manual_adoption` records genuinely have no retcode, since no submission ever happened to
+receive one from; representing that as `None` rather than a fabricated/sentinel value is the
+honest choice. `StateStore.record_submission()` now always sets `origin="system_owned"`
+internally (no call-site changes needed anywhere it's already used). New
+`StateStore.record_manual_adoption(ticket, symbol, side, volume, price_open, magic,
+adopted_at, note)` sets `strategy="manual_adoption"`, `order_type="EXTERNAL_POSITION"`,
+`retcode=None`, and populates `requested_*`/`executed_*` fields from values *independently
+observed* via a live read (never a system request). `magic` is recorded as the REAL observed
+value (confirmed `0`, per the already-documented upstream bug), never invented. Reading a
+state file written before "origin" existed (Step 4's file) defaults it to `"system_owned"` --
+the correct historical fact, not a guess, and avoids treating the pre-existing file as
+corrupted. 3 new tests in `test_state_store.py` (system-owned default, manual-adoption honesty
+checks, backward-compatible read of a pre-origin file); 1 existing `test_state_reconcile.py`
+fixture updated for the new required field.
+
+```
+pytest -q                        -> 289 passed (286 previously + 3 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+`scripts/run_demo_execution_close_smoke_test.py` rewritten: requires an EXACT match against
+hardcoded expected values (`EXPECTED_TICKET=171604527`, `EXPECTED_SYMBOL="BTCUSD"`,
+`EXPECTED_SIDE="BUY"`, `EXPECTED_VOLUME=0.01`) on a fresh live read; aborts before any close
+request on any mismatch or if the ticket isn't found; the expected account server
+(`ThinkMarkets-Demo`) is explicitly documented as human-stated, not machine-verifiable over
+this MCP server (no tool exposes login/server) -- `MT5_ACCOUNT_KIND=DEMO` remains the actual
+trust boundary, same as every other live step this session.
+
+**Live result — SUCCESS**:
+- **Before**: one live position, ticket `171604527`, BTCUSD, BUY, `0.01` lots, `price_open=63440.91`,
+  `profit=-0.73`, MT5-reported `magic=0` (as expected, per the known bug). Exact match
+  confirmed against all four expected values.
+- **Adoption recorded**: `origin='manual_adoption'`, `retcode=None`, `strategy='manual_adoption'`,
+  full audit note stating this was manually opened and explicitly adopted, not system-originated.
+- **Exact request**: `close_position(ticket=171604527, volume=0.01)`.
+- **ExecutionResult**: `success=True`, `retcode=10009` (`TRADE_RETCODE_DONE`), `ticket=171604527`,
+  `deal=99712724`, `executed_price=63368.26`, `verified=True`, `verification_details='ticket=171604527
+  confirmed absent from live positions'`.
+- **Local state after**: `status='CLOSED'`, `closed_reason='close confirmed via
+  McpOrderExecutor.close_position()'`, `origin` still `'manual_adoption'` (never silently
+  rewritten to `'system_owned'`).
+- **Live positions on BTCUSD after**: `0`. No new position was opened at any point.
+
+One attempt, no retry, exactly as instructed. Legacy project confirmed untouched before and
+after. This is the first time `close_position()` has closed a real position, and the first
+time this project's local state has honestly represented a human-originated action rather than
+either fabricating or refusing to record it at all.
+
 ## Incomplete / explicitly deferred — do NOT treat as done
 
 - ~~No order has ever been placed, and `McpOrderExecutor`'s success path has never been
   observed live~~ — **resolved**: Step 4 retry #2 placed and cancelled a real order (ticket
   `171604513`), retcode `10009` both ways, `verified=True` both ways. Every branch of
   `submit()`/`cancel()` for LIMIT orders is now live-proven, not just unit-tested.
-- `close_position()` raises `NotImplementedError` unconditionally — Step 5, needs an actual
-  filled position (real spread cost, first time equity moves), its own approval point.
+- `close_position()` is implemented and unit-tested but **not yet live-proven** — live attempt
+  #1 was correctly refused by the `MANAGE_ONLY` posture check before reaching MT5 at all (see
+  "Step 5" above), because the test position was opened manually, outside local state
+  tracking. A real MT5 close (retcode `10009`, verified) has not yet been observed.
 - `submit()` raises `NotImplementedError` for anything other than `order_type="LIMIT"` — MARKET
   orders (Step 6) need a mandatory SL/TP follow-up via `modify_position` since
   `place_market_order` cannot carry them at placement; highest-consequence step, done last.
@@ -214,18 +343,23 @@ by this retry; `var/order_state.json` (gitignored) is the only file that changed
 
 ## Exact next smallest task
 
-1. ~~Propose (don't auto-run) re-running `scripts/run_demo_execution_smoke_test.py` to prove
-   the success/verification/state-recording path for real~~ — **done**: Step 4 retry #2
-   succeeded live (ticket `171604513`, placed and cancelled cleanly). See "Step 4 retry #2"
-   above.
-2. Verify legacy repo still untouched, then commit everything from this checkpoint (Steps 0–3,
-   all three Step 4 live attempts and their results, the `metatrader_retcodes.py` fix and its
-   tests) as one commit — wait for explicit approval first (not yet requested as of this
-   writing). Note: `var/order_state.json` (real ticket data from these live runs) is
-   gitignored and must never be committed.
-3. Update `AGENTS.md`'s Progress section to reflect Phase 6's actual state (Steps 0–3 done,
-   Step 4 fully live-proven: LIMIT submit/cancel now confirmed working end-to-end against a
-   real demo account), once the commit above lands.
-4. Only after that: consider Step 5 (`close_position()`, needs an actual filled position) or
-   Step 6 (MARKET orders + mandatory SL/TP follow-up) — each is its own, separately-approved
-   step, not something to start without being asked, per this project's established practice.
+1. **Decision needed from the user**: approve (or reject/modify) writing one local state
+   record for ticket `171604527` (based on the human-verified ticket/symbol/side/volume
+   already confirmed), then a fresh, single, separately-approved `close_position()` attempt.
+   Not started — this checkpoint stops here per the user's explicit "stop for approval"
+   instruction.
+2. Once Step 5's live close is proven (whichever way it ends up being unblocked), verify
+   legacy repo still untouched, then commit Step 5's code (`mcp_order_executor.py`'s
+   `close_position()`, its tests, `run_demo_execution_close_smoke_test.py`, and this
+   checkpoint's updates) as one commit — wait for explicit approval first. Note:
+   `var/order_state.json` (real ticket data) is gitignored and must never be committed.
+3. Update `AGENTS.md`'s Progress section once Step 5 is committed.
+4. Only after that: Step 6 (MARKET orders + mandatory SL/TP follow-up) — its own, separately-
+   approved step, not something to start without being asked.
+
+## Note: Steps 0–4 are already committed
+
+Commits `c70bb0a` (Steps 0–3 + Step 4 attempts #1/#2) and `93d6834` (Step 4 retry #2's
+successful live verification, documentation only) both landed earlier in this phase, with
+explicit approval each time. Only Step 5's work (this section of the checkpoint) is
+uncommitted as of this writing.

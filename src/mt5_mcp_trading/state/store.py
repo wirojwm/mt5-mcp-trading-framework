@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from mt5_mcp_trading.monitoring.logging_setup import get_logger
-from mt5_mcp_trading.state.models import LocalOrderRecord, OrderRecordStatus
+from mt5_mcp_trading.state.models import LocalOrderRecord, OrderRecordOrigin, OrderRecordStatus
 
 _SCHEMA_VERSION = 1
 _logger = get_logger("mt5_mcp_trading.state.store")
@@ -65,6 +65,9 @@ def _deserialize(ticket: int, data: dict) -> LocalOrderRecord:
         closed_at=_parse_dt(data["closed_at"]),
         status=data["status"],
         closed_reason=data["closed_reason"],
+        # Backward-compatible default for records written before "origin" existed (Step 4) --
+        # every record written before this field existed genuinely was system-submitted.
+        origin=data.get("origin", "system_owned"),
     )
 
 
@@ -126,7 +129,37 @@ class StateStore:
             requested_filling_mode=requested_filling_mode, requested_expiry=requested_expiry,
             retcode=retcode, executed_price=executed_price, executed_volume=executed_volume,
             broker_comment=broker_comment, submitted_at=submitted_at, closed_at=None,
-            status="OPEN", closed_reason=None,
+            status="OPEN", closed_reason=None, origin="system_owned",
+        )
+        self._write(records)
+
+    def record_manual_adoption(
+        self,
+        *,
+        ticket: int,
+        symbol: str,
+        side: str,
+        volume: float,
+        price_open: float,
+        magic: int,
+        adopted_at: datetime,
+        note: str,
+    ) -> None:
+        """For a position opened directly in the MT5 terminal, outside McpOrderExecutor
+        entirely -- see models.py's module docstring on "manual_adoption". `magic` must be the
+        REAL value observed live (not an invented one -- MT5 itself is confirmed to report 0
+        on positions this project didn't place, see docs/mcp_tool_classification.md item 7).
+        `volume`/`price_open` are independently observed, not requested. `retcode` is always
+        None here: no submission ever happened to receive a response from."""
+        records = self._load()
+        records[str(ticket)] = LocalOrderRecord(
+            ticket=ticket, strategy="manual_adoption", magic=magic, comment=note, symbol=symbol,
+            side=side, order_type="EXTERNAL_POSITION", requested_volume=volume,
+            requested_price=price_open, requested_sl=0.0, requested_tp=0.0,
+            requested_deviation=0, requested_filling_mode=None, requested_expiry=None,
+            retcode=None, executed_price=price_open, executed_volume=volume,
+            broker_comment=note, submitted_at=adopted_at, closed_at=None, status="OPEN",
+            closed_reason=None, origin="manual_adoption",
         )
         self._write(records)
 

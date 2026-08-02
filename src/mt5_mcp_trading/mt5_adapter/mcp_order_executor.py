@@ -1,9 +1,21 @@
 """
-Real OrderExecutor backed by metatrader-mcp-server. This step: LIMIT orders only via
-`submit()`, plus `cancel()`. MARKET orders (needing a mandatory SL/TP follow-up via
+Real OrderExecutor backed by metatrader-mcp-server. LIMIT orders only via `submit()`, plus
+`cancel()` and `close_position()`. MARKET orders (needing a mandatory SL/TP follow-up via
 `modify_position`, since place_market_order drops SL/TP entirely -- see
-docs/mcp_tool_classification.md, Known Issues item 7) and `close_position()` are deliberately
-NOT implemented here -- separate, later, individually-approved steps (Phase 6 plan steps 5/6).
+docs/mcp_tool_classification.md, Known Issues item 7) are deliberately NOT implemented here --
+a separate, later, individually-approved step (Phase 6 plan step 6). Pipeline wiring
+(run_grid_cycle/run_runner_cycle) is likewise out of scope here.
+
+close_position(), confirmed by reading `metatrader_client/order/close_position.py` and
+`client_order.py` directly: takes only a ticket, no volume parameter anywhere in the stack --
+it ALWAYS closes a position's full size. There is no partial-close capability to call even if
+we wanted one. It internally looks up the position first (a real, live read), then sends a
+DEAL-action order_send() with `"position": ticket` set explicitly in the request -- the same
+detail the legacy project's own comments flagged as important for hedging accounts (omitting
+it can open a new position instead of closing the existing one; this implementation already
+gets it right, confirmed by reading the source, not assumed). Reuses
+`metatrader_retcodes.parse_trade_response()` unchanged -- the response is the same
+`OrderSendResult`-shaped payload already confirmed live in Step 4 (a positional list).
 
 Every mutating call:
 1. `require_demo_account_kind()` -- the reliable hard gate, before anything else.
@@ -222,8 +234,66 @@ class McpOrderExecutor:
         )
 
     async def close_position(self, ticket: int, volume: Optional[float] = None) -> ExecutionResult:
-        raise NotImplementedError(
-            "McpOrderExecutor.close_position() is not implemented in this step -- requires an "
-            "actual filled position, a materially bigger live-risk step than LIMIT "
-            "submit/cancel, done separately with its own approval (Phase 6 plan step 5)."
+        await self._gate()
+
+        check = await self._current_posture()
+        if check.posture is ExecutionPosture.BLOCKED:
+            raise ExecutionBlockedError(
+                f"Refusing to close: execution posture is BLOCKED ({check.error!r})."
+            )
+        if check.posture is ExecutionPosture.MANAGE_ONLY:
+            report = check.report
+            assert report is not None
+            if ticket not in report.matched and ticket not in report.local_only:
+                raise ExecutionBlockedError(
+                    f"Refusing to close ticket={ticket}: unattributed (no local record), "
+                    f"and execution posture is MANAGE_ONLY. See state/policy.py."
+                )
+
+        if volume is not None:
+            positions = await self._account.get_positions()
+            current = next((p for p in positions if p.ticket == ticket), None)
+            if current is None:
+                raise ExecutionBlockedError(
+                    f"Refusing to close ticket={ticket}: volume={volume} was requested but no "
+                    f"matching open position was found to compare it against."
+                )
+            if abs(current.volume - volume) > 1e-9:
+                raise NotImplementedError(
+                    f"McpOrderExecutor.close_position() does not support partial closes -- "
+                    f"the underlying close_position tool has no volume parameter at all and "
+                    f"always closes the full position ({current.volume}). Requested "
+                    f"volume={volume} does not match. Pass volume=None to close the whole "
+                    f"position, matching what will actually happen."
+                )
+
+        raw = await self._client.call_tool("close_position", {"id": ticket})
+        response = parse_trade_response(raw)
+
+        if not response.done:
+            return ExecutionResult(
+                order_plan=None, success=False,
+                retcode=response.retcode if response.retcode is not None else _NO_RETCODE,
+                ticket=ticket, broker_comment=response.tool_message, verified=False,
+                verification_details=f"close not confirmed -- retcode={response.retcode}",
+            )
+
+        positions = await self._account.get_positions()
+        still_present = any(p.ticket == ticket for p in positions)
+        self._state_store.record_closed(
+            ticket, reason="close confirmed via McpOrderExecutor.close_position()",
+            closed_at=datetime.now(timezone.utc),
+        )
+
+        deal = response.raw_data.get("deal") if response.raw_data else None
+        executed_price = response.raw_data.get("price") if response.raw_data else None
+
+        return ExecutionResult(
+            order_plan=None, success=True, retcode=response.retcode, ticket=ticket, deal=deal,
+            executed_price=executed_price, broker_comment=response.tool_message,
+            verified=not still_present,
+            verification_details=(
+                f"ticket={ticket} confirmed absent from live positions" if not still_present else
+                f"ticket={ticket} still present in live positions after a confirmed-done close retcode"
+            ),
         )

@@ -1,6 +1,7 @@
 """
-McpOrderExecutor tests against a stub McpClient -- per the Phase 6 planning entry in
-docs/MCP_ADAPTER_WIRING_CHECKPOINT.md. No live MCP call is made anywhere in this file.
+McpOrderExecutor tests against a stub McpClient -- see
+docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md. No live MCP call is made anywhere in this
+file.
 
 _StubMcpClient mirrors the established convention (see test_mt5_adapter_mcp_account.py):
 re-implements McpClient.call_tool's registry.authorize_call(name) line against a REAL,
@@ -85,6 +86,25 @@ SUCCESS_CANCEL_JSON = json.dumps({
     "error": False,
     "message": "Cancel pending order 123456 success",
     "data": [10009, 0, 123456, 0.01, 63000.0, 0.0, 0.0, "Request executed", 1, 0, _REQUEST_STUB],
+})
+
+# close_position's response shape mirrors send_order()'s DEAL branch -- same OrderSendResult
+# positional list already confirmed live in Step 4. `deal` (index 1) is a real deal ticket
+# here since a close is itself a DEAL execution, unlike place/cancel where it's 0.
+SUCCESS_CLOSE_JSON = json.dumps({
+    "error": False,
+    "message": "Close position 555555 success at price 63050.0",
+    "data": [10009, 987654, 0, 0.01, 63050.0, 63049.0, 63051.0, "Request executed", 1, 0, _REQUEST_STUB],
+})
+
+CLOSE_REJECTED_JSON = json.dumps({
+    "error": False,
+    "message": "Order sent successfully",
+    "data": [10018, 0, 0, 0.01, 0.0, 0.0, 0.0, "Market closed", 0, 0, _REQUEST_STUB],
+})
+
+CLOSE_INVALID_POSITION_ID_JSON = json.dumps({
+    "error": True, "message": "Invalid position ID '555555'", "data": None,
 })
 
 
@@ -381,13 +401,162 @@ def test_blocked_posture_blocks_cancel_on_corrupted_state_file(tmp_path: Path) -
 
 # ---------- close_position() ----------
 
-def test_close_position_not_implemented_in_this_step(tmp_path: Path) -> None:
+def _seed_open_position_record(store: StateStore, ticket: int) -> None:
+    # A LocalOrderRecord seeded as if it originated from a MARKET fill -- close_position()
+    # doesn't care how the position was opened, only that a local record exists for it.
+    store.record_submission(
+        ticket=ticket, strategy="grid", magic=GRID_MAGIC, comment="grid_buy", symbol="BTCUSD",
+        side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=None,
+        requested_sl=0.0, requested_tp=0.0, requested_deviation=150,
+        requested_filling_mode=None, requested_expiry=None, retcode=10009,
+        executed_price=63000.0, executed_volume=0.01, broker_comment="Request executed",
+        submitted_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+    )
+
+
+def test_close_position_success_closes_full_position_and_records_state(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state.json")
-    client = _StubMcpClient({})
-    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
+    _seed_open_position_record(store, 555555)
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    account = _mock_account(positions=[])  # confirmed absent after closing
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.close_position(555555))
+
+    assert result.success is True
+    assert result.retcode == 10009
+    assert result.ticket == 555555
+    assert result.deal == 987654
+    assert result.executed_price == 63050.0
+    assert result.verified is True
+    assert store.lookup(555555).status == "CLOSED"  # type: ignore[union-attr]
+    assert client.calls == [("close_position", {"id": 555555})]
+
+
+def test_close_position_with_matching_full_volume_is_allowed(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    _seed_open_position_record(store, 555555)
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    account = _mock_account(positions=[
+        PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=5.0, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.close_position(555555, volume=0.01))  # matches full size
+
+    assert result.success is True
+    assert client.calls == [("close_position", {"id": 555555})]
+
+
+def test_close_position_rejects_a_partial_volume_request(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    _seed_open_position_record(store, 555555)
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    account = _mock_account(positions=[
+        PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.03, price_open=63000.0, profit=5.0, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
 
     with pytest.raises(NotImplementedError):
-        asyncio.run(executor.close_position(123456))
+        asyncio.run(executor.close_position(555555, volume=0.01))  # 0.01 != full 0.03
+    assert client.calls == []  # never reached close_position -- caught before any MCP call
+
+
+def test_close_position_rejected_retcode_is_trusted(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    _seed_open_position_record(store, 555555)
+    client = _StubMcpClient({"close_position": CLOSE_REJECTED_JSON})
+    account = _mock_account(positions=[
+        PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=5.0, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.close_position(555555))
+
+    assert result.success is False
+    assert result.retcode == 10018  # TRADE_RETCODE_MARKET_CLOSED -- NOT done
+    assert result.verified is False
+    assert store.lookup(555555).status == "OPEN"  # unchanged -- a rejected close is never recorded
+
+
+def test_close_position_invalid_position_id_has_no_retcode(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({"close_position": CLOSE_INVALID_POSITION_ID_JSON})
+    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.close_position(999999))  # never existed locally either
+
+    assert result.success is False
+    assert result.retcode == -1  # sentinel: close_position couldn't even find the position
+
+
+def test_close_position_verification_fails_when_still_present(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    _seed_open_position_record(store, 555555)
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    account = _mock_account(positions=[
+        PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=5.0, magic=0),
+    ])  # still present on read-back despite a confirmed-done retcode
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.close_position(555555))
+
+    assert result.success is True  # the close itself was confirmed done
+    assert result.verified is False  # but re-reading real state still shows it
+    assert "still present" in result.verification_details
+
+
+def test_require_demo_account_kind_blocks_close_before_any_mcp_call(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    _seed_open_position_record(store, 555555)
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="REAL")
+
+    with pytest.raises(NotDemoAccountError):
+        asyncio.run(executor.close_position(555555))
+    assert client.calls == []
+
+
+def test_manage_only_posture_allows_close_of_a_matched_ticket(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    _seed_open_position_record(store, 555555)  # locally known
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    account = _mock_account(positions=[
+        PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=5.0, magic=0),
+        PositionState(ticket=999999, symbol="BTCUSD", side="SELL", volume=0.02, price_open=64000.0, profit=0.0, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.close_position(555555))  # matched -- allowed despite MANAGE_ONLY
+
+    assert result.success is True
+    assert client.calls == [("close_position", {"id": 555555})]
+
+
+def test_manage_only_posture_blocks_close_of_an_unattributed_ticket(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    _seed_open_position_record(store, 555555)
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    account = _mock_account(positions=[
+        PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=5.0, magic=0),
+        PositionState(ticket=999999, symbol="BTCUSD", side="SELL", volume=0.02, price_open=64000.0, profit=0.0, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    with pytest.raises(ExecutionBlockedError):
+        asyncio.run(executor.close_position(999999))  # unknown_real -- never touched
+    assert client.calls == []
+
+
+def test_blocked_posture_blocks_close_on_corrupted_state_file(tmp_path: Path) -> None:
+    path = tmp_path / "order_state.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    store = StateStore(path)
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
+
+    with pytest.raises(ExecutionBlockedError):
+        asyncio.run(executor.close_position(555555))
     assert client.calls == []
 
 
@@ -404,15 +573,17 @@ def test_registry_classification_end_to_end(tmp_path: Path) -> None:
         "get_pending_orders_with_magic": EMPTY_ORDERS_CSV,
         "place_pending_order": SUCCESS_PLACE_JSON,
         "cancel_pending_order": SUCCESS_CANCEL_JSON,
+        "close_position": SUCCESS_CLOSE_JSON,
     })
     account = McpAccountReader(client)
     executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
 
     asyncio.run(executor.submit(_order_plan()))
     asyncio.run(executor.cancel(123456))
+    asyncio.run(executor.close_position(555555))
 
-    assert len(client.calls) >= 4
-    mutating = {"place_pending_order", "cancel_pending_order"}
+    assert len(client.calls) >= 5
+    mutating = {"place_pending_order", "cancel_pending_order", "close_position"}
     for name, _ in client.calls:
         expected = ToolClass.TRADING if name in mutating else ToolClass.READ_ONLY
         assert client.registry.classification_of(name) == expected, name
