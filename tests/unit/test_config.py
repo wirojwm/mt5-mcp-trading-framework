@@ -44,3 +44,20 @@ def test_password_never_appears_in_repr_or_str() -> None:
     assert settings.mt5_demo_password == "super-secret-value"
     assert "super-secret-value" not in repr(settings)
     assert "super-secret-value" not in str(settings)
+
+
+def test_mt5_account_kind_defaults_to_none_when_unset() -> None:
+    settings = load_settings(env={})
+    assert settings.mt5_account_kind is None
+
+
+def test_mt5_account_kind_read_from_env() -> None:
+    settings = load_settings(env={"MT5_ACCOUNT_KIND": "DEMO"})
+    assert settings.mt5_account_kind == "DEMO"
+
+
+def test_mt5_account_kind_not_normalized() -> None:
+    # load_settings itself does no validation/normalization -- require_demo_account_kind()
+    # is what enforces the exact-match "DEMO" requirement, not this loader.
+    settings = load_settings(env={"MT5_ACCOUNT_KIND": "real"})
+    assert settings.mt5_account_kind == "real"

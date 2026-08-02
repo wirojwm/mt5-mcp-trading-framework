@@ -136,3 +136,52 @@ project's own code, and none of these 12 have ever been called by this project.
    `trade_stops_level`, `trade_freeze_level`, `filling_mode`, `spread`) is based on documented
    MetaTrader5 `SymbolInfo` fields and **has been live-confirmed correct** (all fields present,
    no unrecognized `filling_mode` bit) — see `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`.
+7. **The trading tools silently drop or override several `OrderPlan` fields, and the retcode
+   handling is unsafe.** Confirmed by tracing the full call chain — `metatrader_mcp/server.py`
+   → `metatrader_client/client_order.py` (`MT5Order`) → `metatrader_client/order/*.py` →
+   `metatrader_client/order/send_order.py` → raw `MetaTrader5.order_send()` — while planning
+   Phase 6 (controlled demo execution):
+   - **`magic` is silently dropped at the deepest layer.** `send_order()` accepts a `magic`
+     parameter but never places it into the MT5 request dict for any action (DEAL/PENDING/
+     SLTP/MODIFY) — simply unused. Unlike gaps 5 and 6 above, this bug lives inside the
+     third-party library's own order-construction function, not in a missing tool wrapper —
+     there is no already-correct capability one layer down to expose instead. Every real order
+     placed through this stack lands in MT5 with `magic=0`, regardless of what's requested.
+   - **`comment` is always forced to `"MCP"`** — neither `place_market_order` nor
+     `place_pending_order`'s client wrappers accept a `comment` parameter at all.
+   - **`deviation` is hardcoded to `20`** for market orders inside `send_order()`, ignoring any
+     caller-supplied value; respected for pending orders but no wrapper exposes it anyway.
+   - **`filling_mode` is auto-selected** from the symbol's filling bitmask inside `send_order()`,
+     always overriding any caller-supplied `type_filling`.
+   - **`expiry` never reaches MT5** — supported deep in `send_order()`'s PENDING branch but no
+     client/MCP wrapper exposes it.
+   - **Market orders can't carry SL/TP at placement** — `MT5Order.place_market_order` never
+     forwards `stop_loss`/`take_profit` even though the lower-level function accepts them; a
+     market order needs a follow-up `modify_position` call to set SL/TP.
+   - **Safety-critical: success/failure is determined by `mt5.last_error()` (terminal-level),
+     never `response.retcode` (broker-level).** A genuinely rejected trade (requote `10004`,
+     invalid stops `10012`, no money `10019`, market closed `10018`, etc.) can come back from
+     the MCP tool reporting `error: False`, because `mt5.last_error()` only reflects local/
+     terminal call issues, not what the broker's trade server actually decided. Any code built
+     on these tools **must read `retcode` out of the raw response `data` field itself and never
+     trust the tool's own success/error flag.** `TRADE_RETCODE_DONE = 10009` is the only value
+     that means "executed."
+   - **Bulk-action tools** (`close_all_positions`, `close_all_positions_by_symbol`,
+     `close_all_profitable_positions`, `close_all_losing_positions`, `cancel_all_pending_orders`,
+     `cancel_pending_orders_by_symbol`) loop over positions/orders internally and call the
+     singular close/cancel function per item but discard its return value — the aggregate result
+     is **always** `error: False` regardless of per-item outcome. No way to know what actually
+     happened per item; avoid these 6 tools, enumerate positions/orders and call the singular
+     `close_position`/`cancel_pending_order` tool per ticket instead.
+
+   **Deferred, not fixed.** Fixing `magic`/`comment`/`deviation`/`filling_mode`/`expiry`
+   forwarding at the source would mean bypassing `send_order()` entirely and constructing MT5
+   order requests directly — the highest-risk, most safety-sensitive code this project could
+   write, unlike gaps 5/6's comparatively low-risk read-only local extensions. Explicit
+   decision for Phase 6: do not write new order-*placement* code yet. Instead, track intended
+   `magic`/`comment`/strategy locally (a persistent ticket→intent record in the `state/`
+   package, reconciled against real MT5 state by ticket only, never by symbol/timing) and treat
+   any real position/order with `magic=0` as unattributed unless matched to a local record —
+   see `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`'s Phase 6 planning entry. The retcode-trust bug
+   (above) has no such workaround — it must be handled correctly by any code that calls these
+   tools, from the first line, not deferred.

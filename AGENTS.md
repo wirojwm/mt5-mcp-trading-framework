@@ -52,13 +52,36 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     against real, populated, differently magic-tagged data — only that the real adapters
     integrate without error against an empty account. Re-verify once real positions/orders
     exist.
-- **Phase 6 (controlled demo execution): not started.** No code path has ever placed, modified,
-  or closed a real order — `OrderExecutor` implementations that could aren't wired to anything
-  reachable outside `DryRunExecutor` yet.
+- **Phase 6 (controlled demo execution): in progress.** No code path has ever placed, modified,
+  or closed a real order yet — `McpOrderExecutor`, the first `OrderExecutor` implementation
+  that could, exists but has never made a live call. Planned (via Claude Code plan mode) and
+  implemented so far, in small individually-tested steps:
+  - Found two blocking safety problems before writing any executor code: (1) `require_demo_account()`
+    is unreliable when fed by `McpAccountReader` (the same `account_type` inversion bug as
+    elsewhere) — fixed with a second, reliable, env-sourced hard gate,
+    `require_demo_account_kind()`. (2) `metatrader_client`'s own `send_order()` silently drops
+    `magic` (and forces `comment`, ignores `deviation`/`filling_mode`/`expiry`, and — worst —
+    determines success from a terminal-level error code rather than the broker's real
+    `retcode`) — deliberately NOT fixed by writing new order-placement code (highest-risk code
+    this project could contain); instead the `state/` package now tracks intended
+    magic/comment/strategy locally, reconciled against real MT5 state by ticket only, with an
+    explicit `NORMAL`/`MANAGE_ONLY`/`BLOCKED` posture that refuses new orders (or even
+    management of unattributed tickets) whenever local state can't be trusted.
+  - `McpOrderExecutor` built and unit-tested for LIMIT-order `submit()`/`cancel()` only
+    (`close_position()` and MARKET orders explicitly raise `NotImplementedError`, deferred).
+    Retcode read from the raw response only, never the tool's own success flag. Composition
+    root (`execution/composition.py`) is the one place `trading_enabled=True` is ever
+    constructed outside a test.
+  - **Not yet done**: any live call at all. The next step (place-then-cancel a single
+    far-from-market LIMIT order) needs its own explicit approval before running, per this
+    project's established practice.
+  - Full detail: `docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`.
 - **Phase 7 (regression and failure testing): not started.**
 
-Full session-by-session detail for the "wire real adapters" step is in
-`docs/MCP_ADAPTER_WIRING_CHECKPOINT.md` — read it before continuing that work in a new session.
+Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
+`docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
+`docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md` — read whichever is relevant before
+continuing that work in a new session.
 
 ## Safety rules
 

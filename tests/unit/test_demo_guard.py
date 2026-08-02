@@ -14,7 +14,11 @@ import pytest
 
 from mt5_mcp_trading.domain.models import AccountState
 from mt5_mcp_trading.mocks.mock_account_and_executor import MockAccountReader
-from mt5_mcp_trading.mt5_adapter.safety import NotDemoAccountError, require_demo_account
+from mt5_mcp_trading.mt5_adapter.safety import (
+    NotDemoAccountError,
+    require_demo_account,
+    require_demo_account_kind,
+)
 
 
 def _account(trade_mode: str) -> AccountState:
@@ -45,3 +49,15 @@ def test_error_message_does_not_leak_more_than_login_and_server() -> None:
     assert "180375" in message
     assert "ThinkMarkets-Live" in message
     assert "REAL" in message
+
+
+# ---------- require_demo_account_kind (the reliable, env-sourced hard gate) ----------
+
+def test_demo_account_kind_passes() -> None:
+    require_demo_account_kind("DEMO")  # must not raise
+
+
+@pytest.mark.parametrize("value", [None, "", "REAL", "demo", "Demo", " DEMO", "DEMO "])
+def test_non_exact_demo_account_kind_raises(value: str | None) -> None:
+    with pytest.raises(NotDemoAccountError):
+        require_demo_account_kind(value)

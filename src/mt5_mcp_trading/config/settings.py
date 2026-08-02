@@ -41,6 +41,12 @@ class Settings:
     # attribute; they just don't get it "for free" via str(settings)/repr(settings).
     mt5_demo_password: Optional[str] = field(default=None, repr=False)
     mt5_demo_server: Optional[str] = None
+    # Same MT5_ACCOUNT_KIND env var scripts/run_metatrader_mcp_stdio.py already gates
+    # subprocess launch on -- now also read here, so the parent process can enforce the same
+    # gate before ever constructing a trading-capable executor. See
+    # mt5_adapter/safety.py:require_demo_account_kind() for why this exists alongside (and is
+    # more trustworthy than) the MCP-sourced require_demo_account() check.
+    mt5_account_kind: Optional[str] = None
     mcp_server_command: Optional[str] = None
     log_level: str = "INFO"
 
@@ -79,6 +85,7 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
         mt5_demo_login=login,
         mt5_demo_password=source.get("MT5_DEMO_PASSWORD") or None,
         mt5_demo_server=source.get("MT5_DEMO_SERVER") or None,
+        mt5_account_kind=source.get("MT5_ACCOUNT_KIND") or None,
         mcp_server_command=source.get("MCP_SERVER_COMMAND") or None,
         log_level=source.get("LOG_LEVEL", "INFO"),
     )

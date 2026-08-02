@@ -6,3 +6,6 @@ __pycache__/
 build/
 dist/
 .env
+# Local, persistent Phase 6 order-state records -- can hold real-demo-account-shaped ticket
+# data (see src/mt5_mcp_trading/state/). Never commit.
+var/
