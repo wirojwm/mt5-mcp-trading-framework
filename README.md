@@ -11,9 +11,18 @@ re-derived and ported deliberately, one piece at a time, with tests — not copi
 
 ## Status
 
-**Phase 2 — minimal foundation.** Configuration, domain models, adapter interfaces, mock adapters,
-and tests exist. There is no real MT5 or MCP connection yet, and no trading-capable code path is
-reachable. Everything is built and tested against in-memory mocks only.
+**Phases 0–5 done, real adapters wired.** The full pipeline (strategy → signal → trade_intent →
+sizing → risk → order_planning → execution) is built, tested against mocks, and also live-verified
+end-to-end against a real MetaTrader 5 terminal via `metatrader-mcp-server` — real market data
+(bars/tick/`SymbolInfo`) and real account data (positions/orders, filtered by magic number) both
+flow through `run_grid_cycle`/`run_runner_cycle` into `order_planning.build_order_plan()`
+correctly. Two MCP tools missing from the upstream server (`get_symbol_info`, magic-number
+filtering) were added locally rather than faked — see `AGENTS.md`'s Progress section and
+`docs/MCP_ADAPTER_WIRING_CHECKPOINT.md` for the full history.
+
+Despite all that, **no code path in this repository has ever placed, modified, or closed a real
+order.** Every live run so far has gone through `DryRunExecutor`, which only records what it would
+have submitted. Phase 6 (controlled demo execution) has not started.
 
 ## Architecture (summary)
 
@@ -31,18 +40,46 @@ are async; everything upstream of them is not.
 
 ```
 src/mt5_mcp_trading/
-  config/        typed settings loader (env-based, no hardcoded secrets)
-  domain/        frozen dataclasses shared across every layer
-  market_data/   MarketDataSource interface (async)
-  mt5_adapter/   AccountReader / OrderExecutor interfaces (async) + demo-account safety guard
-  mcp_adapter/   tool registry: classifies MCP tools READ_ONLY vs TRADING, gates trading calls
-  mocks/         in-memory implementations of the above interfaces, for tests only
-  monitoring/    structured logging setup
-  strategy/, signal/, trade_intent/, sizing/, risk/, order_planning/, execution/, state/, reporting/
-                 intentionally empty package skeletons — populated in later phases
+  config/          typed settings loader (env-based, no hardcoded secrets)
+  domain/          frozen dataclasses shared across every layer
+  market_data/     MarketDataSource interface (async) -- real implementation lives in mt5_adapter/
+  features/        pure indicator functions: EMA, ATR, MACD
+  strategy/        grid levels, runner signal, EMA exit-guard state machine -- pure
+  signal/          empty; Signal is a domain/models.py dataclass, no package-specific code yet
+  trade_intent/    GridLevels/Signal -> TradeIntent conversion
+  sizing/          decide_lot -- fixed/atr_scale/risk_percent lot sizing
+  risk/            symbol-level + portfolio-level guards, and combine() to merge decisions
+  order_planning/  build_order_plan(): volume clamping + LIMIT price normalization against real
+                   SymbolInfo/broker constraints
+  execution/       DryRunExecutor -- OrderExecutor that logs and records, never calls MCP/MT5
+  pipeline/        run_grid_cycle()/run_runner_cycle(): one full strategy->execution pass each,
+                   constructor-injected with whichever MarketDataSource/AccountReader/
+                   OrderExecutor (mock or real) the caller provides
+  mt5_adapter/     AccountReader/OrderExecutor interfaces (async) + demo-account safety guard,
+                   PLUS the real McpMarketDataSource/McpAccountReader implementations and MT5
+                   response parsing (mcp_market_data.py, mcp_account.py, metatrader_parsing.py)
+  mcp_adapter/     McpClient (the only thing that ever holds an MCP session) + ToolRegistry:
+                   classifies MCP tools READ_ONLY vs TRADING and gates trading calls
+  mocks/           in-memory implementations of the above interfaces, for tests only
+  monitoring/      structured logging setup
+  state/, reporting/
+                   intentionally empty package skeletons -- populated in later phases
 tests/
-  unit/          pure-logic and mock-adapter tests
+  unit/            pure-logic, mock-adapter, and stub-MCP-client tests
+  integration/     end-to-end pipeline tests (run_grid_cycle/run_runner_cycle against mocks)
   test_architecture.py   import-boundary enforcement
+scripts/
+  run_metatrader_mcp_stdio.py         launches the MCP server subprocess, credentials from .env
+  metatrader_mcp_extended_server.py   local MCP server extension: adds get_symbol_info,
+                                       get_positions_with_magic, get_pending_orders_with_magic
+                                       (missing upstream) alongside the third-party package's
+                                       own 25 tools -- not a fork, see its module docstring
+  verify_mcp_adapters_readonly.py,
+  phase3_readonly_verification.py     live, read-only verification against the real server
+  run_live_dry_run_pipeline.py        live dry-run of the full pipeline against real adapters
+docs/
+  MCP_ADAPTER_WIRING_CHECKPOINT.md    full session-by-session history of wiring real adapters
+  mcp_tool_classification.md          the real MCP tool surface, gaps found, and fixes applied
 ```
 
 ## Setup
