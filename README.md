@@ -98,8 +98,10 @@ python3 -m venv .venv
 
 ## Safety notes
 
-- No code path in this repository can place, modify, or close a real order today — `OrderExecutor`
-  implementations that could are not wired to anything yet, and only `MOCK` mode is exercised.
+- No code path in this repository can place, modify, or close a real order today — the only
+  `OrderExecutor` wired to anything reachable is `DryRunExecutor`, which logs and records but never
+  calls MCP or MT5. `MOCK` and `DRY_RUN` (the latter against real adapters/a real MT5 connection,
+  see Status above) have both been exercised; no `OrderExecutor` capable of a real order exists yet.
 - `.env` is required to configure anything beyond defaults and is git-ignored; `.env.example`
   documents variable names only, never values.
 - See `AGENTS.md` for the full set of safety rules and the phase-by-phase workflow this project
