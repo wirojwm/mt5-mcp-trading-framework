@@ -257,6 +257,57 @@ user, and handled per their explicit choices:
 - Nothing has been committed yet this step (see git status below) — do not assume any of this
   work is saved until a commit is made.
 
+## Work completed this step (wire order_planning.build_order_plan() against real SymbolInfo)
+
+Goal: prove `build_order_plan()` runs correctly against real, live `SymbolInfo`/`Tick`/
+`MarketBar` data, not mock/fabricated values. Found a real blocking issue while doing this,
+resolved by explicit user decision rather than silently worked around:
+
+**Blocker found**: `run_grid_cycle`/`run_runner_cycle` (the pipeline functions that call
+`build_order_plan()`) both call `account.get_positions(symbol=symbol, magic=magic)`/
+`get_orders(...)` with a real magic number, for duplicate-order and exposure-cap checks. The
+real `McpAccountReader` raises `MagicFilteringUnavailableError` whenever `magic` is not `None`
+(gap 2 -- the MCP server exposes no magic number at all). So `run_grid_cycle`/`run_runner_cycle`
+cannot run against a real `McpAccountReader` at all today. **User's explicit choice**: keep
+this step scoped to SymbolInfo only -- use `MockAccountReader` (zero positions/orders) for the
+account side rather than also fixing the magic-filtering gap in pipeline code (a separate,
+bigger, riskier change to core risk-guard logic used by 4 existing tests). Documented in the
+new script as a scope note, not a silent workaround.
+
+- `scripts/run_live_dry_run_pipeline.py` (new): connects with the default `ToolRegistry`
+  (`trading_enabled=False`), uses the real `McpMarketDataSource` for bars/tick/`SymbolInfo`,
+  `MockAccountReader` (zero positions/orders) for the account side, and `DryRunExecutor`
+  (never calls MCP/MT5 -- see `execution/dry_run.py`) for the executor. Runs one
+  `run_grid_cycle` and one `run_runner_cycle` pass for BTCUSD and prints whatever
+  `build_order_plan()` produced. Also repeats the live TRADING-tool-refused-before-any-RPC
+  safety check from `scripts/verify_mcp_adapters_readonly.py`.
+- No changes needed in `order_planning/`, `pipeline/`, or the `MarketDataSource`/
+  `McpMarketDataSource` code itself -- the real `get_symbol_info()` added in the previous step
+  already satisfies exactly what `run_grid_cycle`/`run_runner_cycle` expect.
+
+**Live-verified**, with explicit user approval. Results:
+
+- Trading blocked pre-RPC, confirmed again (same check as before).
+- `run_grid_cycle('BTCUSD')` → two `ExecutionResult`s: BUY LIMIT @ 62903.91 and SELL LIMIT @
+  62942.94, both 0.01 lots. Volume correctly clamped/rounded against the live
+  `volume_min=0.01`/`volume_step=0.01` captured in the previous step's live check. Both LIMIT
+  prices normalized successfully against real `point`/`stops_level`/`freeze_level` (neither
+  returned `None`, which would mean "couldn't push the price far enough from market").
+- `run_runner_cycle('BTCUSD')` → one `ExecutionResult`: SELL MARKET @ 62927.79, 0.01 lots.
+- All three: `broker_comment='mock'`, `verification_details='MockOrderExecutor - no real order
+  was placed'` — every plan went to `DryRunExecutor` only. No order was ever submitted
+  anywhere, real or otherwise, and no trading tool was ever sent over the wire.
+
+This is the first time `build_order_plan()` has run against real (not hardcoded-in-a-test)
+`SymbolInfo`, and it produced sane, correctly-normalized `OrderPlan`s on the first try.
+
+```
+pytest -q                        -> 214 passed (unchanged -- no source under test/ changed)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+Nothing committed yet this step (see git status below).
+
 ## Current errors
 
 None. Everything that exists compiles, imports, and passes its own tests. The gap is coverage
@@ -306,12 +357,24 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
    server end-to-end~~ — **done**, with explicit approval: see "Actual MCP connection status
    (SymbolInfo live verification)" above. Field-name mapping confirmed correct on the first
    try; no fix needed.
-4. Verify legacy repo still untouched, then commit this whole step (extended server + wrapper
-   change + tool classification + filling-mode parsing + `get_symbol_info` implementation +
-   all new/updated tests + docs) as one commit — wait for explicit approval first (not yet
-   requested as of this writing).
-5. Only after that commit: `order_planning.build_order_plan()` can be wired against real
-   `SymbolInfo` for an end-to-end dry-run against the live server — not started yet.
+4. ~~Verify legacy repo still untouched, then commit this whole step~~ — **done** (that commit,
+   `0dc6e44`, landed before this "wire build_order_plan against real SymbolInfo" step started).
+5. ~~`order_planning.build_order_plan()` wired against real `SymbolInfo` for an end-to-end
+   dry-run against the live server~~ — **done this step**, with explicit approval: see "Work
+   completed this step (wire order_planning.build_order_plan() against real SymbolInfo)"
+   above. `scripts/run_live_dry_run_pipeline.py` is not yet committed.
+
+## Exact next smallest task (after this step)
+
+1. Verify legacy repo still untouched, then commit `scripts/run_live_dry_run_pipeline.py` plus
+   this checkpoint's update as one commit — wait for explicit approval first (not yet requested
+   as of this writing).
+2. The still-open item is gap 2 (magic-number filtering): `run_grid_cycle`/`run_runner_cycle`
+   cannot run against a real `McpAccountReader` today, only `MockAccountReader`. Decide, with
+   the user, whether/how to address this (e.g. change the pipeline's duplicate-order/exposure
+   checks to tolerate an `AccountReader` that can't filter by magic, source magic numbers some
+   other way, or accept this as a permanent limitation of this MCP server) before a real
+   end-to-end run (real market data AND real account data together) is possible.
 
 ## Exact prompt for continuing in a new Claude Code session
 
