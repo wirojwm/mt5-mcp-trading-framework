@@ -11,8 +11,10 @@ from mt5_mcp_trading.mcp_adapter.tool_registry import (
 )
 
 
-def test_all_25_real_tools_are_classified_and_none_overlap() -> None:
-    assert len(READ_ONLY_TOOLS) == 13
+def test_all_26_tools_are_classified_and_none_overlap() -> None:
+    # 25 upstream (13 read-only, 12 trading) + 1 locally-registered read-only tool
+    # (get_symbol_info -- see metatrader_tools.py's module docstring).
+    assert len(READ_ONLY_TOOLS) == 14
     assert len(TRADING_TOOLS) == 12
     assert set(READ_ONLY_TOOLS).isdisjoint(TRADING_TOOLS)
 
@@ -49,4 +51,4 @@ def test_every_trading_tool_classified_correctly() -> None:
 
 def test_unknown_tool_name_stays_unclassified() -> None:
     registry = build_metatrader_tool_registry()
-    assert registry.classification_of("get_symbol_info") is None  # confirmed not to exist
+    assert registry.classification_of("get_terminal_info") is None  # confirmed not to exist

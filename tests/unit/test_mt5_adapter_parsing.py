@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from mt5_mcp_trading.mt5_adapter.metatrader_parsing import parse_dataframe_csv, parse_iso_datetime
+from mt5_mcp_trading.mt5_adapter.metatrader_parsing import (
+    parse_dataframe_csv,
+    parse_iso_datetime,
+    parse_symbol_filling_modes,
+)
 
 REAL_CANDLES_CSV = (
     ",time,open,high,low,close,tick_volume,spread,real_volume\n"
@@ -53,3 +57,25 @@ def test_parse_dataframe_csv_on_real_empty_positions_output() -> None:
 
 def test_parse_dataframe_csv_on_empty_string() -> None:
     assert parse_dataframe_csv("") == []
+
+
+def test_parse_symbol_filling_modes_fok_only() -> None:
+    assert parse_symbol_filling_modes(1) == ("FOK",)
+
+
+def test_parse_symbol_filling_modes_ioc_only() -> None:
+    assert parse_symbol_filling_modes(2) == ("IOC",)
+
+
+def test_parse_symbol_filling_modes_both() -> None:
+    assert parse_symbol_filling_modes(3) == ("FOK", "IOC")
+
+
+def test_parse_symbol_filling_modes_none_supported() -> None:
+    assert parse_symbol_filling_modes(0) == ()
+
+
+def test_parse_symbol_filling_modes_keeps_unknown_bit_visible() -> None:
+    # bit 4 isn't in the known FOK(1)/IOC(2) set -- surfaced explicitly, not silently dropped.
+    assert parse_symbol_filling_modes(4) == ("UNKNOWN_BIT_4",)
+    assert parse_symbol_filling_modes(5) == ("FOK", "UNKNOWN_BIT_4")

@@ -42,9 +42,9 @@ to replace the mock `MarketDataSource`/`AccountReader` with real implementations
   real Phase 3 run as fixtures, not fabricated samples.
 - `mt5_adapter/mcp_market_data.py` (`McpMarketDataSource`): real `get_bars` (via
   `get_candles_latest`, re-sorted oldest-to-newest since the server returns newest-first) and
-  `get_tick` (via `get_symbol_price`). `get_symbol_info()` raises `UnsupportedByServerError`
-  deliberately — see "Confirmed MCP server gaps" below. **Now unit-tested** — see "Work
-  completed this step" below.
+  `get_tick` (via `get_symbol_price`). `get_symbol_info()` now calls a locally-added
+  `get_symbol_info` tool and parses real broker specs — see "Work completed this step (real
+  SymbolInfo)" below; previously raised `UnsupportedByServerError` (gap 1, now resolved).
 - `mt5_adapter/mcp_account.py` (`McpAccountReader`): real `get_account_state`, `get_positions`,
   `get_orders`, `get_connection_state` (inferred from whether `get_account_info` succeeds, no
   dedicated tool exists). **Now unit-tested** — see "Work completed this step" below.
@@ -122,23 +122,113 @@ All Phase 3 tool enumeration/classification data this step relies on was already
 is quoted verbatim in `docs/mcp_tool_classification.md` and in the new source files'
 docstrings.
 
+## Work completed this step (real SymbolInfo via a locally-added MCP tool)
+
+Resolved gap 1 (below): decided, with the user, to source real `SymbolInfo` by adding one
+read-only MCP tool locally rather than hardcoding broker specs. Finding that made this cheap:
+`metatrader-mcp-server`'s own dependency, `metatrader_client`, already implements
+`market.get_symbol_info(symbol_name)` correctly (wraps `MetaTrader5.symbols_get()`, returns
+the full raw `SymbolInfo` dict) — `metatrader_mcp/server.py` just never registers it with
+`@mcp.tool()`, the same class of bug as its already-documented `get_candles_by_date` gap.
+
+- `scripts/metatrader_mcp_extended_server.py` (new): imports `metatrader_mcp.server`'s
+  already-built `mcp` `FastMCP` instance and `get_client`/`Context` helpers **unmodified** (no
+  fork, no vendored copy), registers one additional `get_symbol_info` tool wrapping
+  `client.market.get_symbol_info(...)`, then launches the same way that module's own
+  `__main__` block does (identical argv interface). Hit and fixed one real bug while wiring
+  this: this file must NOT use `from __future__ import annotations` — FastMCP's
+  `Tool.from_function()` does `issubclass(param.annotation, Context)` on the raw annotation at
+  import time, and postponed evaluation turns that into the string `"Context"`, raising
+  `TypeError`. Confirmed by actually hitting it, not guessed; documented inline in the file so
+  a future "consistency" cleanup doesn't reintroduce it. **Verified**: imported directly and
+  called `mcp.list_tools()` — 26 tools registered (the 25 upstream + `get_symbol_info`).
+- `scripts/run_metatrader_mcp_stdio.py`: now launches `metatrader_mcp_extended_server.py` (via
+  `sys.executable`) instead of the pip-installed `metatrader-mcp-server` console script.
+  Removed `_find_console_script()` (dead code once the console script is no longer launched).
+  Credential handling itself is unchanged — same env vars, same explicit `--login`/
+  `--password`/`--server`/`--path`/`--transport` CLI args passed to the child process.
+- `mcp_adapter/metatrader_tools.py`: added `get_symbol_info` to `READ_ONLY_TOOLS` (it only
+  reads `MetaTrader5.symbols_get()`, no write path of any kind) — 14 READ_ONLY, 12 TRADING, 26
+  total.
+- `mt5_adapter/metatrader_parsing.py`: added `parse_symbol_filling_modes(bitmask)`, decoding
+  MQL5's documented `ENUM_SYMBOL_FILLING_MODE` bitmask (`SYMBOL_FILLING_FOK=1`,
+  `SYMBOL_FILLING_IOC=2`) into a `tuple[str, ...]`. Unknown bits are kept as an explicit
+  `"UNKNOWN_BIT_<n>"` entry rather than silently dropped.
+- `mt5_adapter/mcp_market_data.py`: `get_symbol_info()` now calls the new tool and maps raw MT5
+  field names (`name`, `digits`, `point`, `volume_min`, `volume_max`, `volume_step`,
+  `trade_stops_level`, `trade_freeze_level`, `filling_mode`, `spread`) onto this project's
+  `SymbolInfo` domain model. **This field-name mapping is based on documented MetaTrader5
+  `SymbolInfo` fields, not yet confirmed against a live capture** — see "Exact next smallest
+  task" below.
+- Tests updated/added (7 new, all passing against a stub client — no live call): success parse
+  in `test_mt5_adapter_mcp_market_data.py` (replaces the old always-raises test), two
+  malformed-response cases, 5 cases for `parse_symbol_filling_modes` in
+  `test_mt5_adapter_parsing.py`, updated tool-count assertions and the "unknown tool" fixture
+  in `test_mcp_metatrader_tools.py` (now `get_terminal_info`, since `get_symbol_info` is
+  classified now).
+- `docs/mcp_tool_classification.md` updated: gap 6 marked resolved (locally, not upstream),
+  tool counts corrected to 26 everywhere, new tool listed in the symbols/market-data table.
+- `scripts/verify_mcp_adapters_readonly.py` updated to call the real `get_symbol_info()` and
+  print its result instead of expecting it to raise.
+
+```
+pytest -q                        -> 214 passed  (207 previously + 7 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No live MCP call was made building this (import-checking the extended server module and
+running the local test suite only). Live-verified afterward, with explicit user approval --
+see "Actual MCP connection status (SymbolInfo live verification)" below. No trading/execution
+tool was called or referenced. `.env`/credentials were not read.
+
+## Actual MCP connection status (SymbolInfo live verification)
+
+**Live-verified.** Re-ran `scripts/verify_mcp_adapters_readonly.py` (now calling the real
+`get_symbol_info()` instead of expecting it to raise) against the live server, with explicit
+user approval. Confirms `scripts/metatrader_mcp_extended_server.py` actually connects (not
+just import-checked) and that the documented field-name mapping was correct on the first try:
+
+```
+get_symbol_info('BTCUSD') ->
+SymbolInfo(symbol='BTCUSD', digits=2, point=0.01, volume_min=0.01, volume_max=5.0,
+           volume_step=0.01, stops_level=10, freeze_level=0, filling_modes=('FOK',), spread=1500)
+```
+
+No `KeyError` (every raw field name used — `name`, `digits`, `point`, `volume_min`,
+`volume_max`, `volume_step`, `trade_stops_level`, `trade_freeze_level`, `filling_mode`,
+`spread` — was present in the live response) and no `UNKNOWN_BIT_*` in `filling_modes` (this
+symbol reports only bit 1 / FOK; bit 2 / IOC was not exercised by this account's symbol, so
+that half of the bitmask mapping has plausible-but-not-fully-exercised confirmation — worth
+re-checking against a symbol/account that supports IOC if one becomes available, not blocking
+otherwise). All other checks (trading blocked pre-RPC, connection state, account state,
+`get_bars`/`get_tick`, positions/orders, magic-filtering refusal) repeated cleanly, consistent
+with the prior live-verification pass. No trading/order-submitting tool was ever sent over the
+wire.
+
+This closes out gap 1 fully: implemented, unit-tested, and now live-verified.
+
 ## Tools discovered and classification
 
-Unchanged from Phase 3 — see `docs/mcp_tool_classification.md` for the full table. Summary:
-25 real tools (not 32, per the PyPI page), 13 READ_ONLY, 12 TRADING. Now encoded as executable
-classification in `mcp_adapter/metatrader_tools.py` (tested, see above) rather than only as a
-markdown table.
+Upstream unchanged from Phase 3 — see `docs/mcp_tool_classification.md` for the full table:
+25 real tools (not 32, per the PyPI page), 13 READ_ONLY, 12 TRADING. This project's own server
+process now exposes **26**: the 25 upstream plus a locally-added `get_symbol_info` (14
+READ_ONLY, 12 TRADING total) — see "Work completed this step (real SymbolInfo)" above. Encoded
+as executable classification in `mcp_adapter/metatrader_tools.py` (tested, see above) rather
+than only as a markdown table.
 
 ## Confirmed MCP server gaps (found this session, safety-relevant, not yet resolved)
 
 Found by reading `metatrader-mcp-server`'s source directly (not guessed), discussed with the
 user, and handled per their explicit choices:
 
-1. **No SymbolInfo tool exists at all** — none of the 25 tools expose
-   point/digits/stops_level/freeze_level/volume_min/max/step. `McpMarketDataSource.get_symbol_info()`
-   raises `UnsupportedByServerError` rather than fabricating data.
-   `order_planning.build_order_plan()` cannot run against real SymbolInfo from this server —
-   unresolved.
+1. ~~**No SymbolInfo tool exists at all**~~ — **fully resolved**, locally rather than upstream:
+   see "Work completed this step (real SymbolInfo)" and "Actual MCP connection status
+   (SymbolInfo live verification)" above. None of `metatrader-mcp-server`'s own 25 tools expose
+   point/digits/stops_level/freeze_level/volume_min/max/step, but its dependency
+   `metatrader_client` already implements this correctly; `scripts/metatrader_mcp_extended_server.py`
+   registers it as a 26th tool. `McpMarketDataSource.get_symbol_info()` now calls it instead of
+   raising `UnsupportedByServerError`, and this has been confirmed live against a real BTCUSD
+   symbol (implemented, unit-tested, live-verified).
 2. **No magic number (or comment) on positions/orders** — confirmed via source
    (`convert_positions_to_dataframe`/`convert_orders_to_dataframe`'s hardcoded column mapping).
    `McpAccountReader.get_positions()`/`get_orders()` raise `MagicFilteringUnavailableError` if
@@ -161,6 +251,9 @@ user, and handled per their explicit choices:
   lifecycle is still exercised only by import-checking, not a real or stubbed MCP session.
   Not in scope for the step that just completed — see "Exact next smallest task" below if this
   becomes needed.
+- **`filling_modes`'s IOC bit (2) has not been exercised live**, only FOK (1) — see "Actual MCP
+  connection status (SymbolInfo live verification)" above. Not blocking, but worth re-checking
+  against a symbol/account that reports IOC support if one becomes available.
 - Nothing has been committed yet this step (see git status below) — do not assume any of this
   work is saved until a commit is made.
 
@@ -203,14 +296,22 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
 
 ## Exact next smallest task (after this step)
 
-1. Verify legacy repo still untouched, then commit `scripts/verify_mcp_adapters_readonly.py`
-   plus this checkpoint's live-verification update as one commit — wait for explicit approval
-   first (not yet requested as of this writing).
-2. With the real adapters now unit-tested and live-verified, the next open item is the
-   unresolved `SymbolInfo` gap (gap 1): `order_planning.build_order_plan()` still cannot run
-   against real `SymbolInfo` from this server. Decide, with the user, how to source it (a
-   different MCP server, a supplementary read-only tool, a hardcoded per-symbol config, etc.)
-   before wiring a real end-to-end dry-run against the live server.
+1. ~~Verify legacy repo still untouched, then commit `scripts/verify_mcp_adapters_readonly.py`
+   plus this checkpoint's live-verification update as one commit~~ — **done** (that commit
+   landed before this SymbolInfo step started).
+2. ~~Decide how to source real `SymbolInfo`~~ — **done**: locally-added `get_symbol_info` tool,
+   implemented and unit-tested this step (see "Work completed this step (real SymbolInfo)"
+   above).
+3. ~~Propose (don't auto-run) a live, read-only verification call exercising the extended
+   server end-to-end~~ — **done**, with explicit approval: see "Actual MCP connection status
+   (SymbolInfo live verification)" above. Field-name mapping confirmed correct on the first
+   try; no fix needed.
+4. Verify legacy repo still untouched, then commit this whole step (extended server + wrapper
+   change + tool classification + filling-mode parsing + `get_symbol_info` implementation +
+   all new/updated tests + docs) as one commit — wait for explicit approval first (not yet
+   requested as of this writing).
+5. Only after that commit: `order_planning.build_order_plan()` can be wired against real
+   `SymbolInfo` for an end-to-end dry-run against the live server — not started yet.
 
 ## Exact prompt for continuing in a new Claude Code session
 

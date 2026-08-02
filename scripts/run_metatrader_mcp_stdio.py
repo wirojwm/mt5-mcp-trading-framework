@@ -11,6 +11,11 @@ straight into an MCP client's config would mean writing real MT5 credentials int
 file. This wrapper keeps the config file secret-free: it only ever references *this script's
 path*, and this script resolves the real values at process-launch time.
 
+Launches scripts/metatrader_mcp_extended_server.py (not the pip-installed
+metatrader-mcp-server console script directly) -- that script re-registers the same 25 tools
+plus one this project added locally (get_symbol_info; see its own module docstring for why).
+Same argv interface, so nothing else about this wrapper's credential handling changed.
+
 Required environment variables (normally supplied via a git-ignored .env file next to this
 script's project root — see .env.example):
     MT5_DEMO_LOGIN     - MT5 account login (integer)
@@ -44,6 +49,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
+EXTENDED_SERVER = PROJECT_ROOT / "scripts" / "metatrader_mcp_extended_server.py"
 
 REQUIRED_VARS = ("MT5_DEMO_LOGIN", "MT5_DEMO_PASSWORD", "MT5_DEMO_SERVER", "MT5_ACCOUNT_KIND")
 
@@ -67,21 +73,6 @@ def _load_env() -> None:
         load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 
-def _find_console_script() -> Path:
-    """Locate metatrader-mcp-server(.exe) next to the interpreter running this wrapper,
-    i.e. in the same venv, rather than trusting whatever happens to be first on PATH."""
-    scripts_dir = Path(sys.executable).resolve().parent
-    candidates = [scripts_dir / "metatrader-mcp-server.exe", scripts_dir / "metatrader-mcp-server"]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    _fail(
-        f"Could not find metatrader-mcp-server next to {sys.executable!r}. "
-        f"Install it into this venv: pip install -e '.[mcp]'"
-    )
-    raise SystemExit(1)  # unreachable, _fail already exits; keeps type-checkers happy
-
-
 def main() -> None:
     _load_env()
 
@@ -99,7 +90,8 @@ def main() -> None:
             f"Refusing to launch a server that could connect to a non-demo account."
         )
 
-    server_path = _find_console_script()
+    if not EXTENDED_SERVER.exists():
+        _fail(f"Could not find {EXTENDED_SERVER}. This project's checkout is incomplete.")
 
     login = os.environ["MT5_DEMO_LOGIN"]
     password = os.environ["MT5_DEMO_PASSWORD"]
@@ -107,7 +99,7 @@ def main() -> None:
     path = os.environ.get("MT5_PATH")
 
     argv = [
-        str(server_path),
+        sys.executable, str(EXTENDED_SERVER),
         "--login", login,
         "--password", password,
         "--server", server,

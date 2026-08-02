@@ -32,7 +32,7 @@ from mt5_mcp_trading.mcp_adapter.client import McpClient
 from mt5_mcp_trading.mcp_adapter.metatrader_tools import build_metatrader_tool_registry
 from mt5_mcp_trading.mcp_adapter.tool_registry import TradingDisabledError
 from mt5_mcp_trading.mt5_adapter.mcp_account import MagicFilteringUnavailableError, McpAccountReader
-from mt5_mcp_trading.mt5_adapter.mcp_market_data import McpMarketDataSource, UnsupportedByServerError
+from mt5_mcp_trading.mt5_adapter.mcp_market_data import McpMarketDataSource
 from mt5_mcp_trading.mt5_adapter.safety import NotDemoAccountError, require_demo_account
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -96,12 +96,9 @@ async def main() -> None:
         print(f"\n=== get_tick({TEST_SYMBOL!r}) ===")
         print(await market_data.get_tick(TEST_SYMBOL))
 
-        print(f"\n=== get_symbol_info({TEST_SYMBOL!r}) -- expected to raise, no such tool exists ===")
-        try:
-            await market_data.get_symbol_info(TEST_SYMBOL)
-            print("!!! UNEXPECTED: did not raise.")
-        except UnsupportedByServerError as exc:
-            print(f"Raised as expected: {exc}")
+        print(f"\n=== get_symbol_info({TEST_SYMBOL!r}) (locally-added tool -- see "
+              f"scripts/metatrader_mcp_extended_server.py) ===")
+        print(await market_data.get_symbol_info(TEST_SYMBOL))
 
         print("\n=== get_positions() ===")
         positions = await account.get_positions()

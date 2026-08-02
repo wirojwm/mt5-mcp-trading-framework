@@ -40,3 +40,27 @@ def parse_dataframe_csv(text: str) -> list[dict[str, str]]:
         return []
     reader = csv.DictReader(io.StringIO(stripped))
     return list(reader)
+
+
+# MQL5's documented ENUM_SYMBOL_FILLING_MODE bitmask (SYMBOL_FILLING_FOK=1,
+# SYMBOL_FILLING_IOC=2) on MetaTrader5.symbols_get()[i].filling_mode -- based on official
+# documentation, NOT yet confirmed against a live capture from this project's own connection.
+# See docs/MCP_ADAPTER_WIRING_CHECKPOINT.md for the pending live-verification step.
+_SYMBOL_FILLING_MODE_BITS: tuple[tuple[int, str], ...] = (
+    (1, "FOK"),
+    (2, "IOC"),
+)
+
+
+def parse_symbol_filling_modes(bitmask: int) -> tuple[str, ...]:
+    """Decodes SymbolInfo.filling_mode into the set of filling modes the broker reports as
+    supported for a symbol. Any bit outside the known set is kept as an explicit
+    "UNKNOWN_BIT_<n>" entry rather than silently dropped -- order_planning needs to know if a
+    broker reports a filling capability this project doesn't yet recognize, not have it
+    disappear."""
+    known_bits = sum(bit for bit, _ in _SYMBOL_FILLING_MODE_BITS)
+    modes = [name for bit, name in _SYMBOL_FILLING_MODE_BITS if bitmask & bit]
+    leftover = bitmask & ~known_bits
+    if leftover:
+        modes.append(f"UNKNOWN_BIT_{leftover}")
+    return tuple(modes)
