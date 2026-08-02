@@ -7,16 +7,17 @@ approval. No order is ever submitted anywhere: DryRunExecutor never calls MCP or
 (see execution/dry_run.py), and the default ToolRegistry (trading_enabled=False) additionally
 refuses any TRADING-classified tool regardless.
 
-SCOPE NOTE -- why the account side is mocked, not real: run_grid_cycle/run_runner_cycle both
-call account.get_positions(symbol=symbol, magic=magic)/get_orders(...) with a real magic
-number, for duplicate-order and exposure-cap checks. The real McpAccountReader raises
-MagicFilteringUnavailableError whenever magic is not None (metatrader-mcp-server exposes no
-magic number at all -- see docs/mcp_tool_classification.md, Known Issues item 5), so
-run_grid_cycle/run_runner_cycle cannot run against a real McpAccountReader today. That's a
-separate, already-documented, unresolved gap -- fixing it is out of scope here, which is only
-about proving the SymbolInfo wiring works. MockAccountReader with zero positions/orders stands
-in for the account side instead, by explicit user decision (see
-docs/MCP_ADAPTER_WIRING_CHECKPOINT.md).
+SCOPE NOTE -- why the account side is still mocked, not real, even though the gap that caused
+this is now fixed: at the time this script was written, run_grid_cycle/run_runner_cycle's
+calls to account.get_positions(symbol=symbol, magic=magic)/get_orders(...) with a real magic
+number couldn't run against a real McpAccountReader -- it raised MagicFilteringUnavailableError
+whenever magic was not None, because metatrader-mcp-server exposed no magic number at all.
+That gap is now resolved (see mt5_adapter/mcp_account.py's module docstring and
+scripts/metatrader_mcp_extended_server.py: two locally-added tools now provide real magic
+numbers, and McpAccountReader genuinely filters by magic instead of raising). This script has
+NOT been updated to use the real McpAccountReader yet -- swapping MockAccountReader for it
+here is a natural, still-open follow-up, not done as part of resolving the magic-filtering gap
+itself. MockAccountReader with zero positions/orders remains in place for now.
 
 SAFETY:
 - Connects with the default ToolRegistry (trading_enabled=False) -- see

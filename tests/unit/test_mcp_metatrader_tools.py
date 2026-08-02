@@ -11,10 +11,11 @@ from mt5_mcp_trading.mcp_adapter.tool_registry import (
 )
 
 
-def test_all_26_tools_are_classified_and_none_overlap() -> None:
-    # 25 upstream (13 read-only, 12 trading) + 1 locally-registered read-only tool
-    # (get_symbol_info -- see metatrader_tools.py's module docstring).
-    assert len(READ_ONLY_TOOLS) == 14
+def test_all_28_tools_are_classified_and_none_overlap() -> None:
+    # 25 upstream (13 read-only, 12 trading) + 3 locally-registered read-only tools
+    # (get_symbol_info, get_positions_with_magic, get_pending_orders_with_magic -- see
+    # metatrader_tools.py's module docstring).
+    assert len(READ_ONLY_TOOLS) == 16
     assert len(TRADING_TOOLS) == 12
     assert set(READ_ONLY_TOOLS).isdisjoint(TRADING_TOOLS)
 

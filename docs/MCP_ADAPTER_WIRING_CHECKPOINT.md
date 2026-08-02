@@ -211,10 +211,11 @@ This closes out gap 1 fully: implemented, unit-tested, and now live-verified.
 
 Upstream unchanged from Phase 3 — see `docs/mcp_tool_classification.md` for the full table:
 25 real tools (not 32, per the PyPI page), 13 READ_ONLY, 12 TRADING. This project's own server
-process now exposes **26**: the 25 upstream plus a locally-added `get_symbol_info` (14
-READ_ONLY, 12 TRADING total) — see "Work completed this step (real SymbolInfo)" above. Encoded
-as executable classification in `mcp_adapter/metatrader_tools.py` (tested, see above) rather
-than only as a markdown table.
+process now exposes **28**: the 25 upstream plus 3 locally-added tools (`get_symbol_info`,
+`get_positions_with_magic`, `get_pending_orders_with_magic` — 16 READ_ONLY, 12 TRADING total)
+— see "Work completed this step (real SymbolInfo)" and "Work completed this step (real magic
+numbers)" above. Encoded as executable classification in `mcp_adapter/metatrader_tools.py`
+(tested, see above) rather than only as a markdown table.
 
 ## Confirmed MCP server gaps (found this session, safety-relevant, not yet resolved)
 
@@ -229,12 +230,17 @@ user, and handled per their explicit choices:
    registers it as a 26th tool. `McpMarketDataSource.get_symbol_info()` now calls it instead of
    raising `UnsupportedByServerError`, and this has been confirmed live against a real BTCUSD
    symbol (implemented, unit-tested, live-verified).
-2. **No magic number (or comment) on positions/orders** — confirmed via source
-   (`convert_positions_to_dataframe`/`convert_orders_to_dataframe`'s hardcoded column mapping).
-   `McpAccountReader.get_positions()`/`get_orders()` raise `MagicFilteringUnavailableError` if
-   `magic` is requested (user's explicit choice: fail loud, don't silently return unfiltered
-   data mislabeled as filtered); when `magic=None`, returns everything with
-   `PositionState.magic`/`OrderState.magic` set to sentinel `UNKNOWN_MAGIC = 0`.
+2. ~~**No magic number (or comment) on positions/orders**~~ — **fully resolved**, locally
+   rather than upstream: see "Work completed this step (real magic numbers)" above. Confirmed
+   via source (`convert_positions_to_dataframe`/`convert_orders_to_dataframe`'s hardcoded
+   column mapping) that no upstream tool exposes `magic`; `scripts/metatrader_mcp_extended_server.py`
+   now registers `get_positions_with_magic`/`get_pending_orders_with_magic`, which do.
+   `McpAccountReader.get_positions()`/`get_orders()` now genuinely filter by `magic`
+   client-side instead of raising `MagicFilteringUnavailableError` (removed, along with the
+   `UNKNOWN_MAGIC` sentinel). **Partially live-verified** — tools are callable and parse
+   cleanly live, but the connected account has zero positions/orders, so real `magic`-column
+   parsing from a genuinely populated row is still unconfirmed. See "Actual MCP connection
+   status (magic-filtering live verification)" above.
 3. **`account_type` field is provably inverted** (proven in Phase 3 against the raw MT5 API).
    User's explicit choice: **do not** apply the known correction (risk of silently becoming
    dangerous if the upstream bug is ever fixed). `McpAccountReader.get_account_state()` passes
@@ -254,6 +260,11 @@ user, and handled per their explicit choices:
 - **`filling_modes`'s IOC bit (2) has not been exercised live**, only FOK (1) — see "Actual MCP
   connection status (SymbolInfo live verification)" above. Not blocking, but worth re-checking
   against a symbol/account that reports IOC support if one becomes available.
+- **`get_positions_with_magic`/`get_pending_orders_with_magic`'s `magic`-column parsing has
+  not been exercised against real, populated data** — only against an empty live response
+  (this account has no positions/orders) and unit-test stub fixtures. See "Actual MCP
+  connection status (magic-filtering live verification)" above; re-verify once a real
+  position/order exists.
 - Nothing has been committed yet this step (see git status below) — do not assume any of this
   work is saved until a commit is made.
 
@@ -308,6 +319,94 @@ pytest tests/test_architecture.py -q -> 13 passed
 
 Nothing committed yet this step (see git status below).
 
+## Work completed this step (real magic numbers via two locally-added MCP tools)
+
+Resolved gap 2 (below), by explicit user decision ("full resolution now", not "add tools only,
+defer `McpAccountReader` changes"). Unlike the `SymbolInfo` gap, there was no already-complete
+`metatrader_client` method to just expose: `convert_positions_to_dataframe`/
+`convert_orders_to_dataframe` genuinely support a `columns_mapping` parameter that could
+include `magic`/`comment`, but every call site above them (`metatrader_client/order/
+get_positions.py`, `get_pending_orders.py`, and everything `metatrader_mcp/server.py` calls)
+hardcodes it to `None` with no way to override -- confirmed by reading those files directly.
+The raw MT5 `TradePosition`/`TradeOrder` structs do carry `.magic`/`.comment` though (confirmed
+via safe, read-only introspection -- no live connection needed for that check), so the fix
+mirrors `SymbolInfo`'s "add locally, don't fork" pattern with one difference: it duplicates a
+small (~6-line) fetch step rather than exposing something 100% pre-built.
+
+- `scripts/metatrader_mcp_extended_server.py`: added `get_positions_with_magic`/
+  `get_pending_orders_with_magic` (2 new tools, not 6 -- `McpAccountReader` only ever calls the
+  "all" and "by-symbol" variants, never "by-id"). Each calls `MetaTrader5.positions_get()`/
+  `orders_get()` directly (mirroring the same ~6-line dispatch `metatrader_client` already uses
+  internally -- MT5 connections are process-global, not object-scoped, so this isn't a new or
+  riskier pattern) then feeds the result through `metatrader_client.utils`'s own
+  `convert_positions_to_dataframe`/`convert_orders_to_dataframe` with a `columns_mapping` that
+  adds `magic`/`comment` to the existing default mapping. Reuses all of `metatrader_client`'s
+  real value (formatting/sorting/enum-decoding), duplicates only the trivial fetch. **Verified**:
+  imported directly and called `mcp.list_tools()` -- 28 tools registered now (25 upstream + 3
+  local: `get_symbol_info` + these two).
+- `mcp_adapter/metatrader_tools.py`: both new tools added to `READ_ONLY_TOOLS` (they only read
+  `MetaTrader5.positions_get()`/`orders_get()`, no write path) -- 16 READ_ONLY, 12 TRADING, 28
+  total.
+- `mt5_adapter/mcp_account.py`: `get_positions()`/`get_orders()` now call the new tools and
+  parse the real `magic` column into `PositionState.magic`/`OrderState.magic`, filtering
+  client-side when `magic` is passed. **Removed** `MagicFilteringUnavailableError` and the
+  `UNKNOWN_MAGIC` sentinel entirely -- no longer needed once filtering is honest, and this
+  project doesn't keep dead code/backwards-compat shims around.
+- Tests updated in `tests/unit/test_mt5_adapter_mcp_account.py`: fixtures now include real
+  `magic`/`comment` columns (two position rows with different magics, to prove filtering
+  actually discriminates); replaced the two "raises before any MCP call" tests with tests that
+  filtering genuinely narrows results (including an unmatched-magic-returns-empty case) and
+  that it happens client-side after one unfiltered fetch, not a second call; added a
+  missing-magic-column malformed-response case. Updated `test_mcp_metatrader_tools.py`'s counts
+  (14→16 READ_ONLY, 26→28 total).
+- `scripts/verify_mcp_adapters_readonly.py` updated: the old "expected to raise" magic-filter
+  check replaced with a real filter-and-expect-empty demonstration (`magic=999999999`).
+- `scripts/run_live_dry_run_pipeline.py`'s stale `SCOPE NOTE` docstring updated to explain the
+  gap it describes is now fixed, but the script itself still uses `MockAccountReader` --
+  swapping in the real `McpAccountReader` there is a separate, still-open follow-up, not done
+  as part of this step.
+- `docs/mcp_tool_classification.md` updated: gap 5 marked resolved (locally, not upstream),
+  tool counts corrected to 28 everywhere, the two new tools listed in the positions/orders
+  table, and gap 6's stale "not yet confirmed against a live capture" line corrected (that was
+  live-confirmed in the previous step; this doc just hadn't been updated to say so).
+
+```
+pytest -q                        -> 217 passed (214 previously + 3 net new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No live MCP call was made building this (import-checking the extended server module and
+running the local test suite only). Live-verified afterward, with explicit user approval --
+see "Actual MCP connection status (magic-filtering live verification)" below. No
+trading/execution tool was called or referenced. `.env`/credentials were not read.
+
+## Actual MCP connection status (magic-filtering live verification)
+
+**Partially live-verified -- an honest limitation, not a full pass.** Re-ran
+`scripts/verify_mcp_adapters_readonly.py` against the live server, with explicit user
+approval. `get_positions()`/`get_orders()` (now calling `get_positions_with_magic`/
+`get_pending_orders_with_magic`) both succeeded, and `get_positions(magic=999999999)`
+correctly returned empty. **But this demo account currently has zero open positions and zero
+pending orders**, so:
+
+- **Proven**: both new tools are registered and callable through the live server end-to-end;
+  they return a valid, parseable (empty) CSV response; client-side magic filtering doesn't
+  error out when there's nothing to filter.
+- **NOT proven**: the actual `magic`-column parsing code path
+  (`int(float(row["magic"]))` in `mt5_adapter/mcp_account.py`) has never been exercised
+  against a real, populated position/order row -- only against this step's unit-test stub
+  fixtures. Filtering-on-empty is a trivial case; it doesn't confirm the column name, format,
+  or parsing is correct against genuine live data the way the `SymbolInfo` live check did
+  (which had real non-empty data to parse).
+- **Still open**: re-run this verification once a real position or pending order exists on the
+  connected demo account (e.g. after a future controlled demo-execution step places one), to
+  confirm `magic`/`comment` parse correctly from an actual live row -- not blocking further
+  work, but this gap should not be treated as fully closed until that happens.
+
+All other checks (trading blocked pre-RPC, connection state, account state, `get_bars`/
+`get_tick`, `get_symbol_info`) repeated cleanly, consistent with prior live-verification
+passes. No trading/order-submitting tool was ever sent over the wire.
+
 ## Current errors
 
 None. Everything that exists compiles, imports, and passes its own tests. The gap is coverage
@@ -318,8 +417,9 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
 - Never call a TRADING-classified MCP tool. `ToolRegistry.authorize_call()` now actually gates
   every `McpClient.call_tool()` invocation — confirm this remains true before adding anything
   new that calls tools.
-- Never fabricate SymbolInfo, magic numbers, or trade_mode to route around the three gaps
-  above — fail loud (raise), as already implemented.
+- Never fabricate SymbolInfo, magic numbers, or trade_mode to route around a gap — fail loud
+  (raise) or, once a gap is genuinely resolved with real data, use the real value. Never
+  reintroduce a sentinel/fabricated fallback for something that now has a real source.
 - `.env` (real demo credentials) must never be read, logged, or displayed by any Claude Code
   action.
 - Legacy project (`../RealTrade/2509_17_mix_supercross`) must remain untouched — re-verify
@@ -366,15 +466,28 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
 
 ## Exact next smallest task (after this step)
 
-1. Verify legacy repo still untouched, then commit `scripts/run_live_dry_run_pipeline.py` plus
-   this checkpoint's update as one commit — wait for explicit approval first (not yet requested
-   as of this writing).
-2. The still-open item is gap 2 (magic-number filtering): `run_grid_cycle`/`run_runner_cycle`
-   cannot run against a real `McpAccountReader` today, only `MockAccountReader`. Decide, with
-   the user, whether/how to address this (e.g. change the pipeline's duplicate-order/exposure
-   checks to tolerate an `AccountReader` that can't filter by magic, source magic numbers some
-   other way, or accept this as a permanent limitation of this MCP server) before a real
-   end-to-end run (real market data AND real account data together) is possible.
+1. ~~Verify legacy repo still untouched, then commit `scripts/run_live_dry_run_pipeline.py`~~ —
+   **done** (that commit, `b293038`, landed before this "address the magic-number filtering
+   gap" step started).
+2. ~~Decide how to address the magic-number filtering gap~~ — **done**: 2 locally-added tools
+   plus a full `McpAccountReader` rewrite (real client-side filtering, no more
+   `MagicFilteringUnavailableError`/`UNKNOWN_MAGIC`), implemented and unit-tested this step
+   (see "Work completed this step (real magic numbers)" above).
+3. ~~Propose (don't auto-run) a live, read-only verification call exercising
+   `get_positions_with_magic`/`get_pending_orders_with_magic` end-to-end~~ — **done**, with
+   explicit approval: see "Actual MCP connection status (magic-filtering live verification)"
+   above. Only a **partial** pass — the connected account has zero positions/orders, so
+   `magic`-column parsing from real populated data remains unconfirmed.
+4. Verify legacy repo still untouched, then commit this whole step as one commit — wait for
+   explicit approval first (not yet requested as of this writing).
+5. Re-verify `get_positions_with_magic`/`get_pending_orders_with_magic` against real, populated
+   position/order data once any exists on the connected demo account (e.g. after a future
+   controlled demo-execution step), to confirm the `magic`-column parsing actually works
+   against a genuine live row, not just an empty one.
+6. Only after that: swap `MockAccountReader` for the real `McpAccountReader` in
+   `scripts/run_live_dry_run_pipeline.py` (the `SCOPE NOTE` there already documents this as the
+   natural next step) for a true end-to-end run — real market data AND real account data
+   together — through `run_grid_cycle`/`run_runner_cycle`. Not started yet.
 
 ## Exact prompt for continuing in a new Claude Code session
 

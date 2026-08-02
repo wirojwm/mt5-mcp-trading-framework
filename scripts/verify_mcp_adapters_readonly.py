@@ -31,7 +31,7 @@ from pathlib import Path
 from mt5_mcp_trading.mcp_adapter.client import McpClient
 from mt5_mcp_trading.mcp_adapter.metatrader_tools import build_metatrader_tool_registry
 from mt5_mcp_trading.mcp_adapter.tool_registry import TradingDisabledError
-from mt5_mcp_trading.mt5_adapter.mcp_account import MagicFilteringUnavailableError, McpAccountReader
+from mt5_mcp_trading.mt5_adapter.mcp_account import McpAccountReader
 from mt5_mcp_trading.mt5_adapter.mcp_market_data import McpMarketDataSource
 from mt5_mcp_trading.mt5_adapter.safety import NotDemoAccountError, require_demo_account
 
@@ -100,20 +100,19 @@ async def main() -> None:
               f"scripts/metatrader_mcp_extended_server.py) ===")
         print(await market_data.get_symbol_info(TEST_SYMBOL))
 
-        print("\n=== get_positions() ===")
+        print("\n=== get_positions() (real magic numbers -- see get_positions_with_magic in "
+              "scripts/metatrader_mcp_extended_server.py) ===")
         positions = await account.get_positions()
         print(positions if positions else "(no open positions)")
 
-        print("\n=== get_orders() ===")
+        print("\n=== get_orders() (real magic numbers) ===")
         orders = await account.get_orders()
         print(orders if orders else "(no pending orders)")
 
-        print("\n=== get_positions(magic=1) -- expected to raise, server exposes no magic field ===")
-        try:
-            await account.get_positions(magic=1)
-            print("!!! UNEXPECTED: did not raise.")
-        except MagicFilteringUnavailableError as exc:
-            print(f"Raised as expected: {exc}")
+        print("\n=== get_positions(magic=999999999) -- expect empty, real client-side filter ===")
+        filtered = await account.get_positions(magic=999999999)
+        print(filtered if filtered else "(none matched -- filtering works, this account just "
+              "has no position with this magic)")
 
     print("\n=== Done. No trading/order-submitting tool was ever sent over the wire. ===")
 
