@@ -42,6 +42,10 @@ No tool exposes terminal connection state, build number, or `trade_allowed` — 
 | `get_deals` | Historical deals (CSV), read-only |
 | `get_orders` | Historical orders (CSV), read-only |
 
+None of the position/order tools above expose a magic number (or comment) field — see Known
+Issues item 5. None of the tools in this file expose per-symbol broker specifications
+(point/digits/stops_level/freeze_level/volume_min/max/step) — see Known Issues item 6.
+
 ## Workspace and files
 
 None. This server has no filesystem/workspace tools at all.
@@ -90,3 +94,24 @@ project.
 3. **Indefinite retry on init failure** rather than a bounded number of attempts with a clean
    error — a credential or path problem looks like a hang, not a fast failure.
 4. **`get_candles_by_date` is unreachable** despite being documented — see above.
+5. **No magic number (or comment) on positions/orders.** Confirmed via source
+   (`metatrader_client.utils.convert_positions_to_dataframe` / `convert_orders_to_dataframe`):
+   both use a hardcoded column mapping that omits `magic` and `comment` entirely, even though
+   MT5's raw position/order data includes them. This project's `McpAccountReader` (in
+   `mt5_adapter/mcp_account.py`) raises `MagicFilteringUnavailableError` if a caller asks to
+   filter `get_positions()`/`get_orders()` by `magic` — returning unfiltered data silently
+   mislabeled as filtered would be worse than refusing, given how central magic-based
+   segregation is to this project's risk model (grid vs. runner, duplicate-order prevention,
+   exposure caps). When `magic` is not requested, every returned `PositionState`/`OrderState`
+   carries the sentinel `magic=UNKNOWN_MAGIC` (0), not a guess.
+6. **No `SymbolInfo`-equivalent tool exists at all.** None of this server's 25 tools expose a
+   symbol's `point`/`digits`/`stops_level`/`freeze_level`/`volume_min`/`volume_max`/
+   `volume_step` (the PyPI page's claimed `get_symbol_info` tool does not actually exist — see
+   the top of this document). This project's `McpMarketDataSource.get_symbol_info()` (in
+   `mt5_adapter/mcp_market_data.py`) raises `UnsupportedByServerError` rather than fabricating
+   placeholder values, since `order_planning.build_order_plan()` needs real `SymbolInfo` to
+   normalize prices and clamp volume correctly — a fabricated value would risk an accepted
+   order at a materially wrong price instead of a loud, obvious failure. Unresolved: a caller
+   needing `SymbolInfo` today must supply it from elsewhere (e.g. a hardcoded per-symbol
+   config) until this gap is resolved by a different MCP server, a supplementary read-only
+   tool, or some other source.

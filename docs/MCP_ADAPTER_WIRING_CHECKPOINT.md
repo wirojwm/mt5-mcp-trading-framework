@@ -43,11 +43,49 @@ to replace the mock `MarketDataSource`/`AccountReader` with real implementations
 - `mt5_adapter/mcp_market_data.py` (`McpMarketDataSource`): real `get_bars` (via
   `get_candles_latest`, re-sorted oldest-to-newest since the server returns newest-first) and
   `get_tick` (via `get_symbol_price`). `get_symbol_info()` raises `UnsupportedByServerError`
-  deliberately — see "Confirmed MCP server gaps" below. **Import-checked only, not
-  unit-tested** — see "Incomplete".
+  deliberately — see "Confirmed MCP server gaps" below. **Now unit-tested** — see "Work
+  completed this step" below.
 - `mt5_adapter/mcp_account.py` (`McpAccountReader`): real `get_account_state`, `get_positions`,
   `get_orders`, `get_connection_state` (inferred from whether `get_account_info` succeeds, no
-  dedicated tool exists). **Import-checked only, not unit-tested** — see "Incomplete".
+  dedicated tool exists). **Now unit-tested** — see "Work completed this step" below.
+
+## Work completed this step (stub-client unit tests)
+
+Added `tests/unit/test_mt5_adapter_mcp_market_data.py` and
+`tests/unit/test_mt5_adapter_mcp_account.py`, following the plan in the previous "Exact next
+smallest task" step 1. Both files define a local `_StubMcpClient` that deliberately
+re-implements `McpClient.call_tool`'s one safety-critical line
+(`registry.authorize_call(name)` before returning canned data) against the real, fully
+classified registry from `metatrader_tools.build_metatrader_tool_registry()` — not a bypassed
+mock. This means a future change that made `McpMarketDataSource` or `McpAccountReader` call an
+unclassified or `TRADING`-classified tool would make these tests raise
+`ToolNotClassifiedError`/`TradingDisabledError`, same as it would against a real `McpClient`.
+Each file ends with a dedicated test asserting every tool call the class under test made was
+classified `READ_ONLY`.
+
+No live MCP call was made. No trading/execution tool was called or referenced (only
+`READ_ONLY`-tool names appear in any fixture). `.env`/credentials were not read.
+
+Coverage added, 30 new tests total:
+- **`McpMarketDataSource`**: `get_bars` success (parses + sorts oldest-to-newest) and two
+  malformed-response cases (missing `close` column → `KeyError`, non-numeric price →
+  `ValueError`); `get_tick` success (Zulu-suffix timestamp) and two malformed-response cases
+  (invalid JSON → `json.JSONDecodeError`, missing field → `KeyError`); `get_symbol_info` always
+  raises `UnsupportedByServerError` **without making any MCP call at all** (asserted via an
+  empty `client.calls`); registry-enforcement test.
+- **`McpAccountReader`**: `get_account_state` success, all three valid `trade_mode` values
+  (`DEMO`/`CONTEST`/`REAL`, case-insensitive), the fail-safe fallback to `"REAL"` for
+  unrecognized or missing `account_type` (the safety property from gap 3 below), and two
+  malformed-response cases; `get_positions`/`get_orders` success (including the `UNKNOWN_MAGIC`
+  sentinel and symbol-scoped vs. all-scoped tool selection), `MagicFilteringUnavailableError`
+  raised **before any MCP call** when `magic` is passed (asserted via empty `client.calls`),
+  and malformed-response cases; `get_connection_state` both the inferred-success and
+  inferred-failure path; registry-enforcement test.
+
+```
+pytest -q                        -> 207 passed  (177 previously + 30 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
 
 ## Actual MCP connection status
 
@@ -88,28 +126,19 @@ user, and handled per their explicit choices:
    `MT5_ACCOUNT_KIND=DEMO` in `scripts/run_metatrader_mcp_stdio.py`, independent of anything
    read over MCP.
 
-## Tests run and results
-
-```
-pytest -q                        -> 177 passed
-pytest tests/test_architecture.py -q -> 13 passed
-```
-Plus a bare import check of all three new adapter/client modules (no errors).
-
 ## Incomplete / partially implemented — do NOT treat as done
 
-- **No unit tests yet for `McpClient`, `McpMarketDataSource`, or `McpAccountReader`
-  themselves.** Only their building blocks (parsing helpers, tool registry) are tested. The
-  planned approach (not yet executed): a fake/stub `McpClient` returning canned per-tool-name
-  text, so these can be tested offline without a live connection — consistent with this
-  project's "mocks first" rule.
+- **No unit tests yet for `McpClient` itself** — only its callers (`McpMarketDataSource`,
+  `McpAccountReader`, now both tested via a stub client) and its building blocks (parsing
+  helpers, tool registry) are tested. `McpClient`'s own `__aenter__`/`__aexit__`/session
+  lifecycle is still exercised only by import-checking, not a real or stubbed MCP session.
+  Not in scope for the step that just completed — see "Exact next smallest task" below if this
+  becomes needed.
 - **No live verification run** of the new adapter against the real server has been performed
-  this session (deliberately deferred — the user had already asked to keep this step tightly
-  scoped and not auto-advance to live calls).
-- `docs/mcp_tool_classification.md` has not yet been updated with the three gaps above (they
-  are currently only documented in this checkpoint and in the new source files' docstrings).
-- Nothing has been committed yet this session (see git status below) — do not assume any of
-  this work is saved until a commit is made.
+  yet (deliberately deferred — the user has asked to keep this tightly scoped and not
+  auto-advance to live calls; explicit approval required first, see below).
+- Nothing has been committed yet this step (see git status below) — do not assume any of this
+  work is saved until a commit is made.
 
 ## Current errors
 
@@ -131,20 +160,19 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
 
 ## Exact next smallest task
 
-1. Write `tests/unit/test_mt5_adapter_mcp_market_data.py` and
-   `tests/unit/test_mt5_adapter_mcp_account.py` using a stub `McpClient` (a small fake class
-   with a `call_tool(name, arguments)` method returning canned text per tool name, matching
-   the real captured samples already used in `tests/unit/test_mt5_adapter_parsing.py`) — no
-   live connection. Cover: successful parse paths, `UnsupportedByServerError` for
-   `get_symbol_info`, `MagicFilteringUnavailableError` when `magic` is passed, the
-   trade_mode fail-safe fallback, `get_connection_state`'s inferred success/failure paths.
-2. Run the full suite + architecture check again.
-3. Update `docs/mcp_tool_classification.md` with the three confirmed gaps (currently only in
-   this checkpoint and source docstrings).
+1. ~~Write `tests/unit/test_mt5_adapter_mcp_market_data.py` and
+   `tests/unit/test_mt5_adapter_mcp_account.py` using a stub `McpClient`~~ — **done this step**,
+   see "Work completed this step" above.
+2. ~~Run the full suite + architecture check again.~~ — **done this step**: 207 passed, 13
+   architecture tests passed.
+3. ~~Update `docs/mcp_tool_classification.md` with the three confirmed gaps~~ — **done this
+   step**.
 4. Verify legacy repo still untouched, then commit this whole step (domain model fix + client
-   + tool classification + parsing + both real adapters + all new tests) as one commit,
-   following this project's established commit-message style (goal, what was preserved/fixed/
-   found, test results).
+   + tool classification + parsing + both real adapters + all new tests, i.e. everything since
+   commit `a723e0d`) as one commit, following this project's established commit-message style
+   (goal, what was preserved/fixed/found, test results). **Not done — awaiting explicit
+   approval, per this step's instructions to stop before any live verification; commit itself
+   was not requested either.**
 5. Only after that commit: propose (don't auto-run) a live, read-only verification call
    against the real server to prove `McpMarketDataSource`/`McpAccountReader` work end-to-end,
    mirroring the Phase 3 methodology — wait for explicit approval first.
