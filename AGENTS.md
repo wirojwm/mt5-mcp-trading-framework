@@ -27,6 +27,39 @@ and failure testing). For each phase:
 
 Do not skip ahead. Do not broadly refactor already-approved work without being asked.
 
+## Progress
+
+- **Phases 0–5: done.** 0 (legacy audit) and 1 (design) produced no code, by nature. 2
+  (foundation), 3 (read-only MCP integration), 4 (strategy migration), and 5 (dry-run pipeline,
+  built and tested against mocks only) are all committed.
+- **Wire real mt5_adapter/mcp_adapter (post-Phase 5, pre-Phase 6): done.** Not one of the
+  numbered phases — a user-requested step to replace the mock `MarketDataSource`/
+  `AccountReader` with real implementations before attempting Phase 6. Completed:
+  - Real `McpClient`/`McpMarketDataSource`/`McpAccountReader`, unit-tested against a stub
+    client and live-verified against the real `metatrader-mcp-server` connection.
+  - Real `SymbolInfo` (`get_symbol_info`) and real magic-number filtering
+    (`get_positions_with_magic`/`get_pending_orders_with_magic`) — neither tool exists
+    upstream; both added locally via `scripts/metatrader_mcp_extended_server.py`, which
+    imports the upstream package's `FastMCP` server object unmodified and registers
+    additional tools alongside it (not a fork). See `docs/mcp_tool_classification.md` for why
+    each was missing and `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md` for the full history.
+  - `order_planning.build_order_plan()` and the full `run_grid_cycle`/`run_runner_cycle`
+    pipeline live-verified end-to-end against real market data AND real account data together
+    (`scripts/run_live_dry_run_pipeline.py`), via `DryRunExecutor` — no order has ever been
+    submitted anywhere, real or otherwise.
+  - **One open item**: the connected demo account currently has zero positions/pending orders,
+    so nothing has yet proven the duplicate-order/exposure-cap guards correctly *discriminate*
+    against real, populated, differently magic-tagged data — only that the real adapters
+    integrate without error against an empty account. Re-verify once real positions/orders
+    exist.
+- **Phase 6 (controlled demo execution): not started.** No code path has ever placed, modified,
+  or closed a real order — `OrderExecutor` implementations that could aren't wired to anything
+  reachable outside `DryRunExecutor` yet.
+- **Phase 7 (regression and failure testing): not started.**
+
+Full session-by-session detail for the "wire real adapters" step is in
+`docs/MCP_ADAPTER_WIRING_CHECKPOINT.md` — read it before continuing that work in a new session.
+
 ## Safety rules
 
 - Never place, modify, or close a real order. Ever, without explicit phase-gated approval.
