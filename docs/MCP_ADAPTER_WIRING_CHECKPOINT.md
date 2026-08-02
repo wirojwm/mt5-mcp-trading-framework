@@ -457,6 +457,38 @@ differently-magic-tagged position/order data, since none exists on this account 
 Re-verifying that once real positions/orders exist remains open (see "Exact next smallest
 task" below, same item as the magic-filtering step's still-open item 5).
 
+## Work completed this step (doc cleanup: AGENTS.md Progress + README.md Status/layout/safety)
+
+Not a code step — three small, user-requested doc updates to bring `AGENTS.md`/`README.md` in
+sync with everything the "wire real adapters" effort actually did, since both had drifted
+(`README.md`'s Status section still said "Phase 2 — minimal foundation", and its Directory
+layout still called most now-populated packages "intentionally empty skeletons"). Each was
+committed separately as requested:
+
+- `AGENTS.md` (commit `ae5cfb0`): added a `## Progress` section (right after `## Required
+  workflow`) recording Phases 0–5 done, the "wire real adapters" step done (with its one open
+  item -- duplicate/exposure guards not yet proven against populated real data -- called out
+  explicitly), and Phases 6/7 not started. Points to this checkpoint doc for full history.
+- `README.md` Status + Directory layout (commit `77ea371`): rewrote the Status section to match
+  `AGENTS.md`'s Progress section (shorter, user-facing framing); rewrote Directory layout to
+  describe what's actually in each package (`strategy/`, `trade_intent/`, `sizing/`, `risk/`,
+  `order_planning/`, `execution/`, `pipeline/` are populated -- only `signal/`, `state/`,
+  `reporting/` remain empty), added the previously-unlisted `features/` and `pipeline/`
+  packages, and added `scripts/`/`docs/` sections that didn't exist in the README before.
+- `README.md` Safety notes (commit `e94393f`): fixed a stale "only MOCK mode is exercised"
+  clause -- `DRY_RUN` mode against real adapters has since been live-verified repeatedly this
+  session. The core safety claim (`DryRunExecutor` is the only `OrderExecutor` wired to
+  anything reachable; no code path can place a real order) was already accurate and unchanged.
+
+```
+pytest -q                        -> 217 passed (unchanged -- docs-only changes)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No live MCP call was made this step. No trading/execution tool was called or referenced.
+`.env`/credentials were not read. Legacy project confirmed untouched before and after each of
+the three commits.
+
 ## Current errors
 
 None. Everything that exists compiles, imports, and passes its own tests. The gap is coverage
@@ -541,15 +573,28 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
    "Work completed this step (wire the real McpAccountReader into
    run_live_dry_run_pipeline.py)" above. Not yet committed.
 
+1. ~~Verify legacy repo still untouched, then commit `scripts/run_live_dry_run_pipeline.py`
+   plus this checkpoint's update as one commit~~ — **done** (commit `0702d4e`, landed before
+   this doc-cleanup step started).
+2. Item 5 above (now this list's item 2 below) remains the one open verification gap across
+   this entire "wire real adapters" effort: nothing has yet proven `magic`-based
+   duplicate-order/exposure discrimination against genuinely populated live data. Not blocking
+   further work, but should not be treated as fully closed until it happens.
+
 ## Exact next smallest task (after this step)
 
-1. Verify legacy repo still untouched, then commit `scripts/run_live_dry_run_pipeline.py` plus
-   this checkpoint's update as one commit — wait for explicit approval first (not yet requested
-   as of this writing).
-2. Item 5 above remains the one open verification gap across this entire "wire real adapters"
-   effort: nothing has yet proven `magic`-based duplicate-order/exposure discrimination against
-   genuinely populated live data. Not blocking further work, but should not be treated as fully
-   closed until it happens.
+1. ~~Update `AGENTS.md`/`README.md` to reflect everything the "wire real adapters" effort
+   completed~~ — **done this step**, three separate commits (`ae5cfb0`, `77ea371`, `e94393f`):
+   see "Work completed this step (doc cleanup)" above.
+2. **Still open, carried forward unchanged**: re-verify `get_positions_with_magic`/
+   `get_pending_orders_with_magic` (and, by extension, `run_grid_cycle`/`run_runner_cycle`'s
+   duplicate-order/exposure-cap guards) against real, populated position/order data once any
+   exists on the connected demo account (e.g. after a future controlled demo-execution step).
+   This is now the only open item left across the whole "wire real adapters" effort.
+3. Once item 2 is closed (or accepted as a permanent limitation given this account's actual
+   trading activity), the "wire real adapters" effort is fully done. Next would be Phase 6
+   (controlled demo execution) itself -- not started, and requiring its own separate, explicit
+   phase-gated approval per `AGENTS.md`'s workflow, not something to slide into from here.
 
 ## Exact prompt for continuing in a new Claude Code session
 
