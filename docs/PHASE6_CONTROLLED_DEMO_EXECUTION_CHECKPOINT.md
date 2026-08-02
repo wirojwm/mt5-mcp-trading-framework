@@ -139,21 +139,48 @@ Legacy project confirmed untouched before and after. No order was ever placed, m
 closed — the only outcome of this live call was a clean rejection and a safe parse failure,
 both now understood and (for the parse failure) fixed.
 
-**Not yet re-run after the fix.** Even with the fix, the *next* attempt would likely hit the
-*same* AutoTrading-disabled rejection again unless that terminal setting is changed first —
-that's outside this codebase's control. Re-running is the exact next step once AutoTrading is
-enabled (or to confirm the fix against a different kind of response/rejection), but needs its
-own explicit go-ahead, same as every live step this session.
+## Step 4 retry #1 — still AutoTrading-disabled, but the fix confirmed correct
+
+Re-ran the smoke test with explicit approval, before the user had changed anything in the
+terminal. Result: **same retcode `10027`**, but this time `parse_trade_response()` parsed it
+cleanly — correct `ExecutionResult(success=False, retcode=10027, ticket=None, verified=False,
+...)`, no exception, no state written, script exited safely printing "No ticket was returned --
+nothing to cancel." Confirms the list-shape fix from the previous attempt is correct on a
+second real response, independent of the AutoTrading question. Legacy project confirmed
+untouched.
+
+## Step 4 retry #2 — SUCCESS: first order this project has ever placed and closed for real
+
+User confirmed, before this retry: the terminal's AutoTrading toolbar button is enabled, Tools
+→ Options → Expert Advisors → "Allow algorithmic trading" is checked, and this is the same
+ThinkMarkets Demo terminal `MT5_PATH` points to. Explicit instructions for this specific
+retry: demo account only, minimum lot, one attempt, no automatic retry, report the exact
+retcode and MT5 state, stop immediately after. All honored.
+
+**Submit**: retcode `10009` (`TRADE_RETCODE_DONE`). Real order placed: ticket `171604513`,
+BTCUSD LIMIT BUY, `0.01` lots (live `volume_min`) @ `57073.69` (~10% below the live bid at the
+time, chosen so it could never fill during the script's runtime). `success=True`,
+`verified=True` — confirmed present via a fresh `get_pending_orders_with_magic` read
+immediately after. MT5 itself reported `magic=0` on the real ticket, exactly as documented
+(gap 7); the local `state/order_state.json` record correctly captured the *intended*
+`magic=79999` and, since `79999` isn't in `strategy_registry.py`'s known map, correctly fell
+back to the loud `strategy='unknown_magic_79999'` label rather than guessing.
+
+**Cancel**: retcode `10009` (`TRADE_RETCODE_DONE`). `success=True`, `verified=True` —
+confirmed absent via a fresh live read immediately after. Local record transitioned
+`OPEN → CANCELLED` with `closed_at`/`closed_reason` populated.
+
+No position or pending order was left on the account. This closes out the one previously-open
+item from Steps 0–3 ("the success/verification/state-recording path has never been observed
+live") — it now has. Legacy project confirmed untouched before and after. No code was changed
+by this retry; `var/order_state.json` (gitignored) is the only file that changed on disk.
 
 ## Incomplete / explicitly deferred — do NOT treat as done
 
-- **No order has ever been placed, and `McpOrderExecutor`'s success path (retcode `10009`,
-  a genuinely accepted order) has never been observed live** — Step 4's one live attempt hit a
-  clean rejection (AutoTrading disabled in the terminal) before ever reaching that path. The
-  parse-failure branch and the rejection-handling branch are now both live-proven; the
-  success/verification/state-recording branch is still only unit-tested. Re-running Step 4
-  (after AutoTrading is enabled in the terminal) is what would prove that branch, and needs its
-  own explicit approval — per this project's established practice all session, never auto-run.
+- ~~No order has ever been placed, and `McpOrderExecutor`'s success path has never been
+  observed live~~ — **resolved**: Step 4 retry #2 placed and cancelled a real order (ticket
+  `171604513`), retcode `10009` both ways, `verified=True` both ways. Every branch of
+  `submit()`/`cancel()` for LIMIT orders is now live-proven, not just unit-tested.
 - `close_position()` raises `NotImplementedError` unconditionally — Step 5, needs an actual
   filled position (real spread cost, first time equity moves), its own approval point.
 - `submit()` raises `NotImplementedError` for anything other than `order_type="LIMIT"` — MARKET
@@ -181,21 +208,24 @@ own explicit go-ahead, same as every live step this session.
 - Legacy project (`../RealTrade/2509_17_mix_supercross`) must remain untouched — re-verify
   `git status` there is clean before and after any further work.
 - No trading tool may be called without explicit, separate user approval for that specific live
-  step — confirmed not done yet.
+  step — honored for every call so far, including Step 4's three live attempts (place/cancel
+  both eventually succeeded, with explicit approval each time, ending in "one attempt, no
+  automatic retry" for the successful one specifically).
 
 ## Exact next smallest task
 
-1. Verify legacy repo still untouched, then commit everything from this checkpoint (Steps 0–3,
-   the Step 4 live attempt, and the `metatrader_retcodes.py` fix + its tests) as one commit —
-   wait for explicit approval first (not yet requested as of this writing).
-2. Update `AGENTS.md`'s Progress section to reflect Phase 6's actual state (Steps 0–3 done,
-   Step 4 attempted live and safely rejected — AutoTrading disabled in the terminal — root
-   cause fixed, success path still unproven), once the commit above lands.
-3. **Human action needed, not a coding task**: enable "AutoTrading" in the connected MT5
-   terminal (the toolbar toggle in the desktop application) before a real order can be placed
-   at all. Nothing in this codebase can do this.
-4. Once AutoTrading is enabled: propose (don't auto-run) re-running
-   `scripts/run_demo_execution_smoke_test.py` to prove the success/verification/state-recording
-   path for real — the one branch of `McpOrderExecutor` still only unit-tested, not
-   live-proven. Wait for explicit approval before running it, exactly like every other live
-   step this session.
+1. ~~Propose (don't auto-run) re-running `scripts/run_demo_execution_smoke_test.py` to prove
+   the success/verification/state-recording path for real~~ — **done**: Step 4 retry #2
+   succeeded live (ticket `171604513`, placed and cancelled cleanly). See "Step 4 retry #2"
+   above.
+2. Verify legacy repo still untouched, then commit everything from this checkpoint (Steps 0–3,
+   all three Step 4 live attempts and their results, the `metatrader_retcodes.py` fix and its
+   tests) as one commit — wait for explicit approval first (not yet requested as of this
+   writing). Note: `var/order_state.json` (real ticket data from these live runs) is
+   gitignored and must never be committed.
+3. Update `AGENTS.md`'s Progress section to reflect Phase 6's actual state (Steps 0–3 done,
+   Step 4 fully live-proven: LIMIT submit/cancel now confirmed working end-to-end against a
+   real demo account), once the commit above lands.
+4. Only after that: consider Step 5 (`close_position()`, needs an actual filled position) or
+   Step 6 (MARKET orders + mandatory SL/TP follow-up) — each is its own, separately-approved
+   step, not something to start without being asked, per this project's established practice.
