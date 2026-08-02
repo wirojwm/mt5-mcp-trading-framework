@@ -89,11 +89,38 @@ pytest tests/test_architecture.py -q -> 13 passed
 
 ## Actual MCP connection status
 
-Not touched this session — no live call was made. The `mt5-metatrader` server registered with
-Claude Code (local scope) in an earlier session should still be connected; not re-verified
-here. **No live verification of the new adapter code has been performed.** All Phase 3 tool
-enumeration/classification data this step relies on was already captured and is quoted
-verbatim in `docs/mcp_tool_classification.md` and in the new source files' docstrings.
+**Live-verified this step.** Added `scripts/verify_mcp_adapters_readonly.py` (mirrors
+`scripts/phase3_readonly_verification.py`'s methodology — same wrapper launch, same
+never-touch-`.env` discipline — but goes through `McpMarketDataSource`/`McpAccountReader`
+themselves instead of a raw `ClientSession`) and ran it against the live server with explicit
+user approval. Results:
+
+- Connected successfully via the same wrapper Claude Code uses.
+- **Live proof that trading is blocked**: `client.call_tool("place_market_order", ...)` was
+  refused by `TradingDisabledError` before any RPC was sent to the server — confirmed no
+  network call for that tool happened at all (raised synchronously inside
+  `McpClient.call_tool()`, before the `await session.call_tool(...)` line).
+- `get_connection_state()` → `connected=True`.
+- `get_account_state()` → real balance/equity/margin_free returned; `trade_mode='REAL'`. This
+  is the account_type-inversion bug (gap 3) manifesting exactly as documented — not a new bug.
+- `require_demo_account()` → raised `NotDemoAccountError` as a direct consequence of the above.
+  Expected and consistent with this project's explicit choice not to correct the inversion;
+  the real demo-safety boundary (`MT5_ACCOUNT_KIND=DEMO` in
+  `scripts/run_metatrader_mcp_stdio.py`) is what actually gated this connection, independent
+  of this field.
+- `get_bars("BTCUSD", "M1", count=5)` → 5 real candles, correctly parsed and sorted
+  oldest-to-newest.
+- `get_tick("BTCUSD")` → real bid/ask/time, correctly parsed.
+- `get_symbol_info("BTCUSD")` → raised `UnsupportedByServerError` as designed (gap 1).
+- `get_positions()` / `get_orders()` → both empty (no open positions/pending orders on this
+  account), parsed without error.
+- `get_positions(magic=1)` → raised `MagicFilteringUnavailableError` as designed (gap 2).
+- No trading/order-submitting tool was ever sent over the wire, confirmed by the script's own
+  final line and by `ToolRegistry`'s live enforcement above.
+
+All Phase 3 tool enumeration/classification data this step relies on was already captured and
+is quoted verbatim in `docs/mcp_tool_classification.md` and in the new source files'
+docstrings.
 
 ## Tools discovered and classification
 
@@ -134,9 +161,6 @@ user, and handled per their explicit choices:
   lifecycle is still exercised only by import-checking, not a real or stubbed MCP session.
   Not in scope for the step that just completed — see "Exact next smallest task" below if this
   becomes needed.
-- **No live verification run** of the new adapter against the real server has been performed
-  yet (deliberately deferred — the user has asked to keep this tightly scoped and not
-  auto-advance to live calls; explicit approval required first, see below).
 - Nothing has been committed yet this step (see git status below) — do not assume any of this
   work is saved until a commit is made.
 
@@ -173,9 +197,20 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
    (goal, what was preserved/fixed/found, test results). **Not done — awaiting explicit
    approval, per this step's instructions to stop before any live verification; commit itself
    was not requested either.**
-5. Only after that commit: propose (don't auto-run) a live, read-only verification call
-   against the real server to prove `McpMarketDataSource`/`McpAccountReader` work end-to-end,
-   mirroring the Phase 3 methodology — wait for explicit approval first.
+5. ~~Only after that commit: propose (don't auto-run) a live, read-only verification call
+   against the real server~~ — **done this step**, with explicit approval: see "Actual MCP
+   connection status" above. `scripts/verify_mcp_adapters_readonly.py` is not yet committed.
+
+## Exact next smallest task (after this step)
+
+1. Verify legacy repo still untouched, then commit `scripts/verify_mcp_adapters_readonly.py`
+   plus this checkpoint's live-verification update as one commit — wait for explicit approval
+   first (not yet requested as of this writing).
+2. With the real adapters now unit-tested and live-verified, the next open item is the
+   unresolved `SymbolInfo` gap (gap 1): `order_planning.build_order_plan()` still cannot run
+   against real `SymbolInfo` from this server. Decide, with the user, how to source it (a
+   different MCP server, a supplementary read-only tool, a hardcoded per-symbol config, etc.)
+   before wiring a real end-to-end dry-run against the live server.
 
 ## Exact prompt for continuing in a new Claude Code session
 
