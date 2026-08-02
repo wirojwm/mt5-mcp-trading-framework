@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 """
 Live dry-run: proves order_planning.build_order_plan() runs correctly against real, live
-SymbolInfo/Tick/MarketBar data -- not mock/fabricated values -- by running one full
-run_grid_cycle() and run_runner_cycle() pass through McpMarketDataSource, with explicit user
-approval. No order is ever submitted anywhere: DryRunExecutor never calls MCP or MT5 at all
-(see execution/dry_run.py), and the default ToolRegistry (trading_enabled=False) additionally
-refuses any TRADING-classified tool regardless.
+SymbolInfo/Tick/MarketBar/position/order data -- not mock/fabricated values -- by running one
+full run_grid_cycle() and run_runner_cycle() pass through McpMarketDataSource AND
+McpAccountReader together, with explicit user approval. No order is ever submitted anywhere:
+DryRunExecutor never calls MCP or MT5 at all (see execution/dry_run.py), and the default
+ToolRegistry (trading_enabled=False) additionally refuses any TRADING-classified tool
+regardless.
 
-SCOPE NOTE -- why the account side is still mocked, not real, even though the gap that caused
-this is now fixed: at the time this script was written, run_grid_cycle/run_runner_cycle's
-calls to account.get_positions(symbol=symbol, magic=magic)/get_orders(...) with a real magic
-number couldn't run against a real McpAccountReader -- it raised MagicFilteringUnavailableError
-whenever magic was not None, because metatrader-mcp-server exposed no magic number at all.
-That gap is now resolved (see mt5_adapter/mcp_account.py's module docstring and
-scripts/metatrader_mcp_extended_server.py: two locally-added tools now provide real magic
-numbers, and McpAccountReader genuinely filters by magic instead of raising). This script has
-NOT been updated to use the real McpAccountReader yet -- swapping MockAccountReader for it
-here is a natural, still-open follow-up, not done as part of resolving the magic-filtering gap
-itself. MockAccountReader with zero positions/orders remains in place for now.
+HISTORY: earlier versions of this script used MockAccountReader for the account side, because
+run_grid_cycle/run_runner_cycle's account.get_positions(symbol=symbol, magic=magic)/
+get_orders(...) calls couldn't run against a real McpAccountReader -- it raised
+MagicFilteringUnavailableError whenever magic was not None, since metatrader-mcp-server
+exposed no magic number at all. That gap is now resolved (see mt5_adapter/mcp_account.py's
+module docstring and scripts/metatrader_mcp_extended_server.py: two locally-added tools
+provide real magic numbers, and McpAccountReader genuinely filters by magic instead of
+raising), so this script now uses the real McpAccountReader for a true end-to-end run.
 
 SAFETY:
 - Connects with the default ToolRegistry (trading_enabled=False) -- see
   metatrader_tools.build_metatrader_tool_registry().
-- market_data is the only real adapter used. account is MockAccountReader (zero positions/
-  orders, so every exposure/duplicate check sees a clean slate). executor is DryRunExecutor,
-  which never calls MCP or MT5 at all -- see execution/dry_run.py.
+- market_data and account are both real adapters now; executor is DryRunExecutor, which never
+  calls MCP or MT5 at all -- see execution/dry_run.py. No OrderExecutor other than
+  DryRunExecutor is ever constructed.
 - Additionally demonstrates, live, that a TRADING-classified tool is refused before any RPC is
   sent -- same check as scripts/verify_mcp_adapters_readonly.py.
+- require_demo_account() is checked informationally (not a hard gate -- see its print branch):
+  metatrader-mcp-server's account_type field is known-inverted (gap 3 in
+  docs/mcp_tool_classification.md), so this would otherwise always refuse to run on a
+  genuinely demo account. The real demo-safety boundary is MT5_ACCOUNT_KIND=DEMO in
+  scripts/run_metatrader_mcp_stdio.py, independent of anything read over MCP -- unaffected by
+  this being informational only, and DryRunExecutor makes an order-submission mistake here
+  impossible regardless.
 - Never reads, logs, or prints .env or any credential.
 """
 
@@ -36,13 +41,13 @@ import asyncio
 import sys
 from pathlib import Path
 
-from mt5_mcp_trading.domain.models import AccountState
 from mt5_mcp_trading.execution.dry_run import DryRunExecutor
 from mt5_mcp_trading.mcp_adapter.client import McpClient
 from mt5_mcp_trading.mcp_adapter.metatrader_tools import build_metatrader_tool_registry
 from mt5_mcp_trading.mcp_adapter.tool_registry import TradingDisabledError
-from mt5_mcp_trading.mocks.mock_account_and_executor import MockAccountReader
+from mt5_mcp_trading.mt5_adapter.mcp_account import McpAccountReader
 from mt5_mcp_trading.mt5_adapter.mcp_market_data import McpMarketDataSource
+from mt5_mcp_trading.mt5_adapter.safety import NotDemoAccountError, require_demo_account
 from mt5_mcp_trading.pipeline.grid_cycle import run_grid_cycle
 from mt5_mcp_trading.pipeline.runner_cycle import run_runner_cycle
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps
@@ -59,14 +64,6 @@ BARS_COUNT = 100
 GRID_MAGIC = 71101
 RUNNER_MAGIC = 72101
 CAPS = ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)
-
-
-def _mock_account() -> MockAccountReader:
-    # Stands in for the account side -- see this module's SCOPE NOTE.
-    return MockAccountReader(
-        account_state=AccountState(balance=0.0, equity=0.0, margin_free=0.0, trade_mode="DEMO"),
-        positions=[], orders=[],
-    )
 
 
 async def _prove_trading_is_blocked(client: McpClient) -> None:
@@ -90,10 +87,19 @@ async def main() -> None:
         await _prove_trading_is_blocked(client)
 
         market_data = McpMarketDataSource(client)
+        account = McpAccountReader(client)
 
-        print(f"\n=== run_grid_cycle({TEST_SYMBOL!r}) against real SymbolInfo/tick/bars ===")
+        print("\n=== require_demo_account() (informational -- see this module's SAFETY note) ===")
+        try:
+            await require_demo_account(account)
+            print("PASSED: account reports trade_mode=DEMO")
+        except NotDemoAccountError as exc:
+            print(f"Not treated as a hard failure here: {exc}")
+
+        print(f"\n=== run_grid_cycle({TEST_SYMBOL!r}) against real SymbolInfo/tick/bars/"
+              f"positions/orders ===")
         grid_results = await run_grid_cycle(
-            market_data=market_data, account=_mock_account(), executor=DryRunExecutor(),
+            market_data=market_data, account=account, executor=DryRunExecutor(),
             symbol=TEST_SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
             grid_config=GridStrategyConfig(),
             money_config=MoneyConfig(),  # default: fixed, 0.01 lots
@@ -107,9 +113,10 @@ async def main() -> None:
             print("(nothing submitted -- rejected by a risk guard, or a LIMIT price "
                   "couldn't be normalized far enough from the market)")
 
-        print(f"\n=== run_runner_cycle({TEST_SYMBOL!r}) against real SymbolInfo/tick/bars ===")
+        print(f"\n=== run_runner_cycle({TEST_SYMBOL!r}) against real SymbolInfo/tick/bars/"
+              f"positions/orders ===")
         runner_result = await run_runner_cycle(
-            market_data=market_data, account=_mock_account(), executor=DryRunExecutor(),
+            market_data=market_data, account=account, executor=DryRunExecutor(),
             symbol=TEST_SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
             runner_config=RunnerStrategyConfig(),
             money_config=MoneyConfig(),  # default: fixed, 0.01 lots

@@ -407,6 +407,56 @@ All other checks (trading blocked pre-RPC, connection state, account state, `get
 `get_tick`, `get_symbol_info`) repeated cleanly, consistent with prior live-verification
 passes. No trading/order-submitting tool was ever sent over the wire.
 
+## Work completed this step (wire the real McpAccountReader into run_live_dry_run_pipeline.py)
+
+Swapped `MockAccountReader` for the real `McpAccountReader` in
+`scripts/run_live_dry_run_pipeline.py` — the follow-up flagged at the end of the magic-number
+filtering step, now that `McpAccountReader.get_positions()`/`get_orders()` genuinely support
+`magic`-filtered calls instead of raising. This is the first time this pipeline has run with
+**real market data AND real account data together**, not one real + one mocked.
+
+- `market_data`, `account` both constructed once from the same live `client` and reused across
+  both `run_grid_cycle` and `run_runner_cycle` calls (previously `_mock_account()` built a
+  fresh `MockAccountReader` per call; a single real `McpAccountReader` has no per-call state to
+  reset, so one instance is correct and simpler).
+- Removed the now-inapplicable `SCOPE NOTE` docstring (it explained why the account side was
+  mocked; that reason no longer applies) and replaced it with a brief `HISTORY` note plus an
+  expanded `SAFETY` section.
+- Added an informational (non-blocking) `require_demo_account()` check, matching the pattern
+  already used in `scripts/verify_mcp_adapters_readonly.py` — deliberately NOT a hard gate,
+  since the known `account_type` inversion bug (gap 3) means this would otherwise always
+  refuse to run against a genuinely demo account. `DryRunExecutor` makes an actual
+  order-submission mistake impossible regardless of this check's outcome.
+- No changes needed in `pipeline/`, `order_planning/`, or any adapter code — `McpAccountReader`
+  already satisfied the `AccountReader` protocol `run_grid_cycle`/`run_runner_cycle` expect.
+
+```
+pytest -q                        -> 217 passed (unchanged -- no source under src/ changed)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Live-verified**, with explicit user approval. Results:
+
+- Trading blocked pre-RPC, confirmed again.
+- `require_demo_account()` refused (informational, not fatal) — same known `account_type`
+  inversion as every previous live run on this account; expected, not a new issue.
+- `run_grid_cycle('BTCUSD')` → two `ExecutionResult`s (BUY LIMIT @ 63029.16, SELL LIMIT @
+  63359.14, both 0.01 lots) — **neither leg was rejected by the real duplicate-order/exposure
+  checks**, and no `MagicFilteringUnavailableError` was raised anywhere in the call chain.
+- `run_runner_cycle('BTCUSD')` → one `ExecutionResult` (BUY MARKET @ 63358.99, 0.01 lots).
+- All three: `verification_details='MockOrderExecutor - no real order was placed'` — every plan
+  still went to `DryRunExecutor` only. No order was ever submitted anywhere, and no trading
+  tool was ever sent over the wire.
+
+**Same honesty caveat as the magic-filtering step's live check, still applies**: this account
+currently has zero real positions/pending orders, so this run proves the real
+`McpAccountReader` integrates correctly end-to-end with `run_grid_cycle`/`run_runner_cycle`'s
+existing risk-guard logic (no crash, no raise, correct empty-data handling) — it does NOT yet
+prove the duplicate-order/exposure-cap guards correctly *discriminate* using real, populated,
+differently-magic-tagged position/order data, since none exists on this account right now.
+Re-verifying that once real positions/orders exist remains open (see "Exact next smallest
+task" below, same item as the magic-filtering step's still-open item 5).
+
 ## Current errors
 
 None. Everything that exists compiles, imports, and passes its own tests. The gap is coverage
@@ -478,16 +528,28 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
    explicit approval: see "Actual MCP connection status (magic-filtering live verification)"
    above. Only a **partial** pass — the connected account has zero positions/orders, so
    `magic`-column parsing from real populated data remains unconfirmed.
-4. Verify legacy repo still untouched, then commit this whole step as one commit — wait for
-   explicit approval first (not yet requested as of this writing).
-5. Re-verify `get_positions_with_magic`/`get_pending_orders_with_magic` against real, populated
-   position/order data once any exists on the connected demo account (e.g. after a future
-   controlled demo-execution step), to confirm the `magic`-column parsing actually works
-   against a genuine live row, not just an empty one.
-6. Only after that: swap `MockAccountReader` for the real `McpAccountReader` in
-   `scripts/run_live_dry_run_pipeline.py` (the `SCOPE NOTE` there already documents this as the
-   natural next step) for a true end-to-end run — real market data AND real account data
-   together — through `run_grid_cycle`/`run_runner_cycle`. Not started yet.
+4. ~~Verify legacy repo still untouched, then commit this whole step as one commit~~ — **done**
+   (commit `548844e`, landed before this "wire the real McpAccountReader into
+   run_live_dry_run_pipeline.py" step started).
+5. **Still open**: re-verify `get_positions_with_magic`/`get_pending_orders_with_magic` (and,
+   by extension, `run_grid_cycle`/`run_runner_cycle`'s duplicate-order/exposure-cap guards)
+   against real, populated position/order data once any exists on the connected demo account
+   (e.g. after a future controlled demo-execution step) — every live check so far, including
+   this step's, has only exercised the empty-account case.
+6. ~~Swap `MockAccountReader` for the real `McpAccountReader` in
+   `scripts/run_live_dry_run_pipeline.py`~~ — **done this step**, with explicit approval: see
+   "Work completed this step (wire the real McpAccountReader into
+   run_live_dry_run_pipeline.py)" above. Not yet committed.
+
+## Exact next smallest task (after this step)
+
+1. Verify legacy repo still untouched, then commit `scripts/run_live_dry_run_pipeline.py` plus
+   this checkpoint's update as one commit — wait for explicit approval first (not yet requested
+   as of this writing).
+2. Item 5 above remains the one open verification gap across this entire "wire real adapters"
+   effort: nothing has yet proven `magic`-based duplicate-order/exposure discrimination against
+   genuinely populated live data. Not blocking further work, but should not be treated as fully
+   closed until it happens.
 
 ## Exact prompt for continuing in a new Claude Code session
 
