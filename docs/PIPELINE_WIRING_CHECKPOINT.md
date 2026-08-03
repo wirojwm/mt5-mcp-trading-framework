@@ -218,15 +218,40 @@ pipeline-wiring script (not the smoke test's disposable, self-cleaning pattern).
 **Files changed this step**: this checkpoint doc only (no code changes — this step only ran the
 already-committed script).
 
+## Step 8 — second real GRID submission via pipeline_cycle.py
+
+`scripts/run_demo_execution_pipeline_cycle.py` run live again with `STRATEGY="GRID"`
+(`magic=71101`), with ticket `171621825` (Step 7's open runner position) still live on the
+account at the time — no conflict, since grid/runner use disjoint magics and grid's guards are
+scoped per-magic. **Result: PASSED, both sides submitted and verified, left open by design.**
+
+- Ticket `171621926`: BUY_LIMIT BTCUSD 0.01 lot @ 62535.88 — retcode `10009` (done),
+  `verified=True` (confirmed present via `get_pending_orders_with_magic`, attempt 1/3).
+- Ticket `171621927`: SELL_LIMIT BTCUSD 0.01 lot @ 62562.22 — retcode `10009` (done),
+  `verified=True`, same confirmation.
+- Both `sl=0.0, tp=0.0` — the same known, documented, unfixed grid gap (LIMIT orders aren't
+  hard-validated for SL/TP, so this doesn't block submission; see "Remaining risks").
+- Both local records: `strategy='grid'`, `status='OPEN'`.
+
+Per this script's designed behavior, no cleanup was performed — asked the user explicitly what
+to do with both. **Decision: leave them open**, consistent with Step 7's decision for the
+runner position — both pending orders stay live on the demo account, `magic=71101`, to be
+picked up by a later cycle/reconciliation rather than closed now.
+
+**Files changed this step**: this checkpoint doc only (no code changes — this step only ran the
+already-committed script).
+
 ## Remaining risks / not done
 
 - `run_grid_cycle()`'s LIMIT orders still carry `sl=0.0, tp=0.0` today (same underlying gap as
   Step 4, never hard-validated for LIMIT so never blocked) — worth a decision on whether grid's
   pending orders are supposed to be protected at placement too, separately from Step 5's fix.
-- **Ticket `171621825` (Step 7) is intentionally OPEN on the real account, `magic=72101`,
-  `strategy='runner'`** — user chose to leave it open rather than close it, to be picked up by a
-  later cycle/reconciliation. Anyone continuing this account's management needs to know this
-  position exists and is deliberate, not a leftover mistake.
+  Now demonstrated twice live (Step 2, Step 8) without ever being blocked.
+- **Account currently has 3 live, intentionally-open items from this effort**: ticket
+  `171621825` (SELL position, `magic=72101`, `strategy='runner'`, Step 7) and tickets
+  `171621926`/`171621927` (BUY_LIMIT/SELL_LIMIT pending orders, `magic=71101`,
+  `strategy='grid'`, Step 8). All left open by explicit design/decision, not leftover mistakes —
+  anyone continuing this account's management needs to know they exist.
 - Still no internal scheduler/loop — every cycle requires a separate, manual, human-approved
   invocation. Whether/when to build a bounded autonomous loop (the option not chosen when this
   effort started) is undecided.
@@ -238,7 +263,7 @@ already-committed script).
 
 ## Exact next smallest task
 
-Not started — ask the user whether to run another cycle (GRID or RUNNER) that would now also
-need to account for ticket `171621825` being open, address the grid LIMIT-orders-unprotected
+Not started — ask the user whether to run another cycle (GRID or RUNNER, now with 3 open items
+to account for), address the grid LIMIT-orders-unprotected
 question, design the bounded-autonomous-loop option, or something else next. Stopping here per
 this project's standard "explain, implement, report, stop for approval" workflow.

@@ -197,9 +197,13 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   (`scripts/run_demo_execution_runner_sltp_smoke_test.py`, magic=79999, ticket `171621792`,
   SELL, retcode 10009 both submit and close, independent live re-read confirmed sl/tp matched
   exactly, account left clean), then the actual, non-cleaning pipeline-wiring script itself
-  (`STRATEGY="RUNNER"`, magic=72101, ticket `171621825`, SELL, retcode 10009, verified). The
-  second run's position is, by that script's design, left open on the account — not yet
-  resolved, tracked as a remaining risk. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  (`STRATEGY="RUNNER"`, magic=72101, ticket `171621825`, SELL, retcode 10009, verified). User
+  chose to leave that position open (unlike the earlier GRID orders, which were cancelled) — to
+  be picked up by a later cycle. A second live `STRATEGY="GRID"` run followed (ticket
+  `171621825` still open at the time, no conflict — disjoint magics): both sides submitted and
+  verified again, tickets `171621926` (BUY_LIMIT)/`171621927` (SELL_LIMIT), retcode 10009 each,
+  both left open by the same no-cleanup design. Account currently holds 3 intentionally-open
+  live items from this effort. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

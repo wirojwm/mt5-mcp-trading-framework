@@ -81,7 +81,7 @@ WRAPPER = PROJECT_ROOT / "scripts" / "run_metatrader_mcp_stdio.py"
 PYTHON = Path(sys.executable)
 STATE_PATH = PROJECT_ROOT / "var" / "order_state"  # directory: one <ticket>.json file per ticket
 
-STRATEGY = "RUNNER"  # "GRID" or "RUNNER" -- flip to choose which this run exercises, never both
+STRATEGY = "GRID"  # "GRID" or "RUNNER" -- flip to choose which this run exercises, never both
 
 SYMBOL = "BTCUSD"
 TIMEFRAME = "M1"
