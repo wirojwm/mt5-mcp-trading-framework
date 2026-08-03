@@ -82,6 +82,54 @@ def test_record_closed_transitions_status(tmp_path: Path) -> None:
     assert record.status == "CLOSED"
 
 
+def test_record_submission_with_open_unprotected_status(tmp_path: Path) -> None:
+    # Phase 6 Step 6: MARKET submissions pass status="OPEN_UNPROTECTED" explicitly -- proves
+    # the parameter round-trips and that OPEN_UNPROTECTED still counts as "open" for
+    # reconciliation (see all_open()'s docstring on why: an unprotected position must remain
+    # locally known, or it would reconcile as unknown_real and force the whole executor into
+    # MANAGE_ONLY over a single ticket).
+    store = StateStore(tmp_path / "order_state.json")
+    store.record_submission(
+        ticket=555777, strategy="grid", magic=71101, comment="grid_buy", symbol="BTCUSD",
+        side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
+        requested_sl=62000.0, requested_tp=64000.0, requested_deviation=150,
+        requested_filling_mode=None, requested_expiry=None, retcode=10009,
+        executed_price=63005.0, executed_volume=0.01, broker_comment="Request executed",
+        submitted_at=_now(), status="OPEN_UNPROTECTED",
+    )
+
+    record = store.lookup(555777)
+    assert record is not None
+    assert record.status == "OPEN_UNPROTECTED"
+    assert store.all_open() == (record,)  # counted as open, not excluded
+
+
+def test_mark_sl_tp_attached_transitions_open_unprotected_to_open(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    store.record_submission(
+        ticket=555777, strategy="grid", magic=71101, comment="grid_buy", symbol="BTCUSD",
+        side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
+        requested_sl=62000.0, requested_tp=64000.0, requested_deviation=150,
+        requested_filling_mode=None, requested_expiry=None, retcode=10009,
+        executed_price=63005.0, executed_volume=0.01, broker_comment="Request executed",
+        submitted_at=_now(), status="OPEN_UNPROTECTED",
+    )
+
+    store.mark_sl_tp_attached(555777)
+
+    record = store.lookup(555777)
+    assert record is not None
+    assert record.status == "OPEN"
+    assert record.closed_at is None  # unlike record_cancelled/record_closed -- not a closure
+    assert record.closed_reason is None
+
+
+def test_mark_sl_tp_attached_on_unknown_ticket_logs_and_does_not_raise(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    store.mark_sl_tp_attached(999999)  # must not raise
+    assert store.lookup(999999) is None
+
+
 def test_record_submission_defaults_to_system_owned_origin(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state.json")
     _submit(store)

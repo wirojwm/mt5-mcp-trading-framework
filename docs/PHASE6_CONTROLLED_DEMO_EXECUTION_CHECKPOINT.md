@@ -389,17 +389,92 @@ ever been placed live; `_submit_market()` has never made a real MCP call.
 - Pipeline wiring (`run_grid_cycle`/`run_runner_cycle`) remains explicitly out of scope for
   this whole phase's current plan, unaffected by this step.
 
-**Exact next step**: build a dedicated live smoke-test script (minimum lot, explicit expected
-values, one attempt, same pattern as `run_demo_execution_close_smoke_test.py`), then request
-separate, explicit approval before running it. No live call, and no such script, exists yet.
+## Step 6 — live smoke-test script built, not yet run
+
+`scripts/run_demo_execution_market_smoke_test.py` added, mirroring
+`run_demo_execution_close_smoke_test.py`'s pattern. Syntax- and import-checked (module-level
+import succeeds under Python 3.12, `main()` never invoked) -- **no live call has been made**.
+
+What it does, in order:
+1. Constructs `Settings` with `mode=DEMO_EXECUTION` explicitly in code (same reasoning as every
+   prior smoke test — doesn't depend on `.env`'s `MT5_MCP_MODE`).
+2. **Abort check**: reads live positions for `SYMBOL="BTCUSD"` filtered to
+   `magic=SMOKE_TEST_MAGIC (79999)` — if any already exist (e.g. an `OPEN_UNPROTECTED` leftover
+   from a previous incomplete run), aborts before submitting anything rather than compounding
+   exposure.
+3. Reads a live tick and `SymbolInfo`, computes SL/TP as
+   `tick.ask ± (stops_level + freeze_level + 2) * point * 10` (the same minimum-gap formula
+   `order_planning/limit_price.py` uses for LIMIT prices, reused here with a 10x safety
+   multiplier since this account's exact SL/TP-rejection boundary has never been observed
+   live — chosen to clear it comfortably rather than spend this run's one attempt discovering
+   the edge). Volume is the symbol's live `volume_min`.
+4. Exactly one `executor.submit(order_plan)` call — internally exactly one
+   `place_market_order` call, then (only if that succeeds) exactly one `modify_position` call,
+   per `_submit_market()`'s existing no-retry design.
+5. If `SlTpAttachmentFailedError` is raised: reports ticket/reason/retcode, **does not attempt
+   any cleanup**, and stops — per the approved design, recovery from a failed attach requires
+   its own separate, explicitly-approved action, not automated remediation in the same run.
+6. If `submit()` returns `success=False` (place itself rejected): nothing was opened, nothing
+   to clean up, stops.
+7. Only on full success (position opened AND SL/TP confirmed attached via a fresh live read):
+   prints the result, then performs this script's own designed cleanup — one
+   `close_position()` call, mirroring how Step 4 always cancels its own successfully-placed
+   test order. Prints local state and live positions before and after the close.
+
+**New tests added this session** (state-layer, direct — the executor-level MARKET tests were
+already added in the prior "Step 6 — planning, then implementation" session): `mark_sl_tp_attached()`
+transitions `OPEN_UNPROTECTED` → `OPEN` without touching `closed_at`/`closed_reason`;
+`record_submission(status="OPEN_UNPROTECTED")` round-trips and is included in `all_open()`;
+`mark_sl_tp_attached()` on an unknown ticket logs and does not raise (mirrors the existing
+`record_cancelled`/`record_closed` unknown-ticket test).
+
+```
+pytest -q                        -> 302 passed (299 previously + 3 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this session**: `scripts/run_demo_execution_market_smoke_test.py` (new),
+`tests/unit/test_state_store.py` (+3), this checkpoint doc.
+
+**Remaining risks** (in addition to the three logged in the prior session's entry above, all
+still open, none newly resolved by this session — no live call was made):
+- The `GAP_SAFETY_MULTIPLIER = 10` choice is a reasoned guess, not yet validated against a real
+  broker response for this account/symbol. If the live attempt's `modify_position` still gets
+  rejected (`10016`), that's expected-possible per this step's design (see the prior session's
+  entry) and will surface exactly as `SlTpAttachmentFailedError` — not a script bug, but worth
+  knowing before running: it means the position stays open and unprotected until a separately
+  approved recovery action.
+- The abort-on-existing-magic check (step 2 above) only looks at `SYMBOL="BTCUSD"` with
+  `magic=SMOKE_TEST_MAGIC` — it would not catch a leftover from a *different* symbol if this
+  script were ever repurposed. Not a concern for this specific run, since BTCUSD is the only
+  symbol every prior Phase 6 live step has used.
+
+**Exact live-test procedure** (once approved):
+1. Confirm the MT5 terminal's AutoTrading toggle is enabled (same operator prerequisite Step 4
+   hit on its first live attempt — retcode `10027` otherwise, unrelated to this project's code).
+2. Run `.venv/Scripts/python.exe scripts/run_demo_execution_market_smoke_test.py` once.
+3. Read the full output: live tick/symbol_info, computed order plan, `ExecutionResult` for the
+   submit, and — only on success — the close `ExecutionResult` and before/after position counts.
+4. If `SlTpAttachmentFailedError` was raised: **stop, report the ticket, and treat it as needing
+   its own separate recovery approval** — do not re-run this script or attempt any close/retry
+   without a fresh, explicit go-ahead for that specific ticket.
+5. If it succeeded end-to-end: confirm zero positions remain for `magic=SMOKE_TEST_MAGIC` on
+   BTCUSD (the script's own final printout already checks this) before considering the step done.
+6. Report retcode/ticket/verified for both the submit and the close, plus local state
+   before/after, back in this checkpoint (mirroring how Steps 4-5's live results are recorded
+   above), then request approval before committing (this session has not committed the script
+   yet — see git status at time of writing).
 
 **Continuation prompt for the next session**:
-> Continue Phase 6 Step 6. Planning and implementation (6a-6d) are done and committed — read
-> this checkpoint's "Step 6" section and `mt5_adapter/mcp_order_executor.py`'s module docstring
-> first. Next: build the live smoke-test script for a single minimum-lot MARKET order with
-> mandatory SL/TP (mirror `scripts/run_demo_execution_close_smoke_test.py`'s pattern: exact
-> expected-value checks, one attempt, no retry), then stop and wait for explicit approval
-> before running it. Do not make any live MCP/MT5 call without that separate approval.
+> Continue Phase 6 Step 6. Planning, implementation (6a-6d), and the live smoke-test script are
+> done — read this checkpoint's "Step 6" sections and `mt5_adapter/mcp_order_executor.py`'s
+> module docstring first. `scripts/run_demo_execution_market_smoke_test.py` exists,
+> syntax/import-checked, never run. Next: if not already explicitly approved, ask for approval
+> to run it once (see "Exact live-test procedure" above); if approved, run it, report the exact
+> result (retcode/ticket/verified for submit and close, or the SlTpAttachmentFailedError detail
+> if attach failed), update this checkpoint with the real outcome, then stop. Do not make any
+> live MCP/MT5 call without that explicit approval, and do not attempt any automated recovery if
+> SlTpAttachmentFailedError is raised.
 
 ## Incomplete / explicitly deferred — do NOT treat as done
 
