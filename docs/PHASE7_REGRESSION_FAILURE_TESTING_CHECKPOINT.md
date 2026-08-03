@@ -240,8 +240,11 @@ pytest tests/test_architecture.py -q -> 13 passed
 ## Exact next smallest task
 
 All three scoped slices of this phase are done (grid_cycle failure handling, state-store-at-
-scale sweep, and the StateStore O(N²) write-cost fix). Ask the user whether to continue Phase 7
-further (e.g. live/MCP-adjacent failure testing, or the `_current_posture()`/`all_open()` cost
-noted above), or consider this phase sufficient for now and move to pipeline wiring (a separate,
-later-approved effort per `AGENTS.md`) or something else. Not started — stopping here per this
-project's standard "explain, implement, report, stop for approval" workflow.
+scale sweep, and the StateStore O(N²) write-cost fix). Asked the user whether to continue Phase
+7 further or move on — **answer: consider Phase 7 done, move to pipeline wiring.** That decision
+and everything that followed from it (writing `scripts/run_demo_execution_pipeline_cycle.py`,
+the first real wiring of `run_grid_cycle`/`run_runner_cycle` into `McpOrderExecutor`) is tracked
+in `AGENTS.md`'s new "Pipeline wiring (post-Phase 7)" entry, not in this doc — this checkpoint
+now only covers Phase 7 itself, which is closed. That script has been written but **not yet run
+live**; running it against the real MCP/MT5 connection is a separate, explicit next action for
+whoever picks this up next.

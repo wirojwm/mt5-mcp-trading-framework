@@ -151,6 +151,28 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   `close_position()` via `_current_posture()` — this was true of the old format too and is
   **not** fixed by this change; flagged as a remaining risk only if ticket volume ever grows
   very large under sustained use. Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
+- **Phase 7: done.** Both scoped slices (grid_cycle failure handling, state-store-at-scale
+  sweep + the O(N²) fix) are complete; user chose to close out the phase here rather than
+  continue with live/MCP-adjacent failure testing or the `all_open()` per-action cost noted
+  above.
+- **Pipeline wiring (post-Phase 7): started, not yet run live.** Not one of the numbered
+  phases — like "wire real adapters" before Phase 6, a separate, explicitly-approved effort,
+  called out in both the Phase 6 and Phase 7 checkpoint docs as deliberately out of scope until
+  now. This is the first time `run_grid_cycle`/`run_runner_cycle` are wired to the real,
+  order-submitting `McpOrderExecutor` rather than `DryRunExecutor` or a hand-built `OrderPlan`
+  (every prior real `McpOrderExecutor` call, in the three
+  `scripts/run_demo_execution_*_smoke_test.py` scripts, used a hand-built plan, never the
+  strategy pipeline). User chose "human-approved per cycle": one script invocation runs exactly
+  one cycle, reports what happened, and requires a human to re-invoke it for the next cycle — no
+  internal scheduler/loop yet. `scripts/run_demo_execution_pipeline_cycle.py` written, mirroring
+  `scripts/run_live_dry_run_pipeline.py`'s exact config (symbol/timeframe/magics/strategy
+  configs/exposure caps) with only the executor swapped for a real one via
+  `execution/composition.py`'s `demo_execution_session()`. A `STRATEGY` constant picks exactly
+  one of grid/runner per run, never both together. Key departure from every prior smoke-test
+  script: this one does **not** clean up after itself — a real cycle's result is the actual
+  intended strategy decision, meant to persist and be managed by later cycles, not undone by the
+  same invocation. **Not yet run against the real MCP/MT5 connection** — writing the script is
+  not the same as approving a live run; that is a separate, explicit next action.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
