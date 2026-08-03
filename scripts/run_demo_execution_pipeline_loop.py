@@ -54,6 +54,13 @@ SAFETY:
   leaves a durable, reviewable record regardless of how the process was launched --
   monitoring/logging_setup.py's configure_logging() itself remains console-only and untouched;
   this is additive, scoped to this one script.
+- All of this script's own status output goes through the logging module (get_logger(...), not
+  print()) -- found, while diagnosing the first run, that plain print() is fully block-buffered
+  when stdout isn't a TTY (true for a backgrounded/redirected run), so console/captured output
+  could silently lag actual progress by minutes while logging-module records (which flush per
+  record) appeared immediately. Routing everything through logging fixes the lag AND ensures
+  every status line reaches the file log too (which previously only captured logging-module
+  records, missing all of this script's own print()-based reporting).
 - Never reads, logs, or prints .env or any credential.
 
 To stop a running loop: create the file at STOP_FILE's path (e.g. `type nul >
@@ -75,7 +82,7 @@ from dotenv import load_dotenv
 
 from mt5_mcp_trading.config.settings import ExecutionMode, load_settings
 from mt5_mcp_trading.execution.composition import demo_execution_session
-from mt5_mcp_trading.monitoring.logging_setup import configure_logging
+from mt5_mcp_trading.monitoring.logging_setup import configure_logging, get_logger
 from mt5_mcp_trading.mt5_adapter.mcp_market_data import McpMarketDataSource
 from mt5_mcp_trading.pipeline.grid_cycle import GridCycleError, run_grid_cycle
 from mt5_mcp_trading.pipeline.loop_control import LoopLimits, should_stop
@@ -105,6 +112,8 @@ POLL_INTERVAL_SECONDS = 5.0      # how often to re-check the stop file while wai
 MAX_CYCLES = 12                  # hard ceiling regardless of runtime
 MAX_RUNTIME_MINUTES = 90.0       # hard ceiling regardless of cycle count
 
+_logger = get_logger("mt5_mcp_trading.scripts.pipeline_loop")
+
 
 def _setup_file_logging() -> Path:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -120,7 +129,7 @@ async def _run_one_cycle(market_data, account, executor, cycle_num: int) -> bool
     if BOTH completed without raising -- caller stops the loop on False (decision 3)."""
     ok = True
 
-    print(f"\n=== [cycle {cycle_num}] run_grid_cycle({SYMBOL!r}, magic={GRID_MAGIC}) ===")
+    _logger.info("[cycle %d] run_grid_cycle(%r, magic=%d)", cycle_num, SYMBOL, GRID_MAGIC)
     try:
         results = await run_grid_cycle(
             market_data=market_data, account=account, executor=executor,
@@ -129,25 +138,25 @@ async def _run_one_cycle(market_data, account, executor, cycle_num: int) -> bool
             caps=CAPS, magic=GRID_MAGIC,
         )
     except GridCycleError as exc:
-        print(f"  GridCycleError: {len(exc.errors)} side(s) raised, "
-              f"{len(exc.completed_results)} side(s) completed")
+        _logger.info("  GridCycleError: %d side(s) raised, %d side(s) completed",
+                      len(exc.errors), len(exc.completed_results))
         for side, error in exc.errors:
-            print(f"    FAILED side={side}: {error!r}")
+            _logger.info("    FAILED side=%s: %r", side, error)
         for result in exc.completed_results:
-            print(f"    completed: {result}")
+            _logger.info("    completed: %s", result)
         ok = False
     except Exception as exc:
-        print(f"  run_grid_cycle() raised: {exc!r}")
+        _logger.info("  run_grid_cycle() raised: %r", exc)
         ok = False
     else:
         if results:
             for result in results:
-                print(f"  {result}")
+                _logger.info("  %s", result)
         else:
-            print("  (nothing submitted -- rejected by a risk guard, or a LIMIT price "
-                  "couldn't be normalized far enough from the market)")
+            _logger.info("  (nothing submitted -- rejected by a risk guard, or a LIMIT price "
+                          "couldn't be normalized far enough from the market)")
 
-    print(f"=== [cycle {cycle_num}] run_runner_cycle({SYMBOL!r}, magic={RUNNER_MAGIC}) ===")
+    _logger.info("[cycle %d] run_runner_cycle(%r, magic=%d)", cycle_num, SYMBOL, RUNNER_MAGIC)
     try:
         result = await run_runner_cycle(
             market_data=market_data, account=account, executor=executor,
@@ -156,11 +165,11 @@ async def _run_one_cycle(market_data, account, executor, cycle_num: int) -> bool
             caps=CAPS, magic=RUNNER_MAGIC,
         )
     except Exception as exc:
-        print(f"  run_runner_cycle() raised: {exc!r}")
+        _logger.info("  run_runner_cycle() raised: %r", exc)
         ok = False
     else:
-        print(f"  {result}" if result is not None else
-              "  (FLAT signal or rejected by a risk guard, nothing submitted)")
+        _logger.info("  %s", result if result is not None else
+                      "(FLAT signal or rejected by a risk guard, nothing submitted)")
 
     return ok
 
@@ -177,7 +186,7 @@ async def _wait_for_next_cycle(limits: LoopLimits, start_time: float, cycle_num:
             stop_file_exists=STOP_FILE.exists(), limits=limits,
         )
         if reason is not None:
-            print(f"\n=== Stop requested during inter-cycle wait: {reason} ===")
+            _logger.info("Stop requested during inter-cycle wait: %s", reason)
             return True
         step = min(limits.poll_interval_seconds, limits.cycle_interval_seconds - waited)
         await asyncio.sleep(step)
@@ -198,12 +207,12 @@ async def main() -> None:
         max_cycles=MAX_CYCLES, max_runtime_seconds=MAX_RUNTIME_MINUTES * 60.0,
         cycle_interval_seconds=CYCLE_INTERVAL_SECONDS, poll_interval_seconds=POLL_INTERVAL_SECONDS,
     )
-    print(f"=== mode={settings.mode.value}, trading_enabled={settings.trading_enabled}, "
-          f"mt5_account_kind={settings.mt5_account_kind!r} ===")
-    print(f"=== Bounded autonomous loop: max_cycles={MAX_CYCLES}, "
-          f"max_runtime_minutes={MAX_RUNTIME_MINUTES}, cycle_interval_seconds="
-          f"{CYCLE_INTERVAL_SECONDS}, stop_file={STOP_FILE} ===")
-    print(f"=== Log file: {log_path} ===")
+    _logger.info("mode=%s, trading_enabled=%s, mt5_account_kind=%r",
+                 settings.mode.value, settings.trading_enabled, settings.mt5_account_kind)
+    _logger.info("Bounded autonomous loop: max_cycles=%s, max_runtime_minutes=%s, "
+                 "cycle_interval_seconds=%s, stop_file=%s",
+                 MAX_CYCLES, MAX_RUNTIME_MINUTES, CYCLE_INTERVAL_SECONDS, STOP_FILE)
+    _logger.info("Log file: %s", log_path)
 
     start_time = time.monotonic()
     cycle_num = 0
@@ -212,7 +221,7 @@ async def main() -> None:
         async with demo_execution_session(
             settings, mcp_command=str(PYTHON), mcp_args=[str(WRAPPER)], state_path=STATE_PATH,
         ) as (client, account, executor, state_store):
-            print("=== Connected via the same wrapper Claude Code uses, trading_enabled=True ===")
+            _logger.info("Connected via the same wrapper Claude Code uses, trading_enabled=True")
             market_data = McpMarketDataSource(client)
 
             while True:
@@ -221,25 +230,25 @@ async def main() -> None:
                     stop_file_exists=STOP_FILE.exists(), limits=limits,
                 )
                 if reason is not None:
-                    print(f"\n=== Stopping before cycle {cycle_num + 1}: {reason} ===")
+                    _logger.info("Stopping before cycle %d: %s", cycle_num + 1, reason)
                     break
 
                 cycle_num += 1
                 ok = await _run_one_cycle(market_data, account, executor, cycle_num)
                 if not ok:
-                    print(f"\n=== Cycle {cycle_num} had an error -- stopping the loop "
-                          f"(no error tolerance in this version) ===")
+                    _logger.info("Cycle %d had an error -- stopping the loop "
+                                  "(no error tolerance in this version)", cycle_num)
                     break
 
                 stopped_during_wait = await _wait_for_next_cycle(limits, start_time, cycle_num)
                 if stopped_during_wait:
                     break
     except KeyboardInterrupt:
-        print(f"\n=== Ctrl+C received after {cycle_num} cycle(s) -- stopping cleanly ===")
+        _logger.info("Ctrl+C received after %d cycle(s) -- stopping cleanly", cycle_num)
 
-    print(f"\n=== Done. {cycle_num} cycle(s) run. No cleanup performed -- any resulting "
-          f"order/position is intentionally left in place. Manage it via a later cycle or a "
-          f"separate explicit action. Full log: {log_path} ===")
+    _logger.info("Done. %d cycle(s) run. No cleanup performed -- any resulting order/position "
+                 "is intentionally left in place. Manage it via a later cycle or a separate "
+                 "explicit action. Full log: %s", cycle_num, log_path)
 
 
 if __name__ == "__main__":

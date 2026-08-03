@@ -2,7 +2,8 @@
 """
 Launches the third-party `metatrader-mcp-server` (stdio transport) with credentials taken
 from environment variables / a local .env file — never as literal values in this script, in
-any Claude Code MCP configuration, or on any command line visible outside this process.
+any Claude Code MCP configuration, and (as of the fix below) never on the child process's
+command line either.
 
 Why this wrapper exists at all: metatrader-mcp-server's `--login`/`--password`/`--server`
 CLI options are required by its Click-based entry point, with no environment-variable
@@ -14,7 +15,23 @@ path*, and this script resolves the real values at process-launch time.
 Launches scripts/metatrader_mcp_extended_server.py (not the pip-installed
 metatrader-mcp-server console script directly) -- that script re-registers the same 25 tools
 plus one this project added locally (get_symbol_info; see its own module docstring for why).
-Same argv interface, so nothing else about this wrapper's credential handling changed.
+Same argv interface *shape*, but credentials no longer travel through it (see below).
+
+CREDENTIAL EXPOSURE FIX: this script used to put MT5_DEMO_LOGIN/MT5_DEMO_PASSWORD/
+MT5_DEMO_SERVER directly into the child process's argv (`--login`, `--password`, `--server`).
+That command line is visible to any process/user on the machine via ordinary, unprivileged
+process listing (`tasklist`, `Get-CimInstance Win32_Process`, Task Manager) -- confirmed live,
+found this way while diagnosing an unrelated issue (see docs/PIPELINE_WIRING_CHECKPOINT.md).
+Fixed: this script no longer passes --login/--password/--server on argv at all.
+`subprocess.run()` inherits this process's entire environment by default, so
+MT5_DEMO_LOGIN/MT5_DEMO_PASSWORD/MT5_DEMO_SERVER are already present in the child's
+environment without needing to be passed explicitly; scripts/metatrader_mcp_extended_server.py
+now falls back to reading them from there when the (still-accepted, for argv-shape parity with
+metatrader_mcp/server.py) --login/--password/--server flags aren't given. The child's command
+line now only ever shows --transport/--path -- never credentials. (Environment variables of a
+running process aren't perfectly secret either -- a sufficiently privileged process/user can
+still read them -- but they are not visible via routine, unprivileged process enumeration the
+way argv is, which is the exact exposure this closes.)
 
 Required environment variables (normally supplied via a git-ignored .env file next to this
 script's project root — see .env.example):
@@ -93,16 +110,15 @@ def main() -> None:
     if not EXTENDED_SERVER.exists():
         _fail(f"Could not find {EXTENDED_SERVER}. This project's checkout is incomplete.")
 
-    login = os.environ["MT5_DEMO_LOGIN"]
-    password = os.environ["MT5_DEMO_PASSWORD"]
-    server = os.environ["MT5_DEMO_SERVER"]
     path = os.environ.get("MT5_PATH")
 
+    # login/password/server are deliberately NOT put on argv -- see the CREDENTIAL EXPOSURE FIX
+    # note in this module's docstring. MT5_DEMO_LOGIN/MT5_DEMO_PASSWORD/MT5_DEMO_SERVER are
+    # already present in THIS process's environment (verified required above) and
+    # subprocess.run() below inherits it by default, so the child picks them up without any
+    # explicit passing -- scripts/metatrader_mcp_extended_server.py reads them from there.
     argv = [
         sys.executable, str(EXTENDED_SERVER),
-        "--login", login,
-        "--password", password,
-        "--server", server,
         "--transport", "stdio",
     ]
     if path:

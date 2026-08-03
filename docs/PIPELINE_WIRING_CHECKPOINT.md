@@ -491,19 +491,108 @@ other live action in this effort.
 `scripts/run_demo_execution_pipeline_loop.py` (new),
 `tests/unit/test_pipeline_loop_control.py` (new), `AGENTS.md`, this checkpoint doc.
 
+## Step 15 — first live loop run: apparent hang (false alarm), real credential exposure found, 3 fixes made
+
+First live run of the bounded autonomous loop. Launched in the background; appeared to stall
+mid-cycle-1 (no new console output for several checks). Investigated before assuming anything.
+
+**Finding 1 — no hang occurred.** Comparing the buffered "stuck" output against the full log
+captured after the process exited: the last visible tool-call log before the apparent stall was
+at a given timestamp, the next appeared **exactly 300 seconds later** — matching
+`CYCLE_INTERVAL_SECONDS` exactly. Cross-checked against `StateStore`: cycle 1's runner order was
+submitted, confirmed, and SL/TP-verified under a second after the cycle started. Root cause:
+Python fully block-buffers `print()` output when stdout isn't a TTY (true for a
+backgrounded/redirected run) — the `logging`-module `WARNING` lines appeared live (their
+handler flushes per record), but this script's `print()`-based cycle headers/results did not,
+making a process that had already finished and moved into its normal inter-cycle sleep look
+stuck mid-call. No MCP/tool call ever failed to return.
+
+**Finding 2 — real credential exposure, unrelated to the hang investigation but found while
+diagnosing it.** Checking whether the loop's process was still alive (`Get-CimInstance
+Win32_Process ... CommandLine`) revealed `scripts/metatrader_mcp_extended_server.py`'s full
+command line, including the plaintext demo account password, passed via
+`scripts/run_metatrader_mcp_stdio.py:101-106`'s `--password` argv construction — visible to any
+process/user on the machine via ordinary, unprivileged process listing. Contradicted that
+script's own docstring claim of never exposing credentials "on any command line visible outside
+this process."
+
+**Stopped the loop safely**: created the stop-file; the loop detected it during its inter-cycle
+wait and exited cleanly (exit code 0) within its normal ~5s poll interval — no forced kill
+needed. Confirmed via process listing that no related processes remained.
+
+**Cleanup**: independently re-verified live state (separate read-only connection) before
+touching anything — state had moved again since the hang investigation: 4 of the loop's 6
+tickets (`171623173`, `171623174`, `171623175`, `171623293`) had already closed on their own via
+their own SL/TP before cleanup even started (live evidence the SL/TP fixes provide real,
+triggering protection, not just validation-passing values); only `171623291` (pending) and
+`171623294` (open position) were still genuinely live. New one-off script,
+`scripts/run_demo_execution_cleanup_loop_run.py`, re-verified each of the 6 tickets individually
+immediately before acting: cancelled `171623291` (retcode 10009), closed `171623294` (retcode
+10009), reconciled the other 4 locally (`StateStore.record_closed()`, no MCP call — nothing left
+on the broker side to act on). All 6 resolved; account left with only the 2 tickets pre-existing
+before this loop run (`171622543`/`171622791` — untouched, out of scope; `171622789` also
+disappeared from live state during this window, noted but not acted on, out of scope).
+
+**Three fixes implemented** (code only — no live call made to verify any of them; that remains a
+separate, explicit next action):
+
+1. **Credential exposure** (Finding 2): `metatrader_mcp_extended_server.py` now falls back to
+   `MT5_DEMO_LOGIN`/`MT5_DEMO_PASSWORD`/`MT5_DEMO_SERVER` from its environment (already inherited
+   from the parent process — `subprocess.run()` inherits by default) when `--login`/`--password`/
+   `--server` aren't given via argv; `run_metatrader_mcp_stdio.py` no longer puts them on argv at
+   all. The child's command line now only ever shows `--transport`/`--path` — never credentials.
+2. **MCP call timeout** (a real, separate gap the hang investigation surfaced — no call anywhere
+   in this codebase had ever had a timeout): `McpClient.call_tool()` now wraps the underlying
+   session call in `asyncio.wait_for(timeout=DEFAULT_CALL_TIMEOUT_SECONDS=30.0)`, raising a new
+   `McpCallTimeoutError` on expiry. Centralized in the one place every tool call already passes
+   through — every caller benefits, no changes needed elsewhere (the loop's existing "stop on any
+   error" handling already covers this new exception type correctly).
+3. **stdout buffering** (Finding 1): `run_demo_execution_pipeline_loop.py`'s own status
+   reporting now goes entirely through the `logging` module (`get_logger(...)`) instead of
+   `print()` — fixes the lag (logging handlers flush per record) and, as a side effect, also
+   fixes the file log missing this script's own output (it previously only captured
+   `logging`-routed records).
+
+**Tests**: `tests/unit/test_mcp_client.py` (new, +5) — `McpClient`'s first-ever dedicated unit
+tests (everything else about it requires a real subprocess; only the new timeout wrapping is
+practical to test in isolation, via a fake session object bypassing `__aenter__`): normal
+completion, timeout-raises-`McpCallTimeoutError`-with-correct-attributes, registry
+authorization still gates before the session is ever touched, and the pre-existing "used outside
+`async with`" guard.
+
+```
+pytest -q                        -> 346 passed (341 previously + 5 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `src/mt5_mcp_trading/mcp_adapter/client.py`,
+`scripts/metatrader_mcp_extended_server.py`, `scripts/run_metatrader_mcp_stdio.py`,
+`scripts/run_demo_execution_pipeline_loop.py`,
+`scripts/run_demo_execution_cleanup_loop_run.py` (new), `tests/unit/test_mcp_client.py` (new),
+this checkpoint doc.
+
 ## Remaining risks / not done
 
 - Grid's SL/TP anchor-price bug (Step 11) is **fixed** (Step 12) and **live-verified** (Step 13,
   both BUY and SELL confirmed with correct ordering against the real `McpOrderExecutor`).
-- **3 open grid items on the account, all with correct SL/TP**: ticket `171622543` (SELL, Step
-  11), tickets `171622789` (BUY)/`171622791` (SELL) (Step 13). User chose to leave all three
-  open, to be picked up by a later cycle/reconciliation — not leftover mistakes.
+- **2 open items remain on the account, both pre-existing (not from the loop run)**: ticket
+  `171622543` (SELL, Step 11) and `171622791` (SELL, Step 13) — user's standing decision to leave
+  open. `171622789` (Step 13) disappeared from live state during Step 15's window; not
+  investigated further, out of scope for that step.
 - Account state can move between a report and a follow-up action (order fills, broker-side
-  SL/TP triggers, confirmed in Step 9) — any future cleanup script must re-verify live
-  immediately before acting, never trust an earlier report as still current.
-- **The bounded autonomous loop (Step 14) is implemented and unit-tested but not yet run
-  live.** No reconnect-on-drop logic and no error-tolerance-across-cycles exist by design (v1);
-  both are real limitations worth revisiting once a live run's behavior is observed.
+  SL/TP triggers, confirmed repeatedly now — Step 9, and again in Step 15) — any future
+  cleanup/diagnostic script must re-verify live immediately before acting, never trust an
+  earlier report as still current.
+- **The bounded autonomous loop has now run live once** (Step 15) — 2 full cycles completed
+  correctly before being deliberately stopped for the credential/hang investigation. Its actual
+  designed stop conditions (`MAX_CYCLES`/`MAX_RUNTIME_MINUTES` naturally elapsing) have not yet
+  been observed — only the stop-file path has. No reconnect-on-drop logic and no
+  error-tolerance-across-cycles exist by design (v1) — the new MCP call timeout (Step 15's fix
+  #2) means a truly stuck call now becomes a clean, bounded failure instead of an unbounded
+  wait, but a dropped connection is still simply fatal to the run, by design.
+- The three Step 15 fixes (credential passing, MCP call timeout, stdout buffering) are
+  implemented and unit-tested but **not yet live-verified** — the next loop run will be the
+  first real test of all three at once.
 - The `all_open()` O(N)-per-`McpOrderExecutor`-action cost flagged in
   `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md` remains unaddressed — more relevant now
   that a loop could call it far more often than any single-shot script has so far, though still
@@ -513,6 +602,7 @@ other live action in this effort.
 
 ## Exact next smallest task
 
-Not started — ask the user whether to run the bounded autonomous loop live, address the
-`all_open()` cost question now that a loop exists, or something else. Stopping here per this
+Not started — do not resume live testing until explicitly approved (per user instruction).
+Once approved: re-run the bounded autonomous loop live to verify all three Step 15 fixes
+together, address the `all_open()` cost question, or something else. Stopping here per this
 project's standard "explain, implement, report, stop for approval" workflow.

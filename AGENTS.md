@@ -240,8 +240,22 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   unit-tested) and `scripts/run_demo_execution_pipeline_loop.py` (thin orchestration shell,
   conservative first-run defaults: 5-min cycle interval, 12-cycle/90-minute hard ceilings, adds
   a per-run file log under `var/logs/`). +10 tests (341 passed total), architecture tests still
-  pass. Not yet run live — this is the largest-blast-radius script in the project so far,
-  requires its own separate go-ahead. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  pass.
+  **First live run: apparent hang was a false alarm (stdout buffering, not a real stuck call —
+  confirmed by exact timestamp evidence), but investigating it surfaced a real credential
+  exposure** (the demo account password was visible in `metatrader_mcp_extended_server.py`'s
+  process command line via ordinary process listing). Stopped the loop safely via the stop-file
+  (clean exit, ~5s). All 6 tickets the loop's 2 completed cycles created were resolved — 4 had
+  already closed live via their own SL/TP before cleanup even started (real proof the SL/TP
+  fixes provide genuine, triggering protection), the remaining 2 cancelled/closed explicitly,
+  each re-verified live immediately before acting. **Three fixes made** (code only, not yet
+  live-verified): credentials no longer passed via argv (env-var fallback added to the local
+  extended-server script instead); `McpClient.call_tool()` now has a 30s timeout
+  (`McpCallTimeoutError`), the first bound on any MCP call anywhere in this codebase; the loop
+  script's own reporting now goes through `logging` instead of `print()`, fixing both the
+  buffering lag and the file log missing its own output. +5 tests (346 passed total),
+  architecture tests still pass. **Live testing paused — will not resume without explicit
+  approval.** Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

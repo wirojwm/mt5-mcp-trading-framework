@@ -170,12 +170,27 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
 
-    if args.login:
-        os.environ["login"] = args.login
-    if args.password:
-        os.environ["password"] = args.password
-    if args.server:
-        os.environ["server"] = args.server
+    # login/password/server fall back to MT5_DEMO_* env vars (already inherited from the
+    # parent process -- scripts/run_metatrader_mcp_stdio.py loads them from .env into its own
+    # environment before launching this script, and subprocess.run() inherits the parent's
+    # environment by default) when not passed via argv. Prevents credentials from ever
+    # appearing in this process's command line, which -- unlike its environment -- is visible
+    # to any process/user on the machine via ordinary, unprivileged process listing (confirmed
+    # live: found the plaintext password this way while diagnosing an unrelated issue, see
+    # docs/PIPELINE_WIRING_CHECKPOINT.md). run_metatrader_mcp_stdio.py no longer puts them on
+    # argv at all; --login/--password/--server here remain accepted (not removed) only so this
+    # script's own argv interface still mirrors metatrader_mcp/server.py's, per the comment
+    # above -- not because anything should still pass secrets through them.
+    login = args.login or os.environ.get("MT5_DEMO_LOGIN")
+    password = args.password or os.environ.get("MT5_DEMO_PASSWORD")
+    server = args.server or os.environ.get("MT5_DEMO_SERVER")
+
+    if login:
+        os.environ["login"] = login
+    if password:
+        os.environ["password"] = password
+    if server:
+        os.environ["server"] = server
     if args.path:
         os.environ["MT5_PATH"] = args.path
 

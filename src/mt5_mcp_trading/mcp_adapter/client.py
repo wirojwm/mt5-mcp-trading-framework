@@ -13,10 +13,20 @@ between this codebase and a live MCP tool invocation.
 Spawns the same wrapper script Claude Code itself uses to connect
 (scripts/run_metatrader_mcp_stdio.py) -- credentials are resolved entirely inside that
 subprocess, never touched by this class or anything that constructs it.
+
+call_timeout_seconds: every call_tool() previously awaited its ClientSession.call_tool() call
+indefinitely -- no timeout existed anywhere in this codebase for an MCP call. Found while
+investigating an apparent bounded-autonomous-loop "hang" (docs/PIPELINE_WIRING_CHECKPOINT.md --
+that particular incident turned out to be a stdout-buffering artifact, not a real stuck call,
+but the fact that NO call had a bound at all was a real, separate gap worth closing given the
+MT5 terminal dependency this ultimately relies on). Centralized here, the one place every
+tool call already passes through, so every caller benefits without any of them needing their
+own timeout logic.
 """
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack
 from typing import Any, Optional
 
@@ -25,12 +35,34 @@ from mcp.client.stdio import stdio_client
 
 from mt5_mcp_trading.mcp_adapter.tool_registry import ToolRegistry
 
+DEFAULT_CALL_TIMEOUT_SECONDS = 30.0
+
+
+class McpCallTimeoutError(RuntimeError):
+    """Raised when a single MCP tool call doesn't return within call_timeout_seconds. A timeout
+    is not distinguishable from "the call actually succeeded but the response was lost" --
+    treat it exactly like any other failed call (never assume success, never retry
+    automatically here; retry policy, if any, belongs to the caller)."""
+
+    def __init__(self, tool_name: str, timeout_seconds: float) -> None:
+        self.tool_name = tool_name
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"MCP call to {tool_name!r} did not return within {timeout_seconds}s -- treating "
+            f"as failed. Whether the call actually reached/executed on the broker side is "
+            f"unknown; never assume it succeeded."
+        )
+
 
 class McpClient:
-    def __init__(self, command: str, args: list[str], tool_registry: ToolRegistry) -> None:
+    def __init__(
+        self, command: str, args: list[str], tool_registry: ToolRegistry,
+        call_timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
+    ) -> None:
         self._command = command
         self._args = args
         self._registry = tool_registry
+        self._call_timeout_seconds = call_timeout_seconds
         self._stack: Optional[AsyncExitStack] = None
         self._session: Optional[ClientSession] = None
 
@@ -67,6 +99,11 @@ class McpClient:
         if self._session is None:
             raise RuntimeError("McpClient used outside 'async with'")
         self._registry.authorize_call(name)  # raises if unclassified or trading-disabled
-        result = await self._session.call_tool(name, arguments or {})
+        try:
+            result = await asyncio.wait_for(
+                self._session.call_tool(name, arguments or {}), timeout=self._call_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise McpCallTimeoutError(name, self._call_timeout_seconds) from exc
         text_parts = [c.text for c in result.content if hasattr(c, "text")]
         return "\n".join(text_parts)
