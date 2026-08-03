@@ -433,6 +433,64 @@ two).
 **Files changed this step**: this checkpoint doc only (no code changes — this step only ran the
 already-committed script).
 
+## Step 14 — bounded autonomous loop: designed and implemented, not yet run live
+
+The option deliberately not chosen when this effort started ("human-approved per cycle" was
+picked instead) — a script with its own internal loop, approved once at launch, that runs
+multiple cycles against the real `McpOrderExecutor` without a human approving each individual
+one. This is the biggest step this effort has taken: every order-submitting action to date has
+had its own separate approval; this changes that for whatever happens *during* a run, while the
+initial launch remains the one explicit approval point.
+
+Research confirmed this is genuinely greenfield — no daily-shutdown/kill-switch/circuit-breaker
+concept exists anywhere in this codebase (`risk/__init__.py` explicitly: these "do not exist in
+the legacy project... would be new functionality, not a migration"), every existing risk guard
+is a stateless per-call snapshot check with zero cross-call memory, `_current_posture()` has no
+history across cycles, logging is console-only with no file handler anywhere, and no
+signal-handling pattern exists in this repo at all.
+
+**Four structural decisions**, all made explicitly before any code was written:
+1. **Strategy scope**: both `run_grid_cycle()` and `run_runner_cycle()` every cycle,
+   sequentially — one raising never blocks the other from being attempted that same cycle
+   (mirrors `GridCycleError`'s own per-side isolation, one level up).
+2. **Stop mechanism**: a stop-file (`var/STOP_PIPELINE_LOOP`) checked before every cycle and
+   polled every 5s during the inter-cycle wait, plus clean `Ctrl+C` handling.
+3. **Error handling across cycles**: stop the loop immediately after any cycle in which either
+   strategy raised — no error-tolerance/retry in this first version.
+4. **Connection model**: one long-lived `demo_execution_session()` for the whole run; a dropped
+   connection is fatal (caught by decision 3, no reconnect logic built).
+
+**Implemented**:
+- `src/mt5_mcp_trading/pipeline/loop_control.py` (new): the one piece of genuinely new decision
+  logic (`should_stop()`, `LoopLimits`), kept pure and separately testable rather than buried in
+  the script — precedence: stop-file, then max cycles, then max runtime.
+- `scripts/run_demo_execution_pipeline_loop.py` (new): thin orchestration shell, structured like
+  `run_demo_execution_pipeline_cycle.py` (same `SYMBOL`/`GRID_MAGIC`/`RUNNER_MAGIC`/`CAPS`).
+  Conservative first-run defaults: `CYCLE_INTERVAL_SECONDS=300` (5 min), `MAX_CYCLES=12`,
+  `MAX_RUNTIME_MINUTES=90` — at most ~1 hour of actual cycling under a 90-minute hard ceiling.
+  `ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)` (unchanged, reused) still bounds
+  standing exposure per symbol regardless of cycle count. No cleanup of submitted orders/
+  positions, ever — same "a real cycle's result persists" design as the single-shot script.
+  Adds a per-run file log under `var/logs/` (in addition to console output) so an unattended run
+  leaves a durable record — additive only, `monitoring/logging_setup.py` itself untouched.
+
+**Tests**: `tests/unit/test_pipeline_loop_control.py` (new, +10) — `should_stop()`'s three
+conditions individually, precedence order, boundary (`>=` not `==`), and the "nothing applies"
+case. Pure, no live connection needed.
+
+```
+pytest -q                        -> 341 passed (331 previously + 10 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Not yet run live.** This is the largest-blast-radius script in the project so far — running it
+is a separate, explicit next action requiring its own go-ahead after review, exactly like every
+other live action in this effort.
+
+**Files changed this step**: `src/mt5_mcp_trading/pipeline/loop_control.py` (new),
+`scripts/run_demo_execution_pipeline_loop.py` (new),
+`tests/unit/test_pipeline_loop_control.py` (new), `AGENTS.md`, this checkpoint doc.
+
 ## Remaining risks / not done
 
 - Grid's SL/TP anchor-price bug (Step 11) is **fixed** (Step 12) and **live-verified** (Step 13,
@@ -443,17 +501,18 @@ already-committed script).
 - Account state can move between a report and a follow-up action (order fills, broker-side
   SL/TP triggers, confirmed in Step 9) — any future cleanup script must re-verify live
   immediately before acting, never trust an earlier report as still current.
-- Still no internal scheduler/loop — every cycle requires a separate, manual, human-approved
-  invocation. Whether/when to build a bounded autonomous loop (the option not chosen when this
-  effort started) is undecided.
+- **The bounded autonomous loop (Step 14) is implemented and unit-tested but not yet run
+  live.** No reconnect-on-drop logic and no error-tolerance-across-cycles exist by design (v1);
+  both are real limitations worth revisiting once a live run's behavior is observed.
 - The `all_open()` O(N)-per-`McpOrderExecutor`-action cost flagged in
-  `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md` remains unaddressed — still not a real
-  problem at current ticket volumes.
+  `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md` remains unaddressed — more relevant now
+  that a loop could call it far more often than any single-shot script has so far, though still
+  not a real problem at current ticket volumes/cycle counts.
 - No live run has yet exercised a `GridCycleError` (partial-failure) path for real, nor a
   `STRATEGY="RUNNER"` FLAT/rejected/no-submission outcome via the real pipeline-wiring script.
 
 ## Exact next smallest task
 
-Not started — ask the user whether to design the bounded-autonomous-loop option, run another
-cycle, or something else. Stopping here per this project's standard
-"explain, implement, report, stop for approval" workflow.
+Not started — ask the user whether to run the bounded autonomous loop live, address the
+`all_open()` cost question now that a loop exists, or something else. Stopping here per this
+project's standard "explain, implement, report, stop for approval" workflow.

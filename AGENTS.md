@@ -229,9 +229,19 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   +1 test (331 passed total), architecture tests still pass. **Live re-verified**: a second live
   GRID run submitted both sides successfully with correct SL/TP ordering (BUY ticket
   `171622789`: `sl<price<tp`; SELL ticket `171622791`: `tp<price<sl`; both retcode 10009,
-  verified). Account now holds 3 open grid items (those two plus `171622543` from the first
-  run), all correctly protected, none yet resolved. Full detail:
-  `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  verified). Account holds 3 open grid items (those two plus `171622543` from the first run),
+  all correctly protected — user chose to leave all three open, for a later cycle to manage.
+  **Bounded autonomous loop designed and implemented, not yet run live**: the option
+  deliberately deferred when this effort started. Four structural decisions made explicitly
+  first — both strategies every cycle (isolated per-cycle), stop-file + `Ctrl+C`, stop
+  immediately on any cycle error (no retry/tolerance in v1), one long-lived connection for the
+  whole run (a drop is fatal, no reconnect logic). New `pipeline/loop_control.py`
+  (`should_stop()`/`LoopLimits`, the one piece of genuinely new decision logic, kept pure and
+  unit-tested) and `scripts/run_demo_execution_pipeline_loop.py` (thin orchestration shell,
+  conservative first-run defaults: 5-min cycle interval, 12-cycle/90-minute hard ceilings, adds
+  a per-run file log under `var/logs/`). +10 tests (341 passed total), architecture tests still
+  pass. Not yet run live — this is the largest-blast-radius script in the project so far,
+  requires its own separate go-ahead. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
