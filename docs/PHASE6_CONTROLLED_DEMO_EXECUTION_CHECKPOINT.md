@@ -557,22 +557,57 @@ pytest tests/test_architecture.py -q -> 13 passed
 
 **Files changed this session**: `scripts/run_demo_execution_market_smoke_test.py` only.
 
-**Not done**: no re-run yet. `MIN_SL_TP_FRACTION_OF_PRICE = 0.01` is still an untested-live
-guess, just a much larger and better-reasoned one than the value that just failed — the true
-minimum distance for BTCUSD on this broker remains unknown (unpublished, and this MCP server
-exposes no tool to query it directly).
+## Step 6 — re-run: SUCCESS end-to-end, first full live proof of the MARKET path
+
+**Live result — 2026-08-03, one attempt, both fixes confirmed working**:
+
+Preflight leftover check: `state_store.all_open()` filtered to `magic=79999` → 0 records.
+Correctly passed (account was clean from the prior recovery).
+
+- **`place_market_order`**: retcode `10009` (`TRADE_RETCODE_DONE`). Real position opened:
+  ticket `171618036`, BTCUSD BUY, `0.01` lots @ `62881.66`.
+- **Computed SL/TP** (with the fixed formula): `gap_offset=1.2` (10x gap, the old
+  insufficient value) vs `price_fraction_offset=628.82` (1% of `62881.63`) — the 1% floor
+  correctly dominated. `sl=62252.81`, `tp=63510.45`.
+- **`modify_position` (SL/TP attach)**: retcode `10009` — **succeeded this time**. Live read
+  confirmed `sl=62252.81`/`tp=63510.45` matching exactly on the first verification attempt.
+- **`submit()` result**: `success=True`, `verified=True`. Local state transitioned
+  `OPEN_UNPROTECTED` → `OPEN` (confirmed: "state before close" printout already shows
+  `status='OPEN'`, proving `mark_sl_tp_attached()` fired correctly).
+- **Cleanup `close_position()`**: retcode `10009`, `success=True`, `verified=True`,
+  `executed_price=62866.66`, confirmed absent from live positions immediately after.
+- **Local state after**: `status='CLOSED'`.
+- **Final live check**: 0 positions on BTCUSD, ticket `171618036` confirmed absent.
+
+**This closes out Step 6's live-proof requirement.** Every branch of `_submit_market()`
+(place, mandatory SL/TP attach with live verification, and the designed cleanup close) is now
+live-proven end-to-end on the demo account, not just unit-tested — the same bar Step 4 met for
+LIMIT orders and Step 5 met for `close_position()`. The account is clean: nothing open from
+this step.
+
+```
+pytest -q -> 302 passed (unchanged by this live run -- no code changed)
+```
+
+**Remaining risk, unchanged**: `MIN_SL_TP_FRACTION_OF_PRICE=0.01` worked on this one live
+attempt but is still a generous guess, not a confirmed broker minimum — the true minimum
+distance for BTCUSD on this broker remains unpublished and unqueryable via this MCP server.
+Fine as-is for this smoke test's purposes; worth revisiting if this margin is ever reused
+for real strategy logic rather than a self-closing smoke test.
 
 **Continuation prompt for the next session**:
-> Continue Phase 6 Step 6. Read this checkpoint's "Step 6" sections (especially "Live result",
-> "Recovery", and "smoke-test script's two known bugs fixed") and
-> `mt5_adapter/mcp_order_executor.py`'s module docstring first. Both known bugs in
-> `scripts/run_demo_execution_market_smoke_test.py` are fixed (leftover-check now uses local
-> `StateStore`, not live `magic`; SL/TP offset now floors at 1% of price, not just a
-> stops_level-gap multiplier) but **not yet re-run live**. The account is currently clean (no
-> open positions from this step — ticket `171617865` was closed with retcode `10009`,
-> verified). Ask for explicit approval before running the script again; if approved, run it
-> once, report the exact result (same format as the "Live result" entry above), update this
-> checkpoint, and stop. Do not make any live MCP/MT5 call without that explicit approval.
+> Phase 6 Step 6 is fully live-proven and complete: MARKET order placement, mandatory SL/TP
+> attach (both the failure path — Known Issues item 7's retcode-trust bug live-confirmed for
+> modify_position — and the success path), and cleanup close have all been observed live on the
+> demo account, with clean recovery when attach failed. Read this checkpoint's "Step 6" sections
+> in order (planning → implementation → live result/attach-failed → recovery → bug fixes →
+> re-run/success) and `mt5_adapter/mcp_order_executor.py`'s module docstring for full context.
+> The account is currently clean. Per "Incomplete / explicitly deferred" below, the next
+> not-yet-started items are: MARKET-order support for anything beyond BUY-side mandatory-SL/TP
+> (not actually restricted, but only BUY was exercised live), and separately, whether/how to
+> proceed toward Step 7 (regression and failure testing) or further Phase 6 hardening — ask the
+> user which they want before starting either. Do not make any live MCP/MT5 call, and do not
+> begin pipeline wiring or a new phase, without explicit approval.
 
 ## Incomplete / explicitly deferred — do NOT treat as done
 
