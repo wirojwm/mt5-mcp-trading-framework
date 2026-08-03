@@ -20,7 +20,7 @@ from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps
 from mt5_mcp_trading.sizing.money import MoneyConfig
 from mt5_mcp_trading.strategy.runner import RunnerStrategyConfig
 
-from tests.unit.test_features_macd import UPWARD_CLOSES
+from tests.unit.test_features_macd import DOWNWARD_CLOSES, UPWARD_CLOSES
 
 MAGIC = 72101
 SYMBOL = "BTCUSD"
@@ -72,6 +72,31 @@ def test_long_signal_reaches_the_dry_run_executor() -> None:
     assert result.order_plan.side == "BUY"
     assert result.order_plan.order_type == "MARKET"
     assert executor.submitted == [result.order_plan]
+
+
+def test_long_signal_produces_a_protected_market_order() -> None:
+    # Regression test for the Phase-post-7 pipeline-wiring finding (docs/PIPELINE_WIRING_CHECKPOINT.md
+    # Step 4): run_runner_cycle() used to always produce sl=tp=0.0, which McpOrderExecutor's real
+    # MARKET-order validation refuses outright. Fails before the fix, passes after.
+    executor = DryRunExecutor()
+    result = _run(_market_data(UPWARD_CLOSES), executor)
+
+    assert result is not None
+    plan = result.order_plan
+    assert plan.side == "BUY"
+    assert plan.sl > 0 and plan.tp > 0
+    assert plan.sl < plan.price < plan.tp  # same BUY ordering McpOrderExecutor enforces
+
+
+def test_short_signal_produces_a_protected_market_order() -> None:
+    executor = DryRunExecutor()
+    result = _run(_market_data(DOWNWARD_CLOSES), executor)
+
+    assert result is not None
+    plan = result.order_plan
+    assert plan.side == "SELL"
+    assert plan.sl > 0 and plan.tp > 0
+    assert plan.tp < plan.price < plan.sl  # same SELL ordering McpOrderExecutor enforces
 
 
 def test_flat_signal_submits_nothing() -> None:

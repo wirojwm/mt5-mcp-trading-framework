@@ -24,8 +24,10 @@ fabricating a FLAT/stale signal.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 from mt5_mcp_trading.domain.models import MarketBar, Signal
+from mt5_mcp_trading.features.atr import atr as compute_atr
 from mt5_mcp_trading.features.macd import macd as compute_macd
 
 
@@ -34,6 +36,15 @@ class RunnerStrategyConfig:
     fast: int = 12
     slow: int = 26
     min_bars_floor: int = 30  # legacy: hardcoded literal 30 in `max(30, slow + 5)`
+    # SL/TP fields below have NO legacy precedent -- ema_crossover_core_multi.py's runner never
+    # attached a stop-loss/take-profit to its MARKET orders at all (see this module's docstring).
+    # New, project-original design, needed only because the real McpOrderExecutor mandates
+    # non-zero SL/TP for MARKET orders (see compute_stop_distances()). Defaults chosen for a
+    # reasonable trend-following stop, not derived from any legacy value -- open to tuning.
+    atr_period: int = 14  # matches GridStrategyConfig.atr_period's default
+    sl_atr_mult: float = 1.5
+    tp_atr_mult: float = 3.0  # 2:1 reward:risk
+    min_stop_distance_points: float = 10.0  # matches GridStrategyConfig.min_step_points's floor
 
 
 def _min_required_bars(config: RunnerStrategyConfig) -> int:
@@ -65,3 +76,18 @@ def runner_signal(bars: list[MarketBar], config: RunnerStrategyConfig) -> Signal
         timestamp=bars[-1].time,
         rationale=f"macd={macd_value:.6f} fast={config.fast} slow={config.slow}",
     )
+
+
+def compute_stop_distances(
+    bars: Sequence[MarketBar], point: float, config: RunnerStrategyConfig
+) -> tuple[float, float]:
+    """Returns (sl_distance, tp_distance) in price units, both > 0 -- how far from the fill
+    price runner's MARKET orders' stop-loss/take-profit should sit. New, project-original
+    design: the legacy runner never attached SL/TP at all (see this module's docstring), so
+    there is no legacy formula to preserve here. ATR-based, reusing features/atr.py's existing
+    helper (the same one strategy/grid.py already uses for its own step/tp sizing) -- falls back
+    to a fixed points floor when ATR can't be computed (insufficient bars), mirroring
+    strategy/grid.py's compute_grid_levels() fallback."""
+    atr_value = compute_atr(bars, config.atr_period)
+    base = atr_value if atr_value > 0 else config.min_stop_distance_points * point
+    return base * config.sl_atr_mult, base * config.tp_atr_mult

@@ -177,8 +177,24 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   cancelling both; a new one-off script,
   `scripts/run_demo_execution_cancel_pipeline_cycle_orders.py`, verified both present, cancelled
   each with exactly one attempt (no retry), and verified both absent afterward — both retcode
-  10009 (done), both confirmed cancelled, account left clean (0 live pending orders). Full
-  detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  10009 (done), both confirmed cancelled, account left clean (0 live pending orders).
+  First live `STRATEGY="RUNNER"` run (2026-08-03) found a real, previously-invisible gap, with
+  zero live impact: `run_runner_cycle()` raised `InvalidOrderPlanError` before any MCP call —
+  `order_planning/plan.py`'s `build_order_plan()` defaults `sl`/`tp` to `0.0`/`0.0`, and neither
+  `grid_cycle.py` nor `runner_cycle.py` ever passes real values, so every `OrderPlan` this
+  pipeline layer produces is unprotected. `McpOrderExecutor` only hard-validates non-zero SL/TP
+  for MARKET orders (an intentional Phase 6 safety rule) — grid's LIMIT orders went through
+  fine with the same zero values, runner's MARKET order was refused outright, before reaching
+  the broker. Invisible until now because every prior exercise used `DryRunExecutor`/mocks,
+  neither of which validates SL/TP. **Fixed**: `strategy/runner.py`'s new
+  `compute_stop_distances()` (ATR-based, reusing `features/atr.py`'s existing helper — the same
+  one `strategy/grid.py` already uses — with a fixed-floor fallback) gives `run_runner_cycle()`
+  a real, non-zero, correctly-ordered SL/TP to pass into `build_order_plan()`. New,
+  project-original design — the legacy runner never attached SL/TP at all, so there was no
+  formula to port. `run_grid_cycle()`'s parallel LIMIT-orders-unprotected question is untouched,
+  left as a separate, undecided question. +4 tests (327 passed total), architecture tests still
+  pass. Not yet re-run live — that's a separate, explicit next action. Full detail:
+  `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

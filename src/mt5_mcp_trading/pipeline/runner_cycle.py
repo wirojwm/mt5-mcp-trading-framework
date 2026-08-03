@@ -22,7 +22,11 @@ from mt5_mcp_trading.order_planning.plan import build_order_plan
 from mt5_mcp_trading.risk.combine import combine
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps, check_exposure_cap
 from mt5_mcp_trading.sizing.money import MoneyConfig, decide_lot, to_sized_intent
-from mt5_mcp_trading.strategy.runner import RunnerStrategyConfig, runner_signal
+from mt5_mcp_trading.strategy.runner import (
+    RunnerStrategyConfig,
+    compute_stop_distances,
+    runner_signal,
+)
 from mt5_mcp_trading.trade_intent.runner import signal_to_trade_intent
 
 _logger = get_logger("mt5_mcp_trading.pipeline.runner_cycle")
@@ -66,7 +70,20 @@ async def run_runner_cycle(
                       symbol, intent.side, combined.blocking_guard, combined.reasons)
         return None
 
-    plan = build_order_plan(sized, combined, symbol_info, tick, magic=magic, comment="runner")
+    sl_distance, tp_distance = compute_stop_distances(bars, symbol_info.point, runner_config)
+    # intent.reference_price is always None for runner (trade_intent/runner.py) -- this mirrors
+    # build_order_plan()'s own MARKET fallback (order_planning/plan.py) for the same reason, so
+    # build_order_plan resolves the identical price it would have anyway.
+    reference_price = tick.ask if intent.side == "BUY" else tick.bid
+    if intent.side == "BUY":
+        sl = round(reference_price - sl_distance, symbol_info.digits)
+        tp = round(reference_price + tp_distance, symbol_info.digits)
+    else:
+        sl = round(reference_price + sl_distance, symbol_info.digits)
+        tp = round(reference_price - tp_distance, symbol_info.digits)
+
+    plan = build_order_plan(sized, combined, symbol_info, tick, magic=magic, comment="runner",
+                             sl=sl, tp=tp)
     if plan is None:
         _logger.info("[RUNNER] %s %s price could not be planned, skipping", symbol, intent.side)
         return None
