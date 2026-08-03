@@ -121,11 +121,27 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     just not yet observed). Both need their own explicit approval before any code or live call,
     per this project's established practice.
   - Full detail: `docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`.
-- **Phase 7 (regression and failure testing): not started.**
+- **Phase 7 (regression and failure testing): in progress.** No live trading involved — this
+  phase hardens the existing pipeline against failure conditions and adds regression coverage
+  spanning more than one call. Found `run_grid_cycle`/`run_runner_cycle` had no failure-mode
+  tests at all: any adapter exception mid-cycle propagated unhandled, and in `run_grid_cycle`
+  specifically, if the SELL side's `executor.submit()` raised after the BUY side had already
+  succeeded, the function raised without ever returning the BUY side's `ExecutionResult` — the
+  caller lost that return value entirely (not the real state, since `McpOrderExecutor` already
+  persists before returning — only the in-memory value). Fixed: new `GridCycleError` carries
+  every `ExecutionResult` actually obtained (`.completed_results`) and every per-side failure
+  (`.errors`) — one side's failure no longer blocks the other from being attempted, and nothing
+  observed during a cycle is silently lost, while the function still always raises loudly when
+  something failed. `run_runner_cycle` needed no change (single submission, no partial-results
+  scenario) — confirmed by test, not assumed. Added 13 tests: failure injection at every
+  read/submit stage for both cycle functions, plus a repeated-cycle regression test proving the
+  duplicate-order guard works across chained invocations, not just within one call.
+  Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
-`docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md` — read whichever is relevant before
+`docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`, and Phase 7 in
+`docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md` — read whichever is relevant before
 continuing that work in a new session.
 
 ## Safety rules

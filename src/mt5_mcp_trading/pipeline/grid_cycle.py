@@ -9,6 +9,22 @@ a failure of the cycle itself.
 Every read here goes through MarketDataSource/AccountReader -- this function never calls MT5
 or MCP directly, and never even imports mcp_adapter/mt5_adapter's concrete implementations,
 only their interfaces (for type hints). Swap in real adapters and this code doesn't change.
+
+Phase 7 (regression and failure testing) design decision: BUY and SELL are logically
+independent proposals (different prices, different tickets once submitted) -- one side's
+executor.submit() raising must never silently prevent the other, healthy side from being
+attempted, and must never silently discard a result already obtained for the other side.
+Before this, a raise on the second side propagated immediately, losing the first side's
+already-appended ExecutionResult from ever reaching the caller (the real MT5/local-state
+record was never lost -- McpOrderExecutor persists before returning -- only this function's
+in-memory return value was). Fixed by catching per side, always attempting both regardless of
+either failing, and raising a single GridCycleError at the end if anything failed -- carrying
+every ExecutionResult that WAS obtained plus every exception that occurred, so nothing
+observed during the cycle is ever silently lost, while still making failure impossible to
+ignore (the function still raises, never returns a falsely-clean empty/partial list).
+Read-stage failures (get_bars/get_symbol_info/get_tick/get_positions/get_orders, all before
+the per-side loop) are NOT wrapped -- there's nothing to preserve yet at that point, so the
+raw exception propagates unchanged.
 """
 
 from __future__ import annotations
@@ -26,6 +42,27 @@ from mt5_mcp_trading.strategy.grid import GridStrategyConfig, compute_grid_level
 from mt5_mcp_trading.trade_intent.grid import grid_levels_to_trade_intents
 
 _logger = get_logger("mt5_mcp_trading.pipeline.grid_cycle")
+
+
+class GridCycleError(RuntimeError):
+    """Raised when one or both sides' executor.submit() call raises during run_grid_cycle().
+    The other side is still attempted regardless -- BUY/SELL are logically independent, so one
+    side's failure must never prevent the other from being submitted. Carries every
+    ExecutionResult that WAS successfully obtained (.completed_results) and every per-side
+    exception (.errors, as (side, exception) pairs) -- nothing observed during the cycle is
+    lost just because something else in the same cycle failed."""
+
+    def __init__(
+        self, completed_results: list[ExecutionResult], errors: list[tuple[str, Exception]]
+    ) -> None:
+        self.completed_results = completed_results
+        self.errors = errors
+        sides = ", ".join(f"{side}: {exc!r}" for side, exc in errors)
+        super().__init__(
+            f"run_grid_cycle: {len(errors)} side(s) raised during executor.submit() ({sides}); "
+            f"{len(completed_results)} side(s) completed successfully -- see "
+            f".completed_results/.errors, nothing was silently lost."
+        )
 
 
 async def run_grid_cycle(
@@ -53,6 +90,7 @@ async def run_grid_cycle(
     buy_intent, sell_intent = grid_levels_to_trade_intents(levels)
 
     results: list[ExecutionResult] = []
+    errors: list[tuple[str, Exception]] = []
 
     for intent in (buy_intent, sell_intent):
         lot_decision = decide_lot(money_config, atr=levels.atr, step=levels.step_price)
@@ -76,6 +114,16 @@ async def run_grid_cycle(
                           "from the market, skipping", symbol, intent.side)
             continue
 
-        results.append(await executor.submit(plan))
+        try:
+            results.append(await executor.submit(plan))
+        except Exception as exc:
+            _logger.exception(
+                "[GRID] %s %s executor.submit() raised -- other side still attempted",
+                symbol, intent.side,
+            )
+            errors.append((intent.side, exc))
+
+    if errors:
+        raise GridCycleError(results, errors)
 
     return results

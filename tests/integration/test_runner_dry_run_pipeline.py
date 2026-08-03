@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+import pytest
 
 from mt5_mcp_trading.domain.models import AccountState, MarketBar, SymbolInfo, Tick
 from mt5_mcp_trading.execution.dry_run import DryRunExecutor
@@ -85,3 +88,59 @@ def test_tight_exposure_cap_blocks_the_submission() -> None:
 
     assert result is None
     assert executor.submitted == []
+
+
+# ---------- Phase 7: failure injection ----------
+# Unlike run_grid_cycle, run_runner_cycle makes at most one submit() call -- there is no
+# "partial results to preserve" scenario here, so a raise at any stage should simply propagate
+# unchanged. These tests confirm that's actually true, not assumed.
+
+class _RaisingMarketDataSource:
+    def __init__(self, inner: MockMarketDataSource, raise_on: str, raise_exc: Exception) -> None:
+        self._inner = inner
+        self._raise_on = raise_on
+        self._raise_exc = raise_exc
+
+    async def get_bars(self, symbol: str, timeframe: str, count: int):
+        if self._raise_on == "get_bars":
+            raise self._raise_exc
+        return await self._inner.get_bars(symbol, timeframe, count)
+
+    async def get_tick(self, symbol: str):
+        if self._raise_on == "get_tick":
+            raise self._raise_exc
+        return await self._inner.get_tick(symbol)
+
+    async def get_symbol_info(self, symbol: str):
+        if self._raise_on == "get_symbol_info":
+            raise self._raise_exc
+        return await self._inner.get_symbol_info(symbol)
+
+
+class _RaisingExecutor:
+    async def submit(self, order_plan):
+        raise ConnectionError("stub: connection dropped mid-submit")
+
+    async def cancel(self, ticket):
+        raise NotImplementedError
+
+    async def close_position(self, ticket, volume=None):
+        raise NotImplementedError
+
+
+@pytest.mark.parametrize("raise_on", ["get_bars", "get_tick", "get_symbol_info"])
+def test_market_data_read_failure_propagates_raw(raise_on: str) -> None:
+    market_data = _RaisingMarketDataSource(
+        _market_data(UPWARD_CLOSES), raise_on=raise_on,
+        raise_exc=ConnectionError(f"stub: {raise_on} failed"),
+    )
+    executor = DryRunExecutor()
+
+    with pytest.raises(ConnectionError):
+        _run(market_data, executor)
+    assert executor.submitted == []
+
+
+def test_executor_submit_failure_propagates_raw() -> None:
+    with pytest.raises(ConnectionError):
+        _run(_market_data(UPWARD_CLOSES), _RaisingExecutor())
