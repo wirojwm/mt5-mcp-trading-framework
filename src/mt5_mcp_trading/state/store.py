@@ -119,7 +119,12 @@ class StateStore:
         executed_volume: Optional[float],
         broker_comment: str,
         submitted_at: datetime,
+        status: OrderRecordStatus = "OPEN",
     ) -> None:
+        """status defaults to "OPEN" (LIMIT orders carry sl/tp at placement, nothing further
+        to attach). MARKET submissions (Phase 6 Step 6) pass status="OPEN_UNPROTECTED" -- this
+        call must happen before any SL/TP-attach attempt, so a crash between the two leaves an
+        accurate record, not a silently-lost one. See mark_sl_tp_attached()."""
         records = self._load()
         records[str(ticket)] = LocalOrderRecord(
             ticket=ticket, strategy=strategy, magic=magic, comment=comment, symbol=symbol,
@@ -129,8 +134,25 @@ class StateStore:
             requested_filling_mode=requested_filling_mode, requested_expiry=requested_expiry,
             retcode=retcode, executed_price=executed_price, executed_volume=executed_volume,
             broker_comment=broker_comment, submitted_at=submitted_at, closed_at=None,
-            status="OPEN", closed_reason=None, origin="system_owned",
+            status=status, closed_reason=None, origin="system_owned",
         )
+        self._write(records)
+
+    def mark_sl_tp_attached(self, ticket: int) -> None:
+        """Transitions a MARKET order's record from OPEN_UNPROTECTED to OPEN. Caller
+        (McpOrderExecutor) must only call this after BOTH a confirmed-done modify_position
+        retcode AND a fresh live read agree SL/TP now matches what was requested -- never on
+        retcode alone. Leaves closed_at/closed_reason untouched: the position isn't closed,
+        just now protected."""
+        records = self._load()
+        existing = records.get(str(ticket))
+        if existing is None:
+            _logger.warning(
+                "mark_sl_tp_attached called for ticket=%s with no local record -- nothing to "
+                "update", ticket,
+            )
+            return
+        records[str(ticket)] = dataclasses.replace(existing, status="OPEN")
         self._write(records)
 
     def record_manual_adoption(
@@ -189,4 +211,11 @@ class StateStore:
         return self._load().get(str(ticket))
 
     def all_open(self) -> tuple[LocalOrderRecord, ...]:
-        return tuple(r for r in self._load().values() if r.status == "OPEN")
+        # OPEN_UNPROTECTED counts as open for reconciliation purposes -- an unprotected
+        # MARKET position must still be recognized as locally known, or it would reconcile as
+        # unknown_real and force the whole executor into MANAGE_ONLY (see state/models.py's
+        # OrderRecordStatus docstring; only that one ticket is meant to require special
+        # handling, never the rest of the executor).
+        return tuple(
+            r for r in self._load().values() if r.status in ("OPEN", "OPEN_UNPROTECTED")
+        )

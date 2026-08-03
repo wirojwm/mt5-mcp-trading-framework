@@ -302,6 +302,105 @@ after. This is the first time `close_position()` has closed a real position, and
 time this project's local state has honestly represented a human-originated action rather than
 either fabricating or refusing to record it at all.
 
+## Step 6 — planning, then implementation (6a-6d), no live call yet
+
+**Planning approved.** Read `metatrader_client`/`metatrader_mcp` source directly (not assumed)
+to confirm: `place_market_order` MCP tool signature is `(symbol, volume, type)` only — no
+`sl`/`tp`/`magic`/`comment`/`deviation` at that layer at all, so a MARKET order always opens
+completely naked. `modify_position(id, stop_loss, take_profit)` is the only path to attach
+SL/TP afterward, and reuses the exact same `OrderSendResult`-shaped response already handled
+by `metatrader_retcodes.parse_trade_response()` — no new parsing code needed. Full detail now
+also in `docs/mcp_tool_classification.md`, Known Issues item 7 addendum.
+
+User decisions locking scope:
+1. SL/TP pre-validation: reject missing/zero/wrong-side SL/TP locally before any MCP call;
+   do NOT attempt broker-side minimum-distance (`stops_level`/`freeze_level`) validation, since
+   reliable `SymbolInfo` isn't available through the current MCP connection path — a `10016`
+   rejection from `modify_position` is handled as a normal, expected-possible, trusted-retcode
+   failure, not a bug.
+2. Failure scope: if SL/TP attachment fails, mark and block only that exact ticket
+   (`status="OPEN_UNPROTECTED"`), never the whole executor. No automatic retry, no automatic
+   close. Other tickets/symbols continue operating normally. The only recovery path is an
+   explicitly-approved action (typically `close_position()`) on that one ticket.
+
+**Implemented (6a-6d), all mocked, zero live calls**:
+- `domain/models.py`: `PositionState` gained `sl`/`tp` fields (default `0.0`, MT5's own
+  no-stop convention).
+- `mt5_adapter/mcp_account.py`: `get_positions()` now parses the `stop_loss`/`take_profit`
+  columns `get_positions_with_magic` already returned but nothing read before now.
+- `state/models.py`: `OrderRecordStatus` gained `"OPEN_UNPROTECTED"` — a real status value, not
+  a separate boolean, so a partial/stale write can never look identical to a normally-protected
+  `OPEN` record.
+- `state/store.py`: `record_submission()` gained a `status` parameter (default `"OPEN"`,
+  existing LIMIT call sites unchanged); new `mark_sl_tp_attached()` transitions
+  `OPEN_UNPROTECTED` → `OPEN`; `all_open()` now includes `OPEN_UNPROTECTED` so reconciliation
+  still recognizes the ticket as locally known (never `unknown_real`, so it never forces the
+  whole executor into `MANAGE_ONLY` — this is the mechanism that satisfies decision 2 above
+  without touching `state/policy.py` or `state/reconcile.py` at all).
+- `mt5_adapter/mcp_order_executor.py`: `submit()` now dispatches LIMIT vs MARKET (existing
+  LIMIT logic moved into `_submit_limit()`, unchanged). New `_submit_market()`: pre-flight
+  `_validate_market_sl_tp()` (raises `InvalidOrderPlanError`, no MCP call yet) → one
+  `place_market_order` call → on confirmed-done retcode, `record_submission(...,
+  status="OPEN_UNPROTECTED")` **before** attempting attachment → `_verify_position_present()`
+  (fresh live read) → exactly one `modify_position` call (any exception during the call itself
+  is caught and re-raised as `SlTpAttachmentFailedError`, same as a rejected retcode) →
+  `_verify_sl_tp_attached()` (fresh live read must agree with the retcode, not just trust it)
+  → `mark_sl_tp_attached()` only if both agree. New `SlTpAttachmentFailedError` (carries
+  ticket/order_plan/reason/retcode) and `InvalidOrderPlanError` exception classes.
+- Tests: `tests/unit/test_mt5_adapter_mcp_account.py` (+1, non-zero sl/tp parsing proof).
+  `tests/unit/test_mt5_adapter_mcp_order_executor.py` (+9): full happy path (place + attach +
+  live-verify, status transitions to `OPEN`), missing/zero SL-TP rejected pre-flight,
+  wrong-side SL/TP rejected pre-flight, place-rejected (no modify attempted), attach-rejected
+  (marks `OPEN_UNPROTECTED`, exactly one attempt, no auto-close/cancel), attach-call-raises
+  (proves state written before the attempt, the crash-mid-sequence scenario), attach
+  retcode-done-but-live-read-disagrees (retcode alone is never sufficient), an unrelated LIMIT
+  submission still succeeds despite another ticket being `OPEN_UNPROTECTED`, and an explicit
+  `close_position()` still works normally on an `OPEN_UNPROTECTED` ticket (the one allowed
+  recovery path). One existing test renamed/repointed:
+  `test_submit_only_supports_limit_orders_in_this_step` → `test_submit_rejects_unsupported_order_types`
+  (now asserts against a genuinely-unsupported `order_type`, since MARKET is no longer one).
+
+```
+pytest -q                        -> 299 passed (289 previously + 10 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Not done**: the live smoke test (a dedicated script mirroring
+`run_demo_execution_close_smoke_test.py`'s pattern, minimum lot, one attempt) — this is its own
+separate step requiring its own separate explicit approval, not started. No MARKET order has
+ever been placed live; `_submit_market()` has never made a real MCP call.
+
+**Remaining risks / open items**:
+- SL/TP minimum-distance from price (`stops_level`/`freeze_level`) is not pre-validated
+  locally — a live `10016` rejection is expected-possible and handled, but not yet observed for
+  real. First live attempt should deliberately choose SL/TP comfortably far from price to avoid
+  conflating "the attach-failure path works" with "the distance itself was the problem."
+  Confirmed against a captured fixture in tests, not yet against a real broker response.
+- `ticket = int(response.raw_data["order"])` for a MARKET fill is assumed to equal the
+  resulting position's ticket (standard MT5 behavior on a hedging-style account, consistent
+  with how Step 4 already treats the same field for LIMIT orders) — not yet independently
+  live-confirmed for the DEAL/MARKET case specifically. The live smoke test should verify this
+  by checking the returned ticket appears in `get_positions_with_magic` immediately after.
+  `_verify_position_present()` will catch it (reports `verified=False`) if this assumption is
+  ever wrong, rather than silently trusting it.
+- `_SL_TP_TOLERANCE = 1e-6` in `mcp_order_executor.py` guards against float-serialization noise
+  only, not real broker rounding to the symbol's price precision — may need widening once a
+  live `modify_position` response's actual rounding behavior is observed.
+- Pipeline wiring (`run_grid_cycle`/`run_runner_cycle`) remains explicitly out of scope for
+  this whole phase's current plan, unaffected by this step.
+
+**Exact next step**: build a dedicated live smoke-test script (minimum lot, explicit expected
+values, one attempt, same pattern as `run_demo_execution_close_smoke_test.py`), then request
+separate, explicit approval before running it. No live call, and no such script, exists yet.
+
+**Continuation prompt for the next session**:
+> Continue Phase 6 Step 6. Planning and implementation (6a-6d) are done and committed — read
+> this checkpoint's "Step 6" section and `mt5_adapter/mcp_order_executor.py`'s module docstring
+> first. Next: build the live smoke-test script for a single minimum-lot MARKET order with
+> mandatory SL/TP (mirror `scripts/run_demo_execution_close_smoke_test.py`'s pattern: exact
+> expected-value checks, one attempt, no retry), then stop and wait for explicit approval
+> before running it. Do not make any live MCP/MT5 call without that separate approval.
+
 ## Incomplete / explicitly deferred — do NOT treat as done
 
 - ~~No order has ever been placed, and `McpOrderExecutor`'s success path has never been

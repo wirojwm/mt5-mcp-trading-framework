@@ -131,6 +131,22 @@ def test_get_positions_all_parses_rows_with_real_magic() -> None:
     assert client.calls == [("get_positions_with_magic", {})]
 
 
+def test_get_positions_parses_nonzero_sl_tp() -> None:
+    # Phase 6 Step 6: the raw stop_loss/take_profit columns were already present in
+    # get_positions_with_magic's output (see REAL_POSITIONS_CSV above, both 0.0 there), just
+    # never parsed until McpOrderExecutor's SL/TP-attachment verification needed them. A
+    # dedicated non-zero fixture proves real parsing, not a coincidental match against
+    # PositionState's own 0.0 default.
+    csv = (
+        ",id,time,symbol,type,volume,open,stop_loss,take_profit,profit,magic,comment\n"
+        "0,555777,2026-08-02 10:00:00+00:00,BTCUSD,BUY,0.01,63005.0,62000.0,64000.0,1.5,71101,grid\n"
+    )
+    client = _StubMcpClient({"get_positions_with_magic": csv})
+    reader = McpAccountReader(client)
+    positions = asyncio.run(reader.get_positions())
+    assert (positions[0].sl, positions[0].tp) == (62000.0, 64000.0)
+
+
 def test_get_positions_by_symbol_calls_the_symbol_scoped_tool() -> None:
     client = _StubMcpClient({"get_positions_with_magic": REAL_POSITIONS_CSV})
     reader = McpAccountReader(client)

@@ -1,10 +1,48 @@
 """
-Real OrderExecutor backed by metatrader-mcp-server. LIMIT orders only via `submit()`, plus
-`cancel()` and `close_position()`. MARKET orders (needing a mandatory SL/TP follow-up via
-`modify_position`, since place_market_order drops SL/TP entirely -- see
-docs/mcp_tool_classification.md, Known Issues item 7) are deliberately NOT implemented here --
-a separate, later, individually-approved step (Phase 6 plan step 6). Pipeline wiring
-(run_grid_cycle/run_runner_cycle) is likewise out of scope here.
+Real OrderExecutor backed by metatrader-mcp-server. LIMIT and MARKET orders via `submit()`,
+plus `cancel()` and `close_position()`. Pipeline wiring (run_grid_cycle/run_runner_cycle) is
+out of scope here, as is any live call -- see docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md
+for what has and hasn't been live-proven.
+
+MARKET orders (Phase 6 Step 6), confirmed by reading `metatrader_client/client_order.py` and
+`metatrader_mcp/server.py` directly, not assumed: the `place_market_order` MCP tool accepts
+only `symbol`/`volume`/`type` -- no `sl`/`tp`/`magic`/`comment`/`deviation` parameter exists at
+that layer at all, even though a function one level further down in the third-party package
+does accept and forward stop_loss/take_profit (it's just never exposed up to the tool this
+project can actually call). Every MARKET order therefore opens completely naked at placement.
+The only way to attach SL/TP is a mandatory follow-up `modify_position(id, stop_loss,
+take_profit)` call -- confirmed to reuse the exact same `OrderSendResult`-shaped response
+already handled by `metatrader_retcodes.parse_trade_response()` (an SLTP-action order_send()
+internally), so no new parsing code was needed for it.
+
+This creates a real window, between the position confirming open and SL/TP confirming
+attached, where a genuine, unattributed-risk, unprotected position exists on the account.
+`_submit_market()` handles it deliberately conservatively:
+- Local state is written as `status="OPEN_UNPROTECTED"` immediately after the position
+  confirms open -- BEFORE the modify_position attempt -- so a crash between the two calls
+  still leaves an accurate record, never a silently-lost one.
+- Exactly one `modify_position` attempt is made. No retry, ever, regardless of outcome.
+- Success is never taken on retcode alone: a fresh live read of the position's actual sl/tp
+  must also agree, or attachment is treated as failed even if the retcode said done.
+- On any failure to confirm attachment, `SlTpAttachmentFailedError` is raised and the ticket
+  stays `OPEN_UNPROTECTED`. No automatic retry and no automatic close is ever attempted --
+  auto-closing on failure would itself be a second unattended live trading decision, exactly
+  the class of behavior this project has consistently refused to do (see Step 5's MANAGE_ONLY
+  refusal, which stopped and reported rather than acting). Recovery is a separate,
+  explicitly-approved call (typically `close_position()` on that one ticket) made by a human,
+  not by this code.
+- `OPEN_UNPROTECTED` deliberately does NOT block the rest of the executor: StateStore.all_open()
+  still reports it as locally known, so reconciliation never classifies it `unknown_real` and
+  the executor never drops into MANAGE_ONLY over it. Other tickets/symbols continue operating
+  normally -- only actions against that exact unprotected ticket are meant to require a fresh,
+  explicit human decision, and this module never automates one on its own.
+- Broker-side minimum stop-distance (`stops_level`/`freeze_level`) is deliberately NOT
+  pre-validated locally -- reliable SymbolInfo isn't available through the current MCP
+  connection path used here, and re-deriving that validation from scratch for SL/TP (separate
+  from order_planning/limit_price.py's existing LIMIT-price version) was judged higher-risk
+  than reusing the retcode-trust doctrine already proven for every other rejection class in
+  this project. A `10016` ("Invalid stops") rejection from `modify_position` is therefore
+  handled exactly like any other clean, expected-possible failure, not as a bug.
 
 close_position(), confirmed by reading `metatrader_client/order/close_position.py` and
 `client_order.py` directly: takes only a ticket, no volume parameter anywhere in the stack --
@@ -64,6 +102,74 @@ class ExecutionBlockedError(RuntimeError):
     refusing everything."""
 
 
+class InvalidOrderPlanError(ValueError):
+    """Raised when an OrderPlan fails a local, pre-flight validation check -- before any MCP
+    call is made. Distinct from ExecutionBlockedError (posture-based refusal, not about the
+    plan's own content) and NotImplementedError (an order_type this executor doesn't support
+    at all, rather than a malformed instance of one it does)."""
+
+
+class SlTpAttachmentFailedError(RuntimeError):
+    """Raised by _submit_market() when a MARKET order's position was opened successfully but
+    the mandatory SL/TP follow-up (modify_position) could not be confirmed attached -- either
+    the call itself failed/raised, returned a non-done retcode, or reported success while a
+    fresh live read disagreed. The position is REAL, OPEN, and UNPROTECTED on the account.
+    Local state already reflects this (status="OPEN_UNPROTECTED") before this exception is
+    ever raised -- see StateStore.record_submission()/mark_sl_tp_attached(). No automatic
+    retry or close is attempted by this module; recovery (retry the attach, or close the
+    position) requires its own separate, explicitly-approved call."""
+
+    def __init__(
+        self, *, ticket: int, order_plan: OrderPlan, reason: str, retcode: Optional[int]
+    ) -> None:
+        self.ticket = ticket
+        self.order_plan = order_plan
+        self.reason = reason
+        self.retcode = retcode
+        super().__init__(
+            f"ticket={ticket}: SL/TP attachment failed -- {reason}. Position is OPEN and "
+            f"UNPROTECTED; local state is marked OPEN_UNPROTECTED. No automatic retry or "
+            f"close was attempted. Requires an explicitly-approved recovery action."
+        )
+
+
+_SL_TP_TOLERANCE = 1e-6  # float-serialization noise only, not a broker-rounding tolerance --
+# see this module's docstring on why broker-side stop-distance is not pre-validated here.
+
+
+def _validate_market_sl_tp(order_plan: OrderPlan) -> None:
+    """Pre-flight only -- no MCP call has been made yet when this runs. Rejects missing,
+    zero, or wrong-side SL/TP locally rather than spending a round-trip to let MT5's own
+    send_order() validation (same side-correctness rules, confirmed by reading
+    metatrader_client/order/send_order.py) reject it server-side. Does NOT validate minimum
+    distance from the current price (stops_level/freeze_level) -- see this module's docstring."""
+    if order_plan.sl <= 0 or order_plan.tp <= 0:
+        raise InvalidOrderPlanError(
+            f"MARKET order requires both sl>0 and tp>0 (mandatory SL/TP for this project's "
+            f"MARKET path) -- got sl={order_plan.sl}, tp={order_plan.tp}. place_market_order "
+            f"cannot carry SL/TP at placement, and this executor never submits a MARKET "
+            f"order it cannot immediately attempt to protect via modify_position."
+        )
+    price = order_plan.price
+    if price is None:
+        raise InvalidOrderPlanError(
+            "MARKET order requires OrderPlan.price as a reference for SL/TP side validation, "
+            "got None"
+        )
+    if order_plan.side == "BUY":
+        if not (order_plan.sl < price < order_plan.tp):
+            raise InvalidOrderPlanError(
+                f"BUY MARKET order requires sl < price < tp -- got sl={order_plan.sl}, "
+                f"price={price}, tp={order_plan.tp}"
+            )
+    else:
+        if not (order_plan.tp < price < order_plan.sl):
+            raise InvalidOrderPlanError(
+                f"SELL MARKET order requires tp < price < sl -- got tp={order_plan.tp}, "
+                f"price={price}, sl={order_plan.sl}"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class _PostureCheck:
     posture: ExecutionPosture
@@ -105,11 +211,10 @@ class McpOrderExecutor:
     async def submit(self, order_plan: OrderPlan) -> ExecutionResult:
         await self._gate()
 
-        if order_plan.order_type != "LIMIT":
+        if order_plan.order_type not in ("LIMIT", "MARKET"):
             raise NotImplementedError(
-                f"McpOrderExecutor.submit() only supports LIMIT orders in this step, got "
-                f"{order_plan.order_type!r} -- MARKET orders need a mandatory SL/TP "
-                f"follow-up via modify_position, not yet implemented (Phase 6 plan step 6)."
+                f"McpOrderExecutor.submit() only supports LIMIT and MARKET orders, got "
+                f"{order_plan.order_type!r}."
             )
 
         check = await self._current_posture()
@@ -119,6 +224,11 @@ class McpOrderExecutor:
                 f"{check.posture.value} ({check.report or check.error!r}). See state/policy.py."
             )
 
+        if order_plan.order_type == "MARKET":
+            return await self._submit_market(order_plan)
+        return await self._submit_limit(order_plan)
+
+    async def _submit_limit(self, order_plan: OrderPlan) -> ExecutionResult:
         side = order_plan.side  # "BUY"/"SELL" -- matches place_pending_order's `type` directly
         raw = await self._client.call_tool(
             "place_pending_order",
@@ -168,6 +278,147 @@ class McpOrderExecutor:
             deal=deal, executed_price=executed_price, executed_volume=executed_volume,
             broker_comment=response.tool_message, verified=verified,
             verification_details=verification_details,
+        )
+
+    async def _submit_market(self, order_plan: OrderPlan) -> ExecutionResult:
+        _validate_market_sl_tp(order_plan)  # raises InvalidOrderPlanError -- no MCP call yet
+
+        side = order_plan.side  # "BUY"/"SELL" -- matches place_market_order's `type` directly
+        raw = await self._client.call_tool(
+            "place_market_order",
+            {"symbol": order_plan.symbol, "volume": order_plan.volume, "type": side},
+        )
+        response = parse_trade_response(raw)
+
+        if not response.done:
+            return ExecutionResult(
+                order_plan=order_plan, success=False,
+                retcode=response.retcode if response.retcode is not None else _NO_RETCODE,
+                broker_comment=response.tool_message, verified=False,
+                verification_details=(
+                    "not submitted -- rejected before reaching MT5 (no data returned)"
+                    if response.retcode is None else
+                    f"not submitted -- broker retcode={response.retcode}, did not confirm execution"
+                ),
+            )
+
+        assert response.raw_data is not None  # response.done implies raw_data was parsed
+        ticket = int(response.raw_data["order"])
+        deal = response.raw_data.get("deal") or None
+        executed_price = response.raw_data.get("price")
+        executed_volume = response.raw_data.get("volume")
+        submitted_at = datetime.now(timezone.utc)
+
+        # Written BEFORE the SL/TP-attach attempt below -- if the process dies right here, a
+        # real unprotected position is still visible in local state, never silently lost. See
+        # this module's docstring.
+        self._state_store.record_submission(
+            ticket=ticket, strategy=strategy_name_for_magic(order_plan.magic),
+            magic=order_plan.magic, comment=order_plan.comment, symbol=order_plan.symbol,
+            side=side, order_type=order_plan.order_type, requested_volume=order_plan.volume,
+            requested_price=order_plan.price, requested_sl=order_plan.sl,
+            requested_tp=order_plan.tp, requested_deviation=order_plan.deviation,
+            requested_filling_mode=order_plan.filling_mode, requested_expiry=order_plan.expiry,
+            retcode=response.retcode, executed_price=executed_price,
+            executed_volume=executed_volume, broker_comment=response.tool_message,
+            submitted_at=submitted_at, status="OPEN_UNPROTECTED",
+        )
+
+        verified_open, open_details = await self._verify_position_present(
+            ticket, order_plan.symbol
+        )
+
+        # Exactly one modify_position attempt -- no retry, regardless of outcome. A raised
+        # exception here (dropped connection, etc.) is exactly as dangerous as a rejected
+        # retcode: the position is real and open either way, so both paths raise the same
+        # SlTpAttachmentFailedError rather than letting the raw exception propagate unlabeled.
+        try:
+            sltp_raw = await self._client.call_tool(
+                "modify_position",
+                {"id": ticket, "stop_loss": order_plan.sl, "take_profit": order_plan.tp},
+            )
+        except Exception as exc:
+            raise SlTpAttachmentFailedError(
+                ticket=ticket, order_plan=order_plan,
+                reason=f"modify_position call raised: {exc!r}", retcode=None,
+            ) from exc
+
+        sltp_response = parse_trade_response(sltp_raw)
+        if not sltp_response.done:
+            raise SlTpAttachmentFailedError(
+                ticket=ticket, order_plan=order_plan,
+                reason=(
+                    f"modify_position not confirmed -- retcode={sltp_response.retcode}, "
+                    f"message={sltp_response.tool_message!r}"
+                ),
+                retcode=sltp_response.retcode,
+            )
+
+        verified_attached, attach_details = await self._verify_sl_tp_attached(
+            ticket, order_plan.symbol, order_plan.sl, order_plan.tp
+        )
+        if not verified_attached:
+            raise SlTpAttachmentFailedError(
+                ticket=ticket, order_plan=order_plan,
+                reason=(
+                    f"modify_position reported retcode={sltp_response.retcode} but a fresh "
+                    f"live read disagrees: {attach_details}"
+                ),
+                retcode=sltp_response.retcode,
+            )
+
+        self._state_store.mark_sl_tp_attached(ticket)
+
+        return ExecutionResult(
+            order_plan=order_plan, success=True, retcode=response.retcode, ticket=ticket,
+            deal=deal, executed_price=executed_price, executed_volume=executed_volume,
+            broker_comment=response.tool_message, verified=verified_open and verified_attached,
+            verification_details=f"{open_details}; {attach_details}",
+        )
+
+    async def _verify_position_present(
+        self, ticket: int, symbol: str, attempts: int = 3
+    ) -> tuple[bool, str]:
+        for attempt in range(attempts):
+            positions = await self._account.get_positions(symbol=symbol)
+            if any(p.ticket == ticket for p in positions):
+                return True, (
+                    f"ticket={ticket} confirmed present via get_positions_with_magic "
+                    f"(attempt {attempt + 1}/{attempts})"
+                )
+            if attempt < attempts - 1:
+                await asyncio.sleep(0.5)
+        return False, (
+            f"ticket={ticket} NOT found via get_positions_with_magic after {attempts} "
+            f"attempts -- submission retcode reported success, but state cannot confirm it"
+        )
+
+    async def _verify_sl_tp_attached(
+        self, ticket: int, symbol: str, expected_sl: float, expected_tp: float,
+        attempts: int = 3,
+    ) -> tuple[bool, str]:
+        for attempt in range(attempts):
+            positions = await self._account.get_positions(symbol=symbol)
+            position = next((p for p in positions if p.ticket == ticket), None)
+            if position is not None:
+                sl_ok = abs(position.sl - expected_sl) < _SL_TP_TOLERANCE
+                tp_ok = abs(position.tp - expected_tp) < _SL_TP_TOLERANCE
+                if sl_ok and tp_ok:
+                    return True, (
+                        f"ticket={ticket} confirmed sl={position.sl}/tp={position.tp} match "
+                        f"requested sl={expected_sl}/tp={expected_tp} "
+                        f"(attempt {attempt + 1}/{attempts})"
+                    )
+                if attempt == attempts - 1:
+                    return False, (
+                        f"ticket={ticket} live sl={position.sl}/tp={position.tp} does not "
+                        f"match requested sl={expected_sl}/tp={expected_tp} after "
+                        f"{attempts} attempts"
+                    )
+            if attempt < attempts - 1:
+                await asyncio.sleep(0.5)
+        return False, (
+            f"ticket={ticket} NOT found via get_positions_with_magic after {attempts} attempts"
         )
 
     async def _verify_present(

@@ -25,12 +25,17 @@ from typing import Any, Optional
 
 import pytest
 
-from mt5_mcp_trading.domain.models import AccountState, OrderPlan, PositionState
+from mt5_mcp_trading.domain.models import AccountState, OrderPlan, OrderState, PositionState
 from mt5_mcp_trading.mcp_adapter.metatrader_tools import build_metatrader_tool_registry
 from mt5_mcp_trading.mcp_adapter.tool_registry import ToolClass, ToolRegistry
 from mt5_mcp_trading.mocks.mock_account_and_executor import MockAccountReader
 from mt5_mcp_trading.mt5_adapter.mcp_account import McpAccountReader
-from mt5_mcp_trading.mt5_adapter.mcp_order_executor import ExecutionBlockedError, McpOrderExecutor
+from mt5_mcp_trading.mt5_adapter.mcp_order_executor import (
+    ExecutionBlockedError,
+    InvalidOrderPlanError,
+    McpOrderExecutor,
+    SlTpAttachmentFailedError,
+)
 from mt5_mcp_trading.mt5_adapter.safety import NotDemoAccountError
 from mt5_mcp_trading.state.store import StateStore
 
@@ -107,6 +112,40 @@ CLOSE_INVALID_POSITION_ID_JSON = json.dumps({
     "error": True, "message": "Invalid position ID '555555'", "data": None,
 })
 
+# place_market_order's response mirrors send_order()'s DEAL branch -- same OrderSendResult
+# positional list already confirmed live in Step 4/5. "order" (index 2) is the resulting
+# position's ticket for an immediately-filled market execution on this (hedging-style, per
+# Steps 4-5) account.
+SUCCESS_MARKET_PLACE_JSON = json.dumps({
+    "error": False,
+    "message": "BUY BTCUSD 0.01 LOT at 63005.0 success (Position ID: 555777)",
+    "data": [10009, 987001, 555777, 0.01, 63005.0, 63004.0, 63006.0, "Request executed", 1, 0, _REQUEST_STUB],
+})
+
+MARKET_PLACE_REJECTED_JSON = json.dumps({
+    "error": False,
+    "message": "Order sent successfully",
+    "data": [10018, 0, 0, 0.01, 0.0, 0.0, 0.0, "Market closed", 0, 0, _REQUEST_STUB],
+})
+
+# modify_position's response reuses the same shape via send_order()'s SLTP branch -- no new
+# order/deal is created, just the position modified, hence order=0/deal=0 here.
+SUCCESS_MODIFY_POSITION_JSON = json.dumps({
+    "error": False,
+    "message": "Modify position 555777 success, SL at 62000.0, TP at 64000.0, current price 63005.0",
+    "data": [10009, 0, 0, 0.0, 63005.0, 0.0, 0.0, "Request executed", 1, 0, _REQUEST_STUB],
+})
+
+# Confirmed-possible clean rejection (docs/mcp_tool_classification.md item 7 addendum): SL/TP
+# too close to price relative to the broker's stops_level -- not pre-validated locally in this
+# step (see mcp_order_executor.py's module docstring), so this must be handled like any other
+# trusted-retcode rejection.
+MODIFY_POSITION_REJECTED_JSON = json.dumps({
+    "error": False,
+    "message": "Order sent successfully",
+    "data": [10016, 0, 0, 0.0, 0.0, 0.0, 0.0, "Invalid stops", 0, 0, _REQUEST_STUB],
+})
+
 
 def _account_json() -> str:
     return json.dumps({"balance": 10000.0, "equity": 10000.0, "free_margin": 10000.0, "account_type": "real"})
@@ -178,6 +217,33 @@ class _SequencedAccountReader:
         index = min(self._call_count, len(self._orders_sequence) - 1)
         self._call_count += 1
         return self._orders_sequence[index]
+
+    async def get_connection_state(self):
+        raise NotImplementedError
+
+
+class _SequencedPositionsAccountReader:
+    """Same idea as _SequencedAccountReader but drives get_positions() through a sequence --
+    needed for MARKET submit tests, which read live positions three times in one call: the
+    pre-submit posture check, the post-place verify_position_present, and the post-attach
+    verify_sl_tp_attached. A static MockAccountReader can't represent sl/tp changing across
+    those three reads the way a real modify_position call would."""
+
+    def __init__(self, account_state: AccountState, positions_sequence: list[list]) -> None:
+        self._account_state = account_state
+        self._positions_sequence = positions_sequence
+        self._call_count = 0
+
+    async def get_account_state(self) -> AccountState:
+        return self._account_state
+
+    async def get_positions(self, symbol: Optional[str] = None, magic: Optional[int] = None) -> list:
+        index = min(self._call_count, len(self._positions_sequence) - 1)
+        self._call_count += 1
+        return self._positions_sequence[index]
+
+    async def get_orders(self, symbol: Optional[str] = None, magic: Optional[int] = None) -> list:
+        return []
 
     async def get_connection_state(self):
         raise NotImplementedError
@@ -282,14 +348,203 @@ def test_submit_verification_fails_when_ticket_absent(tmp_path: Path) -> None:
     assert "NOT found" in result.verification_details
 
 
-def test_submit_only_supports_limit_orders_in_this_step(tmp_path: Path) -> None:
+def test_submit_rejects_unsupported_order_types(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state.json")
     client = _StubMcpClient({})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
     with pytest.raises(NotImplementedError):
-        asyncio.run(executor.submit(_order_plan(order_type="MARKET")))
+        asyncio.run(executor.submit(_order_plan(order_type="STOP_LIMIT")))
     assert client.calls == []
+
+
+# ---------- submit() MARKET (Phase 6 Step 6) ----------
+
+def test_submit_market_success_places_and_attaches_protection(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({
+        "place_market_order": SUCCESS_MARKET_PLACE_JSON,
+        "modify_position": SUCCESS_MODIFY_POSITION_JSON,
+    })
+    account_state = AccountState(balance=10000.0, equity=10000.0, margin_free=10000.0, trade_mode="DEMO")
+    account = _SequencedPositionsAccountReader(account_state, positions_sequence=[
+        [],  # pre-submit posture check: nothing exists yet
+        [PositionState(ticket=555777, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63005.0, profit=0.0, magic=0, sl=0.0, tp=0.0)],  # verify_position_present, before attach
+        [PositionState(ticket=555777, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63005.0, profit=0.0, magic=0, sl=62000.0, tp=64000.0)],  # verify_sl_tp_attached, after attach
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.submit(_order_plan(order_type="MARKET")))
+
+    assert result.success is True
+    assert result.retcode == 10009
+    assert result.ticket == 555777
+    assert result.verified is True
+
+    record = store.lookup(555777)
+    assert record is not None
+    assert record.status == "OPEN"  # transitioned from OPEN_UNPROTECTED once attach confirmed
+    assert record.magic == GRID_MAGIC
+    assert [name for name, _ in client.calls] == ["place_market_order", "modify_position"]
+    assert client.calls[0] == ("place_market_order", {"symbol": "BTCUSD", "volume": 0.01, "type": "BUY"})
+    assert client.calls[1] == ("modify_position", {"id": 555777, "stop_loss": 62000.0, "take_profit": 64000.0})
+
+
+def test_submit_market_rejects_missing_sl_tp_before_any_mcp_call(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({})
+    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
+
+    with pytest.raises(InvalidOrderPlanError):
+        asyncio.run(executor.submit(_order_plan(order_type="MARKET", sl=0.0, tp=0.0)))
+    assert client.calls == []
+
+
+def test_submit_market_rejects_wrong_side_sl_tp_before_any_mcp_call(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({})
+    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
+
+    # BUY with sl/tp swapped -- sl above price, tp below -- must never reach MT5.
+    with pytest.raises(InvalidOrderPlanError):
+        asyncio.run(executor.submit(_order_plan(order_type="MARKET", sl=64000.0, tp=62000.0)))
+    assert client.calls == []
+
+
+def test_submit_market_place_rejected_no_modify_attempted(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({"place_market_order": MARKET_PLACE_REJECTED_JSON})
+    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.submit(_order_plan(order_type="MARKET")))
+
+    assert result.success is False
+    assert result.retcode == 10018  # market closed -- NOT done
+    assert store.all_open() == ()  # nothing was opened, nothing to protect
+    assert [name for name, _ in client.calls] == ["place_market_order"]  # modify_position never called
+
+
+def test_submit_market_attach_rejected_marks_open_unprotected(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({
+        "place_market_order": SUCCESS_MARKET_PLACE_JSON,
+        "modify_position": MODIFY_POSITION_REJECTED_JSON,
+    })
+    account_state = AccountState(balance=10000.0, equity=10000.0, margin_free=10000.0, trade_mode="DEMO")
+    account = _SequencedPositionsAccountReader(account_state, positions_sequence=[
+        [],
+        [PositionState(ticket=555777, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63005.0, profit=0.0, magic=0, sl=0.0, tp=0.0)],
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    with pytest.raises(SlTpAttachmentFailedError) as exc_info:
+        asyncio.run(executor.submit(_order_plan(order_type="MARKET")))
+    assert exc_info.value.ticket == 555777
+    assert exc_info.value.retcode == 10016
+
+    record = store.lookup(555777)
+    assert record is not None
+    assert record.status == "OPEN_UNPROTECTED"  # position is real, open, and unprotected
+
+    modify_calls = [c for c in client.calls if c[0] == "modify_position"]
+    assert len(modify_calls) == 1  # exactly one attempt -- no retry
+    assert not any(name in ("close_position", "cancel_pending_order") for name, _ in client.calls)  # no auto-remediation
+
+
+def test_submit_market_attach_call_raises_marks_open_unprotected(tmp_path: Path) -> None:
+    """The process-dies-mid-sequence scenario: proves state was written BEFORE the attach
+    attempt, not after -- the single most important guarantee in this step."""
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient(
+        {"place_market_order": SUCCESS_MARKET_PLACE_JSON},
+        fail=frozenset({"modify_position"}),
+    )
+    account_state = AccountState(balance=10000.0, equity=10000.0, margin_free=10000.0, trade_mode="DEMO")
+    account = _SequencedPositionsAccountReader(account_state, positions_sequence=[
+        [],
+        [PositionState(ticket=555777, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63005.0, profit=0.0, magic=0, sl=0.0, tp=0.0)],
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    with pytest.raises(SlTpAttachmentFailedError):
+        asyncio.run(executor.submit(_order_plan(order_type="MARKET")))
+
+    record = store.lookup(555777)
+    assert record is not None
+    assert record.status == "OPEN_UNPROTECTED"
+
+
+def test_submit_market_attach_retcode_done_but_live_read_disagrees(tmp_path: Path) -> None:
+    """Retcode says done, but a fresh live read of the position's actual sl/tp disagrees --
+    must still be treated as attachment failure, never trusted on retcode alone."""
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({
+        "place_market_order": SUCCESS_MARKET_PLACE_JSON,
+        "modify_position": SUCCESS_MODIFY_POSITION_JSON,
+    })
+    account_state = AccountState(balance=10000.0, equity=10000.0, margin_free=10000.0, trade_mode="DEMO")
+    account = _SequencedPositionsAccountReader(account_state, positions_sequence=[
+        [],
+        [PositionState(ticket=555777, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63005.0, profit=0.0, magic=0, sl=0.0, tp=0.0)],
+        # live sl/tp never actually change despite the confirmed-done retcode above
+        [PositionState(ticket=555777, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63005.0, profit=0.0, magic=0, sl=0.0, tp=0.0)],
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    with pytest.raises(SlTpAttachmentFailedError):
+        asyncio.run(executor.submit(_order_plan(order_type="MARKET")))
+
+    assert store.lookup(555777).status == "OPEN_UNPROTECTED"  # type: ignore[union-attr]
+
+
+def test_open_unprotected_ticket_does_not_block_other_submissions(tmp_path: Path) -> None:
+    """Decision (approved): OPEN_UNPROTECTED blocks only its own ticket, never the whole
+    executor -- an unrelated LIMIT submission must still succeed normally."""
+    store = StateStore(tmp_path / "order_state.json")
+    store.record_submission(
+        ticket=555777, strategy="grid", magic=GRID_MAGIC, comment="grid_buy", symbol="BTCUSD",
+        side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
+        requested_sl=62000.0, requested_tp=64000.0, requested_deviation=150,
+        requested_filling_mode=None, requested_expiry=None, retcode=10009,
+        executed_price=63005.0, executed_volume=0.01, broker_comment="Request executed",
+        submitted_at=datetime(2026, 8, 2, tzinfo=timezone.utc), status="OPEN_UNPROTECTED",
+    )
+    client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON})
+    account_state = AccountState(balance=10000.0, equity=10000.0, margin_free=10000.0, trade_mode="DEMO")
+    account = _SequencedAccountReader(account_state, orders_sequence=[
+        [],
+        [OrderState(ticket=123456, symbol="BTCUSD", side="BUY", volume=0.01, price=63000.0, magic=0)],
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.submit(_order_plan()))  # unrelated LIMIT order
+
+    assert result.success is True  # not blocked by ticket 555777's OPEN_UNPROTECTED status
+    assert store.lookup(555777).status == "OPEN_UNPROTECTED"  # type: ignore[union-attr]  -- untouched
+
+
+def test_open_unprotected_ticket_allows_explicit_protective_close(tmp_path: Path) -> None:
+    """The one recovery path this project allows: an explicit, human-approved close_position()
+    call must still work normally on an OPEN_UNPROTECTED ticket."""
+    store = StateStore(tmp_path / "order_state.json")
+    store.record_submission(
+        ticket=555777, strategy="grid", magic=GRID_MAGIC, comment="grid_buy", symbol="BTCUSD",
+        side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
+        requested_sl=62000.0, requested_tp=64000.0, requested_deviation=150,
+        requested_filling_mode=None, requested_expiry=None, retcode=10009,
+        executed_price=63005.0, executed_volume=0.01, broker_comment="Request executed",
+        submitted_at=datetime(2026, 8, 2, tzinfo=timezone.utc), status="OPEN_UNPROTECTED",
+    )
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    account = _mock_account(positions=[
+        PositionState(ticket=555777, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63005.0, profit=0.0, magic=0, sl=0.0, tp=0.0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.close_position(555777))
+
+    assert result.success is True
+    assert client.calls == [("close_position", {"id": 555777})]
 
 
 def test_require_demo_account_kind_blocks_submit_before_any_mcp_call(tmp_path: Path) -> None:

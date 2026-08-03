@@ -158,6 +158,24 @@ project's own code, and none of these 12 have ever been called by this project.
    - **Market orders can't carry SL/TP at placement** — `MT5Order.place_market_order` never
      forwards `stop_loss`/`take_profit` even though the lower-level function accepts them; a
      market order needs a follow-up `modify_position` call to set SL/TP.
+     **Confirmed exactly, Phase 6 Step 6 planning** (reading `metatrader_mcp/server.py` and
+     `metatrader_client/client_order.py` directly): the `place_market_order` MCP tool signature
+     is `(symbol, volume, type)` only — no `sl`/`tp`/`magic`/`comment`/`deviation` parameter
+     exists at the tool layer at all, so every MARKET order opens completely naked. The
+     `modify_position` MCP tool signature is `(id, stop_loss, take_profit)` — the only path to
+     attach SL/TP after the fact — and reuses the exact same `OrderSendResult`-shaped response
+     (a `SLTP`-action `order_send()` internally) already handled by
+     `metatrader_retcodes.parse_trade_response()`, so no new response-parsing code was needed
+     for it. `src/mt5_mcp_trading/mt5_adapter/mcp_order_executor.py`'s `_submit_market()`
+     handles the resulting open-then-protect window: local state is written
+     `status="OPEN_UNPROTECTED"` before the `modify_position` attempt, exactly one attempt is
+     made (no retry), and success requires both a confirmed-done retcode AND a fresh live read
+     agreeing SL/TP now matches what was requested — retcode alone is never sufficient. See
+     that module's docstring for the full design, including why broker-side minimum
+     stop-distance (`stops_level`/`freeze_level`) is deliberately not pre-validated locally
+     yet (reliable `SymbolInfo` isn't available through the current MCP connection path used
+     here) and why an unprotected ticket is scoped to block only itself, never the whole
+     executor.
    - **Safety-critical: success/failure is determined by `mt5.last_error()` (terminal-level),
      never `response.retcode` (broker-level).** A genuinely rejected trade (requote `10004`,
      invalid stops `10012`, no money `10019`, market closed `10018`, etc.) can come back from

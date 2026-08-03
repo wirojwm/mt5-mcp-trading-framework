@@ -29,7 +29,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Optional
 
-OrderRecordStatus = Literal["OPEN", "CANCELLED", "CLOSED"]
+# OPEN_UNPROTECTED (Phase 6 Step 6): a MARKET order's position confirmed open via retcode,
+# but its mandatory SL/TP follow-up (modify_position) has not been confirmed attached --
+# either not yet attempted, rejected, or reported success but disagreeing with a fresh live
+# read. Deliberately its own status, not a separate boolean, so a stale/partial write can
+# never leave a naked position looking identical to a normally-protected OPEN one.
+# StateStore.all_open() treats it as open (reconciliation must still recognize the ticket as
+# locally known, so an unprotected position never becomes "unknown_real" and forces the whole
+# executor into MANAGE_ONLY -- see mcp_order_executor.py's module docstring for why only that
+# one ticket is meant to require special handling, not every other in-flight order). Never
+# transitions automatically back to OPEN except via StateStore.mark_sl_tp_attached(), which is
+# only ever called after BOTH a confirmed-done modify_position retcode AND a fresh live read
+# agree SL/TP now matches what was requested.
+OrderRecordStatus = Literal["OPEN", "OPEN_UNPROTECTED", "CANCELLED", "CLOSED"]
 OrderRecordOrigin = Literal["system_owned", "manual_adoption"]
 
 

@@ -87,6 +87,7 @@ class McpAccountReader:
                 side=_side_from_type(row["type"]), volume=float(row["volume"]),
                 price_open=float(row["open"]), profit=float(row["profit"]),
                 magic=int(float(row["magic"])),
+                sl=float(row["stop_loss"]), tp=float(row["take_profit"]),
             )
             for row in parse_dataframe_csv(raw)
         ]

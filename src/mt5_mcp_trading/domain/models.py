@@ -221,6 +221,12 @@ class AccountState:
 
 @dataclass(frozen=True, slots=True)
 class PositionState:
+    """sl/tp: 0.0 means "no stop set" (MT5's own convention), never None -- a position always
+    has a real sl/tp value on the wire, even when that value is the no-stop sentinel. Added
+    for Phase 6 Step 6 (MARKET order SL/TP-attachment verification): the raw data was already
+    available from get_positions_with_magic (see scripts/metatrader_mcp_extended_server.py's
+    columns mapping), just not parsed until a caller needed it."""
+
     ticket: int
     symbol: str
     side: Side
@@ -228,6 +234,8 @@ class PositionState:
     price_open: float
     profit: float
     magic: int
+    sl: float = 0.0
+    tp: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
