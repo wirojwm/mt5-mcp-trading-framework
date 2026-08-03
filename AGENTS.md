@@ -155,12 +155,12 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   sweep + the O(N²) fix) are complete; user chose to close out the phase here rather than
   continue with live/MCP-adjacent failure testing or the `all_open()` per-action cost noted
   above.
-- **Pipeline wiring (post-Phase 7): started, not yet run live.** Not one of the numbered
-  phases — like "wire real adapters" before Phase 6, a separate, explicitly-approved effort,
-  called out in both the Phase 6 and Phase 7 checkpoint docs as deliberately out of scope until
-  now. This is the first time `run_grid_cycle`/`run_runner_cycle` are wired to the real,
-  order-submitting `McpOrderExecutor` rather than `DryRunExecutor` or a hand-built `OrderPlan`
-  (every prior real `McpOrderExecutor` call, in the three
+- **Pipeline wiring (post-Phase 7): in progress, first live cycle done and cleaned up.** Not
+  one of the numbered phases — like "wire real adapters" before Phase 6, a separate,
+  explicitly-approved effort, called out in both the Phase 6 and Phase 7 checkpoint docs as
+  deliberately out of scope until now. This is the first time `run_grid_cycle`/`run_runner_cycle`
+  are wired to the real, order-submitting `McpOrderExecutor` rather than `DryRunExecutor` or a
+  hand-built `OrderPlan` (every prior real `McpOrderExecutor` call, in the three
   `scripts/run_demo_execution_*_smoke_test.py` scripts, used a hand-built plan, never the
   strategy pipeline). User chose "human-approved per cycle": one script invocation runs exactly
   one cycle, reports what happened, and requires a human to re-invoke it for the next cycle — no
@@ -171,14 +171,21 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   one of grid/runner per run, never both together. Key departure from every prior smoke-test
   script: this one does **not** clean up after itself — a real cycle's result is the actual
   intended strategy decision, meant to persist and be managed by later cycles, not undone by the
-  same invocation. **Not yet run against the real MCP/MT5 connection** — writing the script is
-  not the same as approving a live run; that is a separate, explicit next action.
+  same invocation.
+  First live run (`STRATEGY="GRID"`, 2026-08-03): both sides submitted and verified — ticket
+  `171621248` (BUY_LIMIT) and `171621249` (SELL_LIMIT), BTCUSD, magic=71101. User then approved
+  cancelling both; a new one-off script,
+  `scripts/run_demo_execution_cancel_pipeline_cycle_orders.py`, verified both present, cancelled
+  each with exactly one attempt (no retry), and verified both absent afterward — both retcode
+  10009 (done), both confirmed cancelled, account left clean (0 live pending orders). Full
+  detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
-`docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`, and Phase 7 in
-`docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md` — read whichever is relevant before
-continuing that work in a new session.
+`docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`, Phase 7 in
+`docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`, and pipeline wiring in
+`docs/PIPELINE_WIRING_CHECKPOINT.md` — read whichever is relevant before continuing that work in
+a new session.
 
 ## Safety rules
 
