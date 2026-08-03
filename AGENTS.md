@@ -226,8 +226,12 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   (post-normalization) via `dataclasses.replace()`, not `intent.reference_price`. New regression
   test deliberately forces `normalize_limit_price()` to push the entry far, and was verified (via
   `git stash` on just the fix) to actually fail pre-fix and pass post-fix — not just assumed to.
-  +1 test (331 passed total), architecture tests still pass. Ticket `171622543` left open by
-  user decision. Not yet re-verified live. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  +1 test (331 passed total), architecture tests still pass. **Live re-verified**: a second live
+  GRID run submitted both sides successfully with correct SL/TP ordering (BUY ticket
+  `171622789`: `sl<price<tp`; SELL ticket `171622791`: `tp<price<sl`; both retcode 10009,
+  verified). Account now holds 3 open grid items (those two plus `171622543` from the first
+  run), all correctly protected, none yet resolved. Full detail:
+  `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

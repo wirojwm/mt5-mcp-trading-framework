@@ -414,14 +414,32 @@ separate, explicit next action.
 **Files changed this step**: `src/mt5_mcp_trading/pipeline/grid_cycle.py`,
 `tests/integration/test_grid_dry_run_pipeline.py`, `AGENTS.md`, this checkpoint doc.
 
+## Step 13 — live re-verification of Step 12's anchor-price fix
+
+`scripts/run_demo_execution_pipeline_cycle.py` run live again with `STRATEGY="GRID"` (ticket
+`171622543` from Step 11 still open at the time, unaffected). **Result: PASSED, both sides
+submitted and verified with correct SL/TP ordering.**
+
+- BUY: ticket `171622789`, `price=62276.52, sl=62192.69, tp=62296.64` —
+  `sl < price < tp` ✓. Retcode `10009`, `verified=True`.
+- SELL: ticket `171622791`, `price=62443.94, sl=62527.77, tp=62423.82` —
+  `tp < price < sl` ✓. Retcode `10009`, `verified=True`.
+
+Both sides now get correctly-ordered, non-zero SL/TP sent directly to the broker — confirms
+Step 12's fix live, not just against the dry-run regression test. Per this script's design, no
+cleanup was performed; account now holds 3 open grid items (`171622543` from Step 11 plus these
+two).
+
+**Files changed this step**: this checkpoint doc only (no code changes — this step only ran the
+already-committed script).
+
 ## Remaining risks / not done
 
-- Grid's SL/TP anchor-price bug (Step 11) is **fixed** (Step 12, above) and covered by a
-  regression test verified to actually catch it — but **not yet re-verified live**. The exact
-  live scenario that triggered it (a large normalization push) depends on live market
-  conditions at the time of a future run, not something reliably reproducible on demand.
-- Ticket `171622543` (SELL, `magic=71101`, `strategy='grid'`, correct SL/TP) is intentionally
-  open on the account, by user decision (Step 12) — not a leftover mistake.
+- Grid's SL/TP anchor-price bug (Step 11) is **fixed** (Step 12) and **live-verified** (Step 13,
+  both BUY and SELL confirmed with correct ordering against the real `McpOrderExecutor`).
+- **3 open grid items on the account, all with correct SL/TP**: ticket `171622543` (SELL, Step
+  11), tickets `171622789` (BUY)/`171622791` (SELL) (Step 13). User chose to leave all three
+  open, to be picked up by a later cycle/reconciliation — not leftover mistakes.
 - Account state can move between a report and a follow-up action (order fills, broker-side
   SL/TP triggers, confirmed in Step 9) — any future cleanup script must re-verify live
   immediately before acting, never trust an earlier report as still current.
@@ -436,6 +454,6 @@ separate, explicit next action.
 
 ## Exact next smallest task
 
-Not started — ask the user whether to live-verify Step 12's anchor-price fix next, design the
-bounded-autonomous-loop option, or something else. Stopping here per this project's standard
+Not started — ask the user whether to design the bounded-autonomous-loop option, run another
+cycle, or something else. Stopping here per this project's standard
 "explain, implement, report, stop for approval" workflow.
