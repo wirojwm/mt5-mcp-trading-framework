@@ -138,11 +138,19 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   duplicate-order guard works across chained invocations, not just within one call.
   State-store-at-scale sweep (+3 tests: many-tickets round trip with mixed statuses, a rapid
   sequential-mutation burst, and `reconcile()` at a 600-ticket realistic mixed scale) found a
-  genuine scaling property, not just confirmed correctness: `StateStore` does a full
-  load-serialize-write cycle on every single write, so N writes is O(N²) total real disk I/O —
-  fine at current usage, a real risk if this store is ever wired into a long-running autonomous
-  pipeline accumulating many tickets over time. Flagged, not fixed (out of scope for this
-  phase). Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
+  genuine scaling property, not just confirmed correctness: `StateStore` did a full
+  load-serialize-write cycle on every single write, so N writes was O(N²) total real disk I/O.
+  **Fixed**: `StateStore` now stores one JSON file per ticket (`var/order_state/<ticket>.json`)
+  instead of one big file for the whole store — every write/read method except `all_open()`
+  touches only its own ticket's file, O(1) regardless of total ticket count. Benchmarked flat
+  ~3ms/write from 100 to 800 sequential tickets (was ~28s total for 250 tickets under the old
+  format). One-time migration script (`scripts/migrate_state_store_to_per_ticket_files.py`)
+  converted the real `var/order_state.json` (3 live-smoke-test records) to the new format,
+  backing up the original as `var/order_state.json.migrated-bak`. `all_open()` still scans the
+  whole directory (O(N)) and is called once per `McpOrderExecutor.submit()`/`cancel()`/
+  `close_position()` via `_current_posture()` — this was true of the old format too and is
+  **not** fixed by this change; flagged as a remaining risk only if ticket volume ever grows
+  very large under sustained use. Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

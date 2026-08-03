@@ -1,10 +1,11 @@
 """
-StateStore: atomic, persistent order-state records. No live MCP/MT5 call anywhere in this
-file -- StateStore has no dependency on either.
+StateStore: atomic, persistent order-state records, one JSON file per ticket. No live MCP/MT5
+call anywhere in this file -- StateStore has no dependency on either.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,13 +30,13 @@ def _submit(store: StateStore, ticket: int = 123456, strategy: str = "grid", mag
 
 
 def test_cold_start_has_no_records(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     assert store.all_open() == ()
     assert store.lookup(123456) is None
 
 
 def test_record_submission_round_trips(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _submit(store)
 
     record = store.lookup(123456)
@@ -48,8 +49,22 @@ def test_record_submission_round_trips(tmp_path: Path) -> None:
     assert store.all_open() == (record,)
 
 
+def test_submission_writes_one_file_per_ticket(tmp_path: Path) -> None:
+    directory = tmp_path / "order_state"
+    store = StateStore(directory)
+    _submit(store, ticket=123456)
+    _submit(store, ticket=789012, strategy="runner", magic=72101)
+
+    assert (directory / "123456.json").exists()
+    assert (directory / "789012.json").exists()
+    # writing ticket 789012 must not have touched 123456's file/content
+    data = json.loads((directory / "123456.json").read_text(encoding="utf-8"))
+    assert data["ticket"] == 123456
+    assert data["strategy"] == "grid"
+
+
 def test_status_persists_across_a_fresh_store_instance(tmp_path: Path) -> None:
-    path = tmp_path / "order_state.json"
+    path = tmp_path / "order_state"
     _submit(StateStore(path))
 
     reloaded = StateStore(path)  # simulates a process restart
@@ -59,7 +74,7 @@ def test_status_persists_across_a_fresh_store_instance(tmp_path: Path) -> None:
 
 
 def test_record_cancelled_transitions_status(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _submit(store)
 
     store.record_cancelled(123456, reason="smoke test cleanup", closed_at=_now())
@@ -72,7 +87,7 @@ def test_record_cancelled_transitions_status(tmp_path: Path) -> None:
 
 
 def test_record_closed_transitions_status(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _submit(store)
 
     store.record_closed(123456, reason="tp hit", closed_at=_now())
@@ -88,7 +103,7 @@ def test_record_submission_with_open_unprotected_status(tmp_path: Path) -> None:
     # reconciliation (see all_open()'s docstring on why: an unprotected position must remain
     # locally known, or it would reconcile as unknown_real and force the whole executor into
     # MANAGE_ONLY over a single ticket).
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     store.record_submission(
         ticket=555777, strategy="grid", magic=71101, comment="grid_buy", symbol="BTCUSD",
         side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
@@ -105,7 +120,7 @@ def test_record_submission_with_open_unprotected_status(tmp_path: Path) -> None:
 
 
 def test_mark_sl_tp_attached_transitions_open_unprotected_to_open(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     store.record_submission(
         ticket=555777, strategy="grid", magic=71101, comment="grid_buy", symbol="BTCUSD",
         side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
@@ -125,13 +140,13 @@ def test_mark_sl_tp_attached_transitions_open_unprotected_to_open(tmp_path: Path
 
 
 def test_mark_sl_tp_attached_on_unknown_ticket_logs_and_does_not_raise(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     store.mark_sl_tp_attached(999999)  # must not raise
     assert store.lookup(999999) is None
 
 
 def test_record_submission_defaults_to_system_owned_origin(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _submit(store)
     record = store.lookup(123456)
     assert record is not None
@@ -140,7 +155,7 @@ def test_record_submission_defaults_to_system_owned_origin(tmp_path: Path) -> No
 
 
 def test_record_manual_adoption_is_never_fabricated_as_system_owned(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     store.record_manual_adoption(
         ticket=171604527, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63440.91,
         magic=0, adopted_at=_now(), note="manually opened by user, adopted after live verification",
@@ -160,43 +175,39 @@ def test_record_manual_adoption_is_never_fabricated_as_system_owned(tmp_path: Pa
 
 
 def test_transition_on_unknown_ticket_logs_and_does_not_raise(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     store.record_cancelled(999999, reason="never existed locally", closed_at=_now())  # must not raise
     assert store.lookup(999999) is None
 
 
 def test_reading_a_pre_origin_file_defaults_to_system_owned(tmp_path: Path) -> None:
-    # Simulates a state file written before the "origin" field existed (Phase 6 Step 4) --
+    # Simulates a ticket file written before the "origin" field existed (Phase 6 Step 4) --
     # must load without error and default to "system_owned", the correct historical fact for
     # every record written by record_submission() before this field was added.
-    import json
-
-    path = tmp_path / "order_state.json"
-    path.write_text(json.dumps({
+    directory = tmp_path / "order_state"
+    directory.mkdir(parents=True)
+    (directory / "123456.json").write_text(json.dumps({
         "schema_version": 1,
-        "records": {
-            "123456": {
-                "strategy": "grid", "magic": 71101, "comment": "grid_buy", "symbol": "BTCUSD",
-                "side": "BUY", "order_type": "LIMIT", "requested_volume": 0.01,
-                "requested_price": 63000.0, "requested_sl": 62000.0, "requested_tp": 64000.0,
-                "requested_deviation": 150, "requested_filling_mode": "FOK",
-                "requested_expiry": None, "retcode": 10009, "executed_price": 63000.0,
-                "executed_volume": 0.01, "broker_comment": "Request executed",
-                "submitted_at": _now().isoformat(), "closed_at": None, "status": "OPEN",
-                "closed_reason": None,
-                # deliberately no "origin" key
-            }
-        },
+        "ticket": 123456,
+        "strategy": "grid", "magic": 71101, "comment": "grid_buy", "symbol": "BTCUSD",
+        "side": "BUY", "order_type": "LIMIT", "requested_volume": 0.01,
+        "requested_price": 63000.0, "requested_sl": 62000.0, "requested_tp": 64000.0,
+        "requested_deviation": 150, "requested_filling_mode": "FOK",
+        "requested_expiry": None, "retcode": 10009, "executed_price": 63000.0,
+        "executed_volume": 0.01, "broker_comment": "Request executed",
+        "submitted_at": _now().isoformat(), "closed_at": None, "status": "OPEN",
+        "closed_reason": None,
+        # deliberately no "origin" key
     }), encoding="utf-8")
 
-    store = StateStore(path)
+    store = StateStore(directory)
     record = store.lookup(123456)
     assert record is not None
     assert record.origin == "system_owned"
 
 
 def test_multiple_tickets_are_independent(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _submit(store, ticket=1, strategy="grid", magic=71101)
     _submit(store, ticket=2, strategy="runner", magic=72101)
 
@@ -207,17 +218,36 @@ def test_multiple_tickets_are_independent(tmp_path: Path) -> None:
     assert {r.ticket for r in store.all_open()} == {2}
 
 
-def test_corrupted_file_raises_state_load_error(tmp_path: Path) -> None:
-    path = tmp_path / "order_state.json"
-    path.write_text("{not valid json", encoding="utf-8")
-    store = StateStore(path)
+def test_corrupted_ticket_file_raises_state_load_error_only_for_that_ticket(tmp_path: Path) -> None:
+    directory = tmp_path / "order_state"
+    directory.mkdir(parents=True)
+    (directory / "123456.json").write_text("{not valid json", encoding="utf-8")
+    store = StateStore(directory)
 
-    with pytest.raises(StateLoadError):
-        store.all_open()
     with pytest.raises(StateLoadError):
         store.lookup(123456)
     with pytest.raises(StateLoadError):
-        _submit(store)  # writes must also refuse -- never silently overwrite a bad file
+        store.all_open()  # scans every ticket -- one bad file must still hard-stop the whole read
+    with pytest.raises(StateLoadError):
+        store.record_cancelled(123456, reason="test", closed_at=_now())  # must load before writing
+
+    # an unrelated ticket is untouched by the corruption -- writing/reading it must succeed
+    _submit(store, ticket=999999)
+    assert store.lookup(999999) is not None
+
+
+def test_ticket_file_whose_content_disagrees_with_its_filename_raises(tmp_path: Path) -> None:
+    directory = tmp_path / "order_state"
+    directory.mkdir(parents=True)
+    _submit(StateStore(directory), ticket=123456)
+    # Tamper: rename so the filename no longer matches the embedded "ticket" field.
+    (directory / "123456.json").rename(directory / "999999.json")
+
+    store = StateStore(directory)
+    with pytest.raises(StateLoadError):
+        store.lookup(999999)
+    with pytest.raises(StateLoadError):
+        store.all_open()
 
 
 # ---------- Phase 7: at-scale sweep ----------
@@ -240,14 +270,13 @@ def _submit_n(store: StateStore, n: int, base_ticket: int = 171600000) -> list[i
 
 
 def test_many_tickets_round_trip_correctly_with_mixed_statuses(tmp_path: Path) -> None:
-    # 40, not 250+: each write does a full load-serialize-write-atomic-replace cycle over ALL
-    # records so far, making N sequential writes O(N^2) in real disk I/O -- confirmed via
-    # profiling that 250 tickets here alone cost ~28s wall time on this machine (os.replace's
-    # per-call overhead dominates). 40 is still an order of magnitude beyond the existing 1-2
-    # ticket tests -- enough to exercise every status branch below and prove round-tripping
-    # holds beyond trivial cases -- while keeping this test fast enough to run on every change.
-    store = StateStore(tmp_path / "order_state.json")
-    tickets = _submit_n(store, 40)
+    # Each write now touches only its own ticket's file (see store.py's module docstring for
+    # the O(N^2)-for-N-writes problem this replaced -- profiled at ~28s wall time for 250
+    # single-file writes on this machine, os.replace's per-call overhead dominating). 200 here
+    # is well beyond the old 40-ticket ceiling and still runs fast, since per-ticket writes no
+    # longer scale with total ticket count.
+    store = StateStore(tmp_path / "order_state")
+    tickets = _submit_n(store, 200)
 
     # Realistic mixed population: every 4th ticket cancelled, every 5th closed, every 7th
     # (that isn't already cancelled/closed) left OPEN_UNPROTECTED, the rest stay OPEN.
@@ -277,8 +306,8 @@ def test_many_tickets_round_trip_correctly_with_mixed_statuses(tmp_path: Path) -
 
     # Reload fresh, simulating a process restart -- every one of the tickets must survive
     # the full write/reload round trip with the exact status expected, not just "most of them".
-    reloaded = StateStore(tmp_path / "order_state.json")
-    assert len(tickets) == 40
+    reloaded = StateStore(tmp_path / "order_state")
+    assert len(tickets) == 200
     for ticket in tickets:
         record = reloaded.lookup(ticket)
         assert record is not None, f"ticket={ticket} vanished after reload"
@@ -293,15 +322,14 @@ def test_many_tickets_round_trip_correctly_with_mixed_statuses(tmp_path: Path) -
 
 
 def test_rapid_sequential_mutations_remain_consistent(tmp_path: Path) -> None:
-    """Every StateStore method does a full load-mutate-write cycle -- this is the realistic
-    "at scale" risk for this architecture (no threading/multiprocessing involved anywhere in
-    this codebase's actual usage, so genuine concurrent-access testing doesn't apply; see
-    docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md for that scoping decision). A long,
-    rapid burst of sequential submit/cancel/close/mark calls against the SAME store instance
-    (no reload in between) is what a real strategy accumulating many trades over time actually
-    does -- proves no update is ever lost to this read-modify-write pattern under a burst."""
-    store = StateStore(tmp_path / "order_state.json")
-    tickets = _submit_n(store, 30)  # see the sibling test above for why not larger
+    """A long, rapid burst of sequential submit/cancel/close/mark calls against the SAME store
+    instance (no reload in between) is what a real strategy accumulating many trades over time
+    actually does (no threading/multiprocessing involved anywhere in this codebase's actual
+    usage, so genuine concurrent-access testing doesn't apply; see
+    docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md for that scoping decision). Proves no
+    update is ever lost, now that each write only touches its own ticket's file."""
+    store = StateStore(tmp_path / "order_state")
+    tickets = _submit_n(store, 100)  # an order of magnitude beyond the old 30-ticket ceiling
 
     for i, ticket in enumerate(tickets):
         if i % 3 == 0:
@@ -319,10 +347,11 @@ def test_rapid_sequential_mutations_remain_consistent(tmp_path: Path) -> None:
 
 
 def test_write_is_atomic_even_if_replace_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "order_state.json"
-    store = StateStore(path)
+    directory = tmp_path / "order_state"
+    store = StateStore(directory)
     _submit(store)  # establish a valid file first
-    original_bytes = path.read_bytes()
+    ticket_path = directory / "123456.json"
+    original_bytes = ticket_path.read_bytes()
 
     def _boom(*args: object, **kwargs: object) -> None:
         raise OSError("simulated crash during os.replace")
@@ -330,7 +359,19 @@ def test_write_is_atomic_even_if_replace_fails(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr("mt5_mcp_trading.state.store.os.replace", _boom)
 
     with pytest.raises(OSError):
-        _submit(store, ticket=2, strategy="runner", magic=72101)
+        store.record_cancelled(123456, reason="should not land", closed_at=_now())
 
     # the real file must be untouched -- the crash happened before the atomic swap completed
-    assert path.read_bytes() == original_bytes
+    assert ticket_path.read_bytes() == original_bytes
+
+
+def test_writing_one_ticket_never_touches_another_tickets_file(tmp_path: Path) -> None:
+    directory = tmp_path / "order_state"
+    store = StateStore(directory)
+    _submit(store, ticket=1)
+    other_path = directory / "1.json"
+    mtime_before = other_path.stat().st_mtime_ns
+
+    _submit(store, ticket=2)  # a second, unrelated write
+
+    assert other_path.stat().st_mtime_ns == mtime_before  # ticket 1's file was never rewritten

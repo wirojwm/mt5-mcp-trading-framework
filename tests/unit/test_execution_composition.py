@@ -26,7 +26,7 @@ def _settings(**overrides: object) -> Settings:
 async def _enter_and_exit(settings: Settings, tmp_path: Path) -> None:
     async with demo_execution_session(
         settings, mcp_command="never-should-run", mcp_args=[],
-        state_path=tmp_path / "order_state.json",
+        state_path=tmp_path / "order_state",
     ):
         pass
 

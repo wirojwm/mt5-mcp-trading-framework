@@ -48,7 +48,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 WRAPPER = PROJECT_ROOT / "scripts" / "run_metatrader_mcp_stdio.py"
 PYTHON = Path(sys.executable)
-STATE_PATH = PROJECT_ROOT / "var" / "order_state.json"
+STATE_PATH = PROJECT_ROOT / "var" / "order_state"  # directory: one <ticket>.json file per ticket
 
 SYMBOL = "BTCUSD"
 SMOKE_TEST_MAGIC = 79999  # deliberately outside the 71101/72101 grid/runner range

@@ -280,7 +280,7 @@ def _seed_open_record(store: StateStore, ticket: int) -> None:
 def test_submit_success_records_intended_magic_not_mt5_zero(tmp_path: Path) -> None:
     from mt5_mcp_trading.domain.models import OrderState
 
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON})
     account_state = AccountState(balance=10000.0, equity=10000.0, margin_free=10000.0, trade_mode="DEMO")
     # Sequenced: the pre-submit posture check sees nothing (order doesn't exist yet); the
@@ -312,7 +312,7 @@ def test_submit_success_records_intended_magic_not_mt5_zero(tmp_path: Path) -> N
 
 
 def test_submit_rejected_retcode_is_trusted_over_tool_success_flag(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"place_pending_order": LIVE_CAPTURED_AUTOTRADING_DISABLED_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -339,7 +339,7 @@ def test_parse_trade_response_extracts_retcode_from_a_positional_list(tmp_path: 
 
 
 def test_submit_preflight_rejection_has_no_retcode(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"place_pending_order": PREFLIGHT_REJECTED_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -351,7 +351,7 @@ def test_submit_preflight_rejection_has_no_retcode(tmp_path: Path) -> None:
 
 
 def test_submit_verification_fails_when_ticket_absent(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON})
     account = _mock_account(orders=[])  # ticket 123456 never shows up on read-back
     executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
@@ -364,7 +364,7 @@ def test_submit_verification_fails_when_ticket_absent(tmp_path: Path) -> None:
 
 
 def test_submit_rejects_unsupported_order_types(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -376,7 +376,7 @@ def test_submit_rejects_unsupported_order_types(tmp_path: Path) -> None:
 # ---------- submit() MARKET (Phase 6 Step 6) ----------
 
 def test_submit_market_success_places_and_attaches_protection(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({
         "place_market_order": SUCCESS_MARKET_PLACE_JSON,
         "modify_position": SUCCESS_MODIFY_POSITION_JSON,
@@ -406,7 +406,7 @@ def test_submit_market_success_places_and_attaches_protection(tmp_path: Path) ->
 
 
 def test_submit_market_rejects_missing_sl_tp_before_any_mcp_call(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -416,7 +416,7 @@ def test_submit_market_rejects_missing_sl_tp_before_any_mcp_call(tmp_path: Path)
 
 
 def test_submit_market_rejects_wrong_side_sl_tp_before_any_mcp_call(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -427,7 +427,7 @@ def test_submit_market_rejects_wrong_side_sl_tp_before_any_mcp_call(tmp_path: Pa
 
 
 def test_submit_market_place_rejected_no_modify_attempted(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"place_market_order": MARKET_PLACE_REJECTED_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -440,7 +440,7 @@ def test_submit_market_place_rejected_no_modify_attempted(tmp_path: Path) -> Non
 
 
 def test_submit_market_attach_rejected_marks_open_unprotected(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({
         "place_market_order": SUCCESS_MARKET_PLACE_JSON,
         "modify_position": MODIFY_POSITION_REJECTED_JSON,
@@ -469,7 +469,7 @@ def test_submit_market_attach_rejected_marks_open_unprotected(tmp_path: Path) ->
 def test_submit_market_attach_call_raises_marks_open_unprotected(tmp_path: Path) -> None:
     """The process-dies-mid-sequence scenario: proves state was written BEFORE the attach
     attempt, not after -- the single most important guarantee in this step."""
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient(
         {"place_market_order": SUCCESS_MARKET_PLACE_JSON},
         fail=frozenset({"modify_position"}),
@@ -492,7 +492,7 @@ def test_submit_market_attach_call_raises_marks_open_unprotected(tmp_path: Path)
 def test_submit_market_attach_retcode_done_but_live_read_disagrees(tmp_path: Path) -> None:
     """Retcode says done, but a fresh live read of the position's actual sl/tp disagrees --
     must still be treated as attachment failure, never trusted on retcode alone."""
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({
         "place_market_order": SUCCESS_MARKET_PLACE_JSON,
         "modify_position": SUCCESS_MODIFY_POSITION_JSON,
@@ -515,7 +515,7 @@ def test_submit_market_attach_retcode_done_but_live_read_disagrees(tmp_path: Pat
 def test_open_unprotected_ticket_does_not_block_other_submissions(tmp_path: Path) -> None:
     """Decision (approved): OPEN_UNPROTECTED blocks only its own ticket, never the whole
     executor -- an unrelated LIMIT submission must still succeed normally."""
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     store.record_submission(
         ticket=555777, strategy="grid", magic=GRID_MAGIC, comment="grid_buy", symbol="BTCUSD",
         side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
@@ -541,7 +541,7 @@ def test_open_unprotected_ticket_does_not_block_other_submissions(tmp_path: Path
 def test_open_unprotected_ticket_allows_explicit_protective_close(tmp_path: Path) -> None:
     """The one recovery path this project allows: an explicit, human-approved close_position()
     call must still work normally on an OPEN_UNPROTECTED ticket."""
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     store.record_submission(
         ticket=555777, strategy="grid", magic=GRID_MAGIC, comment="grid_buy", symbol="BTCUSD",
         side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63005.0,
@@ -567,7 +567,7 @@ def test_open_unprotected_ticket_allows_explicit_protective_close(tmp_path: Path
 # SELL flow through _submit_market() had zero test coverage, mocked or live, until now.
 
 def test_submit_market_sell_success_places_and_attaches_protection(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({
         "place_market_order": SUCCESS_MARKET_SELL_PLACE_JSON,
         "modify_position": SUCCESS_MODIFY_POSITION_SELL_JSON,
@@ -599,7 +599,7 @@ def test_submit_market_sell_success_places_and_attaches_protection(tmp_path: Pat
 
 
 def test_submit_market_rejects_wrong_side_sl_tp_for_sell_before_any_mcp_call(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -612,7 +612,7 @@ def test_submit_market_rejects_wrong_side_sl_tp_for_sell_before_any_mcp_call(tmp
 
 
 def test_require_demo_account_kind_blocks_submit_before_any_mcp_call(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="REAL")
 
@@ -622,7 +622,7 @@ def test_require_demo_account_kind_blocks_submit_before_any_mcp_call(tmp_path: P
 
 
 def test_manage_only_posture_blocks_new_submission(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON})
     # A real position with no local record at all -- "cannot be matched safely".
     account = _mock_account(positions=[
@@ -636,8 +636,9 @@ def test_manage_only_posture_blocks_new_submission(tmp_path: Path) -> None:
 
 
 def test_blocked_posture_blocks_submission_on_corrupted_state_file(tmp_path: Path) -> None:
-    path = tmp_path / "order_state.json"
-    path.write_text("{not valid json", encoding="utf-8")
+    path = tmp_path / "order_state"
+    path.mkdir()
+    (path / "999999.json").write_text("{not valid json", encoding="utf-8")
     store = StateStore(path)
     client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
@@ -650,7 +651,7 @@ def test_blocked_posture_blocks_submission_on_corrupted_state_file(tmp_path: Pat
 # ---------- cancel() ----------
 
 def test_cancel_success_transitions_state_to_cancelled(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_record(store, 123456)
     client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON})
     account = _mock_account(orders=[])  # confirmed absent after cancelling
@@ -665,7 +666,7 @@ def test_cancel_success_transitions_state_to_cancelled(tmp_path: Path) -> None:
 
 
 def test_require_demo_account_kind_blocks_cancel_before_any_mcp_call(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_record(store, 123456)
     client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind=None)
@@ -676,7 +677,7 @@ def test_require_demo_account_kind_blocks_cancel_before_any_mcp_call(tmp_path: P
 
 
 def test_manage_only_posture_allows_cancel_of_a_matched_ticket(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_record(store, 123456)  # locally known
     client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON})
     account = _mock_account(positions=[
@@ -692,7 +693,7 @@ def test_manage_only_posture_allows_cancel_of_a_matched_ticket(tmp_path: Path) -
 
 
 def test_manage_only_posture_blocks_cancel_of_an_unattributed_ticket(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_record(store, 123456)
     client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON})
     account = _mock_account(positions=[
@@ -707,8 +708,9 @@ def test_manage_only_posture_blocks_cancel_of_an_unattributed_ticket(tmp_path: P
 
 
 def test_blocked_posture_blocks_cancel_on_corrupted_state_file(tmp_path: Path) -> None:
-    path = tmp_path / "order_state.json"
-    path.write_text("{not valid json", encoding="utf-8")
+    path = tmp_path / "order_state"
+    path.mkdir()
+    (path / "999999.json").write_text("{not valid json", encoding="utf-8")
     store = StateStore(path)
     client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
@@ -734,7 +736,7 @@ def _seed_open_position_record(store: StateStore, ticket: int) -> None:
 
 
 def test_close_position_success_closes_full_position_and_records_state(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     account = _mock_account(positions=[])  # confirmed absent after closing
@@ -753,7 +755,7 @@ def test_close_position_success_closes_full_position_and_records_state(tmp_path:
 
 
 def test_close_position_with_matching_full_volume_is_allowed(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     account = _mock_account(positions=[
@@ -768,7 +770,7 @@ def test_close_position_with_matching_full_volume_is_allowed(tmp_path: Path) -> 
 
 
 def test_close_position_rejects_a_partial_volume_request(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     account = _mock_account(positions=[
@@ -782,7 +784,7 @@ def test_close_position_rejects_a_partial_volume_request(tmp_path: Path) -> None
 
 
 def test_close_position_rejected_retcode_is_trusted(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
     client = _StubMcpClient({"close_position": CLOSE_REJECTED_JSON})
     account = _mock_account(positions=[
@@ -799,7 +801,7 @@ def test_close_position_rejected_retcode_is_trusted(tmp_path: Path) -> None:
 
 
 def test_close_position_invalid_position_id_has_no_retcode(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({"close_position": CLOSE_INVALID_POSITION_ID_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
 
@@ -810,7 +812,7 @@ def test_close_position_invalid_position_id_has_no_retcode(tmp_path: Path) -> No
 
 
 def test_close_position_verification_fails_when_still_present(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     account = _mock_account(positions=[
@@ -826,7 +828,7 @@ def test_close_position_verification_fails_when_still_present(tmp_path: Path) ->
 
 
 def test_require_demo_account_kind_blocks_close_before_any_mcp_call(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="REAL")
@@ -837,7 +839,7 @@ def test_require_demo_account_kind_blocks_close_before_any_mcp_call(tmp_path: Pa
 
 
 def test_manage_only_posture_allows_close_of_a_matched_ticket(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)  # locally known
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     account = _mock_account(positions=[
@@ -853,7 +855,7 @@ def test_manage_only_posture_allows_close_of_a_matched_ticket(tmp_path: Path) ->
 
 
 def test_manage_only_posture_blocks_close_of_an_unattributed_ticket(tmp_path: Path) -> None:
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     account = _mock_account(positions=[
@@ -868,8 +870,9 @@ def test_manage_only_posture_blocks_close_of_an_unattributed_ticket(tmp_path: Pa
 
 
 def test_blocked_posture_blocks_close_on_corrupted_state_file(tmp_path: Path) -> None:
-    path = tmp_path / "order_state.json"
-    path.write_text("{not valid json", encoding="utf-8")
+    path = tmp_path / "order_state"
+    path.mkdir()
+    (path / "999999.json").write_text("{not valid json", encoding="utf-8")
     store = StateStore(path)
     client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
     executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
@@ -885,7 +888,7 @@ def test_registry_classification_end_to_end(tmp_path: Path) -> None:
     """One stub client shared by a real McpAccountReader and McpOrderExecutor -- proves every
     tool call across both is correctly classified (TRADING for mutations, READ_ONLY for
     verification/account reads), the same way it would live."""
-    store = StateStore(tmp_path / "order_state.json")
+    store = StateStore(tmp_path / "order_state")
     client = _StubMcpClient({
         "get_account_info": _account_json(),
         "get_positions_with_magic": EMPTY_POSITIONS_CSV,

@@ -1,12 +1,26 @@
 """
-Local, persistent order-state storage — a durable audit trail, atomically written, never
-implicitly trusted over real MT5 state. See models.py's module docstring for what's recorded
-and why, and reconcile.py/policy.py for how this gets cross-checked against reality.
+Local, persistent order-state storage — a durable audit trail, atomically written per ticket,
+never implicitly trusted over real MT5 state. See models.py's module docstring for what's
+recorded and why, and reconcile.py/policy.py for how this gets cross-checked against reality.
 
-Cold start (no file yet) behaves as an empty store, not an error -- the first write creates the
-parent directory and file. A file that exists but can't be parsed raises StateLoadError from
-every read/write method; callers must treat that as a hard stop (see policy.py), never fall
-back to treating it as empty.
+Format: one JSON file per ticket (`<path>/<ticket>.json`) inside the directory named by `path`,
+not one big file for the whole store. This replaces an earlier single-file design where every
+write did a full load-serialize-write of every ticket ever recorded, making N sequential writes
+O(N^2) total real disk I/O -- a genuine scaling problem found and profiled in Phase 7 (see
+docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md). Per-ticket writes now touch only their
+own file, independent of how many other tickets exist -- O(1) per write. `all_open()` (and any
+future "every ticket" operation) still scans the whole directory, O(N), but that's called far
+less often than individual writes.
+
+Cold start (no directory yet) behaves as an empty store, not an error -- the first write creates
+the directory and that ticket's file. A ticket file that exists but can't be parsed, or whose
+embedded `ticket` field disagrees with its own filename, raises StateLoadError from every
+read/write method touching that ticket (or, for all_open(), from touching ANY ticket); callers
+must treat that as a hard stop (see policy.py), never fall back to treating it as empty or
+skipping just the one bad file.
+
+A store written in the old single-file format is NOT read automatically by this module -- see
+scripts/migrate_state_store_to_per_ticket_files.py for the one-time, explicit migration.
 """
 
 from __future__ import annotations
@@ -27,7 +41,7 @@ _logger = get_logger("mt5_mcp_trading.state.store")
 
 
 class StateLoadError(RuntimeError):
-    """Raised when the local state file exists but cannot be parsed/trusted."""
+    """Raised when a local state file exists but cannot be parsed/trusted."""
 
 
 def _serialize(record: LocalOrderRecord) -> dict:
@@ -71,31 +85,51 @@ def _deserialize(ticket: int, data: dict) -> LocalOrderRecord:
     )
 
 
+def _record_path(directory: Path, ticket: int) -> Path:
+    return directory / f"{ticket}.json"
+
+
+def _write_record_file(path: Path, record: LocalOrderRecord) -> None:
+    payload = {"schema_version": _SCHEMA_VERSION, **_serialize(record)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)  # atomic on both POSIX and Windows
+
+
+def _read_record_file(path: Path) -> LocalOrderRecord:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ticket = int(path.stem)
+        if int(data["ticket"]) != ticket:
+            raise ValueError(
+                f"record's ticket field {data['ticket']!r} does not match filename {path.name!r}"
+            )
+        return _deserialize(ticket, data)
+    except Exception as exc:
+        raise StateLoadError(f"Failed to load state file {path}: {exc}") from exc
+
+
 class StateStore:
     def __init__(self, path: Path) -> None:
-        self._path = path
+        self._path = path  # a directory: one <ticket>.json file per ticket
 
-    def _load(self) -> dict[str, LocalOrderRecord]:
+    def _iter_ticket_files(self) -> list[Path]:
         if not self._path.exists():
-            return {}
-        try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-            return {
-                ticket: _deserialize(int(ticket), data)
-                for ticket, data in raw["records"].items()
-            }
-        except Exception as exc:
-            raise StateLoadError(f"Failed to load state file {self._path}: {exc}") from exc
+            return []
+        return sorted(p for p in self._path.glob("*.json") if p.stem.isdigit())
 
-    def _write(self, records: dict[str, LocalOrderRecord]) -> None:
-        payload = {
-            "schema_version": _SCHEMA_VERSION,
-            "records": {ticket: _serialize(record) for ticket, record in records.items()},
-        }
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp_path, self._path)  # atomic on both POSIX and Windows
+    def _load_one(self, ticket: int) -> Optional[LocalOrderRecord]:
+        record_path = _record_path(self._path, ticket)
+        if not record_path.exists():
+            return None
+        return _read_record_file(record_path)
+
+    def _load_all(self) -> dict[int, LocalOrderRecord]:
+        return {int(p.stem): _read_record_file(p) for p in self._iter_ticket_files()}
+
+    def _write_one(self, record: LocalOrderRecord) -> None:
+        _write_record_file(_record_path(self._path, record.ticket), record)
 
     def record_submission(
         self,
@@ -125,8 +159,7 @@ class StateStore:
         to attach). MARKET submissions (Phase 6 Step 6) pass status="OPEN_UNPROTECTED" -- this
         call must happen before any SL/TP-attach attempt, so a crash between the two leaves an
         accurate record, not a silently-lost one. See mark_sl_tp_attached()."""
-        records = self._load()
-        records[str(ticket)] = LocalOrderRecord(
+        record = LocalOrderRecord(
             ticket=ticket, strategy=strategy, magic=magic, comment=comment, symbol=symbol,
             side=side, order_type=order_type, requested_volume=requested_volume,
             requested_price=requested_price, requested_sl=requested_sl,
@@ -136,7 +169,7 @@ class StateStore:
             broker_comment=broker_comment, submitted_at=submitted_at, closed_at=None,
             status=status, closed_reason=None, origin="system_owned",
         )
-        self._write(records)
+        self._write_one(record)
 
     def mark_sl_tp_attached(self, ticket: int) -> None:
         """Transitions a MARKET order's record from OPEN_UNPROTECTED to OPEN. Caller
@@ -144,16 +177,14 @@ class StateStore:
         retcode AND a fresh live read agree SL/TP now matches what was requested -- never on
         retcode alone. Leaves closed_at/closed_reason untouched: the position isn't closed,
         just now protected."""
-        records = self._load()
-        existing = records.get(str(ticket))
+        existing = self._load_one(ticket)
         if existing is None:
             _logger.warning(
                 "mark_sl_tp_attached called for ticket=%s with no local record -- nothing to "
                 "update", ticket,
             )
             return
-        records[str(ticket)] = dataclasses.replace(existing, status="OPEN")
-        self._write(records)
+        self._write_one(dataclasses.replace(existing, status="OPEN"))
 
     def record_manual_adoption(
         self,
@@ -173,8 +204,7 @@ class StateStore:
         on positions this project didn't place, see docs/mcp_tool_classification.md item 7).
         `volume`/`price_open` are independently observed, not requested. `retcode` is always
         None here: no submission ever happened to receive a response from."""
-        records = self._load()
-        records[str(ticket)] = LocalOrderRecord(
+        record = LocalOrderRecord(
             ticket=ticket, strategy="manual_adoption", magic=magic, comment=note, symbol=symbol,
             side=side, order_type="EXTERNAL_POSITION", requested_volume=volume,
             requested_price=price_open, requested_sl=0.0, requested_tp=0.0,
@@ -183,23 +213,21 @@ class StateStore:
             broker_comment=note, submitted_at=adopted_at, closed_at=None, status="OPEN",
             closed_reason=None, origin="manual_adoption",
         )
-        self._write(records)
+        self._write_one(record)
 
     def _transition(
         self, ticket: int, status: OrderRecordStatus, reason: str, closed_at: datetime
     ) -> None:
-        records = self._load()
-        existing = records.get(str(ticket))
+        existing = self._load_one(ticket)
         if existing is None:
             _logger.warning(
                 "record_%s called for ticket=%s with no local record -- nothing to update",
                 status.lower(), ticket,
             )
             return
-        records[str(ticket)] = dataclasses.replace(
+        self._write_one(dataclasses.replace(
             existing, status=status, closed_at=closed_at, closed_reason=reason,
-        )
-        self._write(records)
+        ))
 
     def record_cancelled(self, ticket: int, reason: str, closed_at: datetime) -> None:
         self._transition(ticket, "CANCELLED", reason, closed_at)
@@ -208,7 +236,7 @@ class StateStore:
         self._transition(ticket, "CLOSED", reason, closed_at)
 
     def lookup(self, ticket: int) -> Optional[LocalOrderRecord]:
-        return self._load().get(str(ticket))
+        return self._load_one(ticket)
 
     def all_open(self) -> tuple[LocalOrderRecord, ...]:
         # OPEN_UNPROTECTED counts as open for reconciliation purposes -- an unprotected
@@ -217,5 +245,5 @@ class StateStore:
         # OrderRecordStatus docstring; only that one ticket is meant to require special
         # handling, never the rest of the executor).
         return tuple(
-            r for r in self._load().values() if r.status in ("OPEN", "OPEN_UNPROTECTED")
+            r for r in self._load_all().values() if r.status in ("OPEN", "OPEN_UNPROTECTED")
         )

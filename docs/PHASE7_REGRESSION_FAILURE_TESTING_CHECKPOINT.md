@@ -144,6 +144,85 @@ acceptable for what they prove).
 **Files changed this step**: `tests/unit/test_state_store.py`,
 `tests/unit/test_state_reconcile.py`, this checkpoint doc.
 
+## Step 5 — StateStore O(N²) write-cost fix
+
+Asked the user to pick a direction (per this project's "design decision" pattern) between three
+candidates: per-ticket files, an in-memory cache over the existing single-file format, or
+pruning old closed/cancelled records. **Chose per-ticket files.** Rationale for why the other
+two don't actually fix the problem: an in-memory cache removes only the *read* half of the
+load-serialize-write cycle — the write side still serializes+`os.replace()`s the whole growing
+file every call, so total cost stays O(N²), just with a smaller constant. Pruning bounds N in
+steady state but doesn't change per-write complexity, and raises an unresolved retention-policy
+question for this project's audit-trail intent.
+
+**Implemented** (`src/mt5_mcp_trading/state/store.py`, full rewrite):
+- Format changed from one big `var/order_state.json` (a `{"records": {ticket: {...}}}` blob) to
+  one file per ticket: `var/order_state/<ticket>.json`. Every write method
+  (`record_submission`, `mark_sl_tp_attached`, `record_manual_adoption`, `record_cancelled`,
+  `record_closed`) now touches only its own ticket's file — O(1) regardless of how many other
+  tickets exist. `lookup(ticket)` is likewise O(1) (reads one file, not the whole store).
+  `all_open()` still scans the whole directory, O(N) — the only operation that legitimately
+  needs every ticket.
+- Same atomicity guarantee as before, just scoped to one file: write to `<ticket>.json.tmp`,
+  then `os.replace()` — a crash mid-write leaves the previous version of *that* ticket's file
+  intact, never a partially-written one.
+- `StateLoadError` semantics preserved and sharpened: a corrupt ticket file raises
+  `StateLoadError` from any read/write touching *that* ticket, and from `all_open()` (which must
+  still hard-stop on any single bad file, since `McpOrderExecutor._current_posture()` depends on
+  it for the BLOCKED-posture gate — confirmed this still works via the corrupted-file tests in
+  both `test_state_store.py` and `test_mt5_adapter_mcp_order_executor.py`). New: an unrelated
+  ticket is now provably unaffected by another ticket's corruption (`
+  test_corrupted_ticket_file_raises_state_load_error_only_for_that_ticket`) — a genuine
+  improvement the old single-file format couldn't offer (any corruption there hard-stopped
+  every ticket, not just one). Also added a filename/content consistency check (a ticket file
+  whose embedded `ticket` field disagrees with its own filename raises `StateLoadError` rather
+  than silently trusting one or the other).
+- One-time migration script: `scripts/migrate_state_store_to_per_ticket_files.py`. Converts an
+  old-format file to the new directory layout, verifies every record round-trips exactly before
+  touching anything, then renames the source to `<source>.migrated-bak` (never deletes it). Run
+  once against the real `var/order_state.json` (3 records from Phase 6 live smoke tests) —
+  verified byte-identical content post-migration, backup preserved at
+  `var/order_state.json.migrated-bak`.
+- Updated `tests/unit/test_state_store.py` (rewritten for the new format, +3 tests: one-file-
+  per-ticket isolation, filename/content consistency check, "writing ticket B never touches
+  ticket A's file"), `tests/unit/test_mt5_adapter_mcp_order_executor.py` and
+  `tests/unit/test_execution_composition.py` (path fixtures renamed from `order_state.json` to
+  `order_state`, now a directory; the 3 corrupted-state-file tests rewritten to corrupt one
+  ticket file inside the directory rather than the old single blob), and the three
+  `scripts/run_demo_execution_*_smoke_test.py` scripts' `STATE_PATH` constants.
+- At-scale tests raised from 40/30 tickets to 200/100 (an order of magnitude beyond what the old
+  format could afford to test) — full suite (323 tests) still runs in ~9s.
+
+**Benchmarked, not just asserted fixed**: a standalone script wrote N sequential tickets via
+`record_submission()` and measured wall time. Old format (from Step 4's profiling): ~28s total
+for 250 tickets, cost visibly growing per write. New format: 100→0.30s (3.0ms/write),
+200→0.63s (3.1ms/write), 400→1.28s (3.2ms/write), 800→2.81s (3.5ms/write) — per-write cost flat
+as N grows 8x, confirming O(1) per write / O(N) total, not O(N²).
+
+**New finding, not fixed by this step**: `McpOrderExecutor._current_posture()` calls
+`all_open()` once per `submit()`/`cancel()`/`close_position()` call, to compute
+`ExecutionPosture` before every action — this was true under the old format too. `all_open()` is
+O(N) (must read every ticket file), so if ticket volume ever grows very large under sustained
+autonomous use, the *executor's* per-action posture check would still cost O(N) per action,
+independent of anything fixed in this step (which only addressed `StateStore`'s standalone
+write-benchmark cost, the thing Step 4 actually measured and flagged). Not a regression — the
+old format had the identical cost here — but worth knowing before assuming this step closes out
+every angle of "the StateStore scaling problem." No action taken; flagging only, as this
+project's culture requires distinguishing "fixed" from "not yet a real problem."
+
+```
+pytest -q                        -> 323 passed (320 previously + 3 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `src/mt5_mcp_trading/state/store.py`,
+`scripts/migrate_state_store_to_per_ticket_files.py` (new),
+`tests/unit/test_state_store.py`, `tests/unit/test_mt5_adapter_mcp_order_executor.py`,
+`tests/unit/test_execution_composition.py`, `scripts/run_demo_execution_smoke_test.py`,
+`scripts/run_demo_execution_market_smoke_test.py`,
+`scripts/run_demo_execution_close_smoke_test.py`, `var/order_state/*.json` (migrated data),
+`var/order_state.json.migrated-bak` (backup of the original), `AGENTS.md`, this checkpoint doc.
+
 ## Remaining risks / not done
 
 - `GridCycleError`'s consumers: nothing in this codebase currently calls `run_grid_cycle()`
@@ -151,17 +230,18 @@ acceptable for what they prove).
   scope, see `AGENTS.md`'s "pipeline wiring" note). Whoever eventually does needs to actually
   catch `GridCycleError` and decide what to do with `.completed_results`/`.errors` — this phase
   only guarantees the information is available, not that anything downstream consumes it yet.
-- `StateStore`'s O(N) per-write / O(N²)-for-N-writes scaling (found this step, see above) is
-  unaddressed — fine at current usage, a real risk if ticket volume ever grows large under
-  sustained autonomous use.
+- `StateStore`'s per-write O(N²) scaling (found Step 4) is fixed (Step 5, above). The separate,
+  not-yet-a-real-problem finding from Step 5 — `McpOrderExecutor._current_posture()`'s
+  `all_open()` call being O(N) per submit/cancel/close action — is unaddressed; only worth
+  revisiting if ticket volume ever grows very large under sustained autonomous use.
 - No live/MCP-adjacent failure testing (e.g. actually killing the MCP subprocess mid-call) —
   everything in this phase is pure/mock-based, no live call was made or needed.
 
 ## Exact next smallest task
 
-Both scoped slices of this phase are done (grid_cycle failure handling + state-store-at-scale
-sweep). Ask the user whether to continue Phase 7 further (e.g. live/MCP-adjacent failure
-testing, or addressing the StateStore scaling finding), or consider this phase sufficient for
-now and move to pipeline wiring (a separate, later-approved effort per `AGENTS.md`) or
-something else. Not started — stopping here per this project's standard "explain, implement,
-report, stop for approval" workflow.
+All three scoped slices of this phase are done (grid_cycle failure handling, state-store-at-
+scale sweep, and the StateStore O(N²) write-cost fix). Ask the user whether to continue Phase 7
+further (e.g. live/MCP-adjacent failure testing, or the `_current_posture()`/`all_open()` cost
+noted above), or consider this phase sufficient for now and move to pipeline wiring (a separate,
+later-approved effort per `AGENTS.md`) or something else. Not started — stopping here per this
+project's standard "explain, implement, report, stop for approval" workflow.

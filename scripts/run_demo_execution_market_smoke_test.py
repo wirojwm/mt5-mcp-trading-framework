@@ -74,7 +74,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 WRAPPER = PROJECT_ROOT / "scripts" / "run_metatrader_mcp_stdio.py"
 PYTHON = Path(sys.executable)
-STATE_PATH = PROJECT_ROOT / "var" / "order_state.json"
+STATE_PATH = PROJECT_ROOT / "var" / "order_state"  # directory: one <ticket>.json file per ticket
 
 SYMBOL = "BTCUSD"
 SIDE = "SELL"  # Phase 6 Step 7: MARKET SELL-side live test. Step 6 already live-proved BUY
