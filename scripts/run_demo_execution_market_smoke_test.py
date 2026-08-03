@@ -16,16 +16,24 @@ SAFETY:
   MT5_MCP_MODE is set to in .env -- same reasoning as run_demo_execution_smoke_test.py.
 - require_demo_account_kind() (the reliable, env-sourced hard gate) is enforced by
   demo_execution_session() before anything else is constructed.
-- Aborts before submitting anything if a position already exists for SMOKE_TEST_MAGIC on
-  SYMBOL -- a leftover from a previous incomplete run (e.g. an OPEN_UNPROTECTED ticket from an
-  attach failure that was never separately remediated) must be dealt with on its own, not
-  silently added to.
+- Aborts before submitting anything if a LOCAL state record for SMOKE_TEST_MAGIC is still
+  OPEN/OPEN_UNPROTECTED -- a leftover from a previous incomplete run (e.g. an OPEN_UNPROTECTED
+  ticket from an attach failure that was never separately remediated) must be dealt with on its
+  own, not silently added to. Checked against StateStore, NOT a live-position magic filter --
+  confirmed live (2026-08-03, ticket 171617865) that MT5 always reports magic=0 on positions
+  this project places, so a live filter by magic can never actually detect a leftover; local
+  state is the only reliable source for "did this script open something previously."
 - Volume is the symbol's live volume_min (the smallest size the broker allows).
 - SL/TP are computed live from the current tick and the symbol's stops_level/freeze_level (the
   same gap formula order_planning/limit_price.py already uses for LIMIT prices), with a wide
-  safety multiplier on top -- chosen so the mandatory modify_position attach is unlikely to be
+  safety margin on top -- chosen so the mandatory modify_position attach is unlikely to be
   rejected by the broker's own minimum-distance check, since McpOrderExecutor deliberately does
   not pre-validate that distance itself (see mcp_order_executor.py's module docstring for why).
+  The margin is the LARGER of a gap-multiplier and a percentage of price, not gap-multiplier
+  alone: confirmed live (2026-08-03) that a 10x-gap offset ($1.20 on a ~$62,880 BTCUSD price,
+  ~0.002%) was still rejected with retcode 10016 ("Invalid stops") -- a points-based gap alone
+  scales badly for a high-priced instrument, so a price-percentage floor now dominates for
+  symbols like this one.
 - Exactly ONE submit() call. McpOrderExecutor.submit() internally makes exactly one
   place_market_order call and, only if that succeeds, exactly one modify_position call -- no
   retry of either, ever, regardless of outcome (this script does not add any retry on top).
@@ -68,12 +76,20 @@ SMOKE_TEST_MAGIC = 79999  # same convention as Step 4/5's smoke tests -- deliber
 # resolves to a loud "unknown_magic_79999" rather than being mistaken for a real strategy.
 
 # Safety multiplier on top of (stops_level + freeze_level + 2) * point -- the same minimum-gap
-# formula order_planning/limit_price.py uses for LIMIT prices, reused here as a sane distance
-# for SL/TP even though McpOrderExecutor itself does not enforce it (see this script's
-# docstring). Chosen generously since this account's SL/TP-rejection behavior at the boundary
-# has never been observed live -- better to clear it comfortably than to spend this run's one
-# attempt discovering the exact edge.
+# formula order_planning/limit_price.py uses for LIMIT prices. Kept as a floor for low-priced
+# instruments where this term could dominate, but proven live (2026-08-03, BTCUSD) to be far
+# too small on its own for a high-priced instrument -- see MIN_SL_TP_FRACTION_OF_PRICE below,
+# which is what actually governed the fix.
 GAP_SAFETY_MULTIPLIER = 10
+
+# Floor as a fraction of the reference price -- the dominant term for BTCUSD and any other
+# high-priced instrument, where a points-based stops_level gap is negligible relative to price
+# (confirmed live: a 10x-gap offset of $1.20 on ~$62,880, ~0.002% of price, was rejected with
+# retcode 10016 "Invalid stops"). 1% is deliberately generous: this is a smoke test that closes
+# itself immediately on success, not a real strategy needing a tight stop, and the account only
+# gets one attempt -- better to clear the broker's real (unknown, unpublished) minimum
+# comfortably than to spend that attempt re-discovering the edge.
+MIN_SL_TP_FRACTION_OF_PRICE = 0.01
 
 
 async def main() -> None:
@@ -87,24 +103,36 @@ async def main() -> None:
     ) as (client, account, executor, state_store):
         print("=== Connected via the same wrapper Claude Code uses, trading_enabled=True ===")
 
-        positions_before = await account.get_positions(symbol=SYMBOL, magic=SMOKE_TEST_MAGIC)
-        print(f"\n=== Live positions on {SYMBOL} with magic={SMOKE_TEST_MAGIC} (before): "
-              f"{len(positions_before)} ===")
+        # Live positions on SYMBOL, for visibility/audit only -- NOT the abort gate. MT5
+        # always reports magic=0 on positions this project places (confirmed live,
+        # 2026-08-03), so a live-position magic filter could never detect a leftover.
+        positions_before = await account.get_positions(symbol=SYMBOL)
+        print(f"\n=== Live positions on {SYMBOL} (before, all magics): {len(positions_before)} ===")
         for p in positions_before:
             print(p)
-        if positions_before:
-            print(f"\nABORT: {len(positions_before)} position(s) already exist for "
-                  f"magic={SMOKE_TEST_MAGIC} -- likely a leftover from a previous incomplete "
-                  f"run. Resolve that separately before running this script again. No order "
-                  f"submitted.")
+
+        # The actual abort gate: local state is the only reliable record of what THIS script
+        # opened previously, since MT5's own magic field can't be used to tell.
+        leftover_records = [r for r in state_store.all_open() if r.magic == SMOKE_TEST_MAGIC]
+        print(f"\n=== Local state records for magic={SMOKE_TEST_MAGIC} still open: "
+              f"{len(leftover_records)} ===")
+        for r in leftover_records:
+            print(r)
+        if leftover_records:
+            print(f"\nABORT: {len(leftover_records)} local record(s) for "
+                  f"magic={SMOKE_TEST_MAGIC} are still OPEN/OPEN_UNPROTECTED -- likely a "
+                  f"leftover from a previous incomplete run. Resolve that separately before "
+                  f"running this script again. No order submitted.")
             return
 
         market_data = McpMarketDataSource(client)
         tick = await market_data.get_tick(SYMBOL)
         symbol_info = await market_data.get_symbol_info(SYMBOL)
-        gap = (symbol_info.stops_level + symbol_info.freeze_level + 2) * symbol_info.point
-        offset = round(gap * GAP_SAFETY_MULTIPLIER, symbol_info.digits)
         reference_price = tick.ask  # a BUY market order fills at or near the current ask
+        gap = (symbol_info.stops_level + symbol_info.freeze_level + 2) * symbol_info.point
+        gap_offset = gap * GAP_SAFETY_MULTIPLIER
+        price_fraction_offset = reference_price * MIN_SL_TP_FRACTION_OF_PRICE
+        offset = round(max(gap_offset, price_fraction_offset), symbol_info.digits)
         sl = round(reference_price - offset, symbol_info.digits)
         tp = round(reference_price + offset, symbol_info.digits)
         volume = symbol_info.volume_min
@@ -113,8 +141,11 @@ async def main() -> None:
         print(f"=== symbol_info: digits={symbol_info.digits}, point={symbol_info.point}, "
               f"stops_level={symbol_info.stops_level}, freeze_level={symbol_info.freeze_level}, "
               f"volume_min={volume} ===")
-        print(f"=== Computed: reference_price={reference_price}, gap={gap}, offset={offset} "
-              f"({GAP_SAFETY_MULTIPLIER}x gap), sl={sl}, tp={tp}, volume={volume} ===")
+        print(f"=== Computed: reference_price={reference_price}, gap={gap}, "
+              f"gap_offset={gap_offset} ({GAP_SAFETY_MULTIPLIER}x gap), "
+              f"price_fraction_offset={price_fraction_offset} "
+              f"({MIN_SL_TP_FRACTION_OF_PRICE:.1%} of price), offset={offset} (max of the two), "
+              f"sl={sl}, tp={tp}, volume={volume} ===")
 
         order_plan = OrderPlan(
             symbol=SYMBOL, order_type="MARKET", side="BUY", volume=volume, price=reference_price,
@@ -157,9 +188,11 @@ async def main() -> None:
 
         print(f"state after close: {state_store.lookup(result.ticket)}")
 
-        positions_after = await account.get_positions(symbol=SYMBOL, magic=SMOKE_TEST_MAGIC)
-        print(f"\n=== Live positions on {SYMBOL} with magic={SMOKE_TEST_MAGIC} (after): "
-              f"{len(positions_after)} ===")
+        # No magic filter here either -- see the "before" read's comment above.
+        positions_after = await account.get_positions(symbol=SYMBOL)
+        still_present = [p for p in positions_after if p.ticket == result.ticket]
+        print(f"\n=== Live positions on {SYMBOL} (after, all magics): {len(positions_after)}; "
+              f"ticket={result.ticket} still present: {len(still_present) == 1} ===")
         for p in positions_after:
             print(p)
 

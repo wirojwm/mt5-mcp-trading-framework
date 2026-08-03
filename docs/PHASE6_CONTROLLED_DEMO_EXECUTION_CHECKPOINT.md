@@ -524,19 +524,55 @@ pytest -q                        -> 302 passed (unchanged by this live run -- no
 6. Report retcode/ticket/verified for submit (and close, if reached), plus local state
    before/after, in this checkpoint.
 
+## Step 6 — smoke-test script's two known bugs fixed (no re-run yet)
+
+Both issues found by the live run above are fixed in
+`scripts/run_demo_execution_market_smoke_test.py`:
+
+1. **Leftover-detection bug**: the pre-submission abort check now reads
+   `state_store.all_open()` filtered to `magic == SMOKE_TEST_MAGIC`, instead of a live
+   `account.get_positions(symbol=SYMBOL, magic=SMOKE_TEST_MAGIC)` call — which could never
+   actually detect a leftover, since MT5 is confirmed (live, this same session) to always
+   report `magic=0` on positions this project places. The live-position read is kept for
+   visibility/audit but no longer filtered by magic and no longer the abort gate. The "after"
+   printout was fixed the same way for consistency, plus now explicitly checks whether the
+   just-closed ticket is still present rather than relying on a magic-filtered count.
+2. **Undersized SL/TP margin**: `offset` is now `max(gap * GAP_SAFETY_MULTIPLIER,
+   reference_price * MIN_SL_TP_FRACTION_OF_PRICE)` — a new `MIN_SL_TP_FRACTION_OF_PRICE = 0.01`
+   (1% of price) floor, since the live run showed the previous 10x-gap-only offset ($1.20 on
+   ~$62,880 BTCUSD, ~0.002%) was rejected with retcode `10016`. The gap-multiplier term is kept
+   as the floor for low-priced instruments where it could dominate instead.
+
+No unit tests exist for this script (consistent with `run_demo_execution_smoke_test.py`/
+`run_demo_execution_close_smoke_test.py`, neither of which have dedicated tests either — all
+three are live-only, driven by `demo_execution_session()` and real `.env`/subprocess wiring
+that isn't meaningfully mockable at the script level). Verified instead via `ast.parse()`
+(syntax) and a module-level `runpy` import check (all imports resolve, `main()` never
+invoked) — same verification used when the script was first written.
+
+```
+pytest -q                        -> 302 passed (unchanged -- no production code touched)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this session**: `scripts/run_demo_execution_market_smoke_test.py` only.
+
+**Not done**: no re-run yet. `MIN_SL_TP_FRACTION_OF_PRICE = 0.01` is still an untested-live
+guess, just a much larger and better-reasoned one than the value that just failed — the true
+minimum distance for BTCUSD on this broker remains unknown (unpublished, and this MCP server
+exposes no tool to query it directly).
+
 **Continuation prompt for the next session**:
-> Continue Phase 6 Step 6. Read this checkpoint's "Step 6" sections (especially the "Live
-> result" and "Recovery" entries) and `mt5_adapter/mcp_order_executor.py`'s module docstring
-> first. Ticket `171617865` (BTCUSD, demo account) was closed successfully (retcode `10009`,
-> verified absent) -- the account is clean, nothing open from this step. Two known issues still
-> need fixing before any re-run of `scripts/run_demo_execution_market_smoke_test.py`: (1) its
-> leftover-position abort check filters live positions by `magic`, but MT5 always reports
-> `magic=0` on positions this project places, so that check can never actually detect a
-> leftover -- must check local `StateStore` instead; (2) `GAP_SAFETY_MULTIPLIER=10` was proven
-> too small for BTCUSD live (a `10016` "Invalid stops" rejection resulted) -- needs a much
-> larger multiplier or a percentage-of-price approach. Fix both, add/update tests, before asking
-> to re-run live. Do not make any live MCP/MT5 call without explicit, separately-scoped
-> approval.
+> Continue Phase 6 Step 6. Read this checkpoint's "Step 6" sections (especially "Live result",
+> "Recovery", and "smoke-test script's two known bugs fixed") and
+> `mt5_adapter/mcp_order_executor.py`'s module docstring first. Both known bugs in
+> `scripts/run_demo_execution_market_smoke_test.py` are fixed (leftover-check now uses local
+> `StateStore`, not live `magic`; SL/TP offset now floors at 1% of price, not just a
+> stops_level-gap multiplier) but **not yet re-run live**. The account is currently clean (no
+> open positions from this step — ticket `171617865` was closed with retcode `10009`,
+> verified). Ask for explicit approval before running the script again; if approved, run it
+> once, report the exact result (same format as the "Live result" entry above), update this
+> checkpoint, and stop. Do not make any live MCP/MT5 call without that explicit approval.
 
 ## Incomplete / explicitly deferred — do NOT treat as done
 
