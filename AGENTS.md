@@ -254,8 +254,11 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   (`McpCallTimeoutError`), the first bound on any MCP call anywhere in this codebase; the loop
   script's own reporting now goes through `logging` instead of `print()`, fixing both the
   buffering lag and the file log missing its own output. +5 tests (346 passed total),
-  architecture tests still pass. **Live testing paused — will not resume without explicit
-  approval.** Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  architecture tests still pass. **End-of-day safe-stop confirmed**: no processes running, live
+  state re-checked (only the 2 pre-existing tickets from before the loop run remain, all 6 of
+  the loop's own tickets confirmed cleaned up, nothing unexpected), tests still 346/13 passing,
+  nothing left uncommitted. **Live testing paused — will not resume without explicit approval.**
+  Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

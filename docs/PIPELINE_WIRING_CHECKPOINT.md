@@ -600,9 +600,38 @@ this checkpoint doc.
 - No live run has yet exercised a `GridCycleError` (partial-failure) path for real, nor a
   `STRATEGY="RUNNER"` FLAT/rejected/no-submission outcome via the real pipeline-wiring script.
 
+## Step 16 — end-of-day safe stop, final confirmation
+
+User called time at end of workday and asked for a final safe-stop confirmation, no further
+investigation or new work. Verified fresh, independently, read-only:
+
+- **No processes running** — the loop and every helper script from Step 15 had already exited;
+  confirmed via process listing (`tasklist`), nothing to stop.
+- **Live state re-checked**: exactly 2 items remain, both pre-existing from before Step 15's
+  loop run — position ticket `171622791` (SELL, filled from Step 13's pending order) and pending
+  order `171622543` (Step 11). **None of the 6 tickets Step 15's loop run created are present**
+  — the Step 15 cleanup fully held; nothing unexpected. `171622789` (Step 13) remains absent
+  from live state (noted already in Step 15, still out of scope — not this run's ticket, not
+  investigated further, per "stop expanding" instruction).
+- `pytest -q` → 346 passed (unchanged since Step 15's commit `e812867`). Architecture tests → 13
+  passed.
+- `git status`/`git diff` at session start: clean, nothing pending — Step 15's commit already
+  captured everything. This step's only change is this addendum.
+
+No code changed this step. No live order-affecting action taken — read-only verification only.
+
 ## Exact next smallest task
 
-Not started — do not resume live testing until explicitly approved (per user instruction).
-Once approved: re-run the bounded autonomous loop live to verify all three Step 15 fixes
-together, address the `all_open()` cost question, or something else. Stopping here per this
-project's standard "explain, implement, report, stop for approval" workflow.
+**Live testing remains paused — do not resume without explicit approval.** When resumed, the
+smallest next step is: re-run the bounded autonomous loop live to verify all three Step 15 fixes
+together (credential passing via env vars, the new 30s MCP call timeout, and logging-based
+non-buffered output) — none of the three have been live-verified yet. Separately unresolved,
+lower priority: the `all_open()` per-action cost question, and `171622789`'s stale local record
+(Step 13 ticket, absent from live state, never reconciled — harmless, `local_only` in any future
+`reconcile()` call, not blocking, just stale bookkeeping).
+
+**Continuation prompt for a new session**: "Read AGENTS.md and
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 16 is the most recent entry), confirm git status is
+clean at commit `e812867`, then ask me whether to resume live testing (re-running the bounded
+autonomous loop to verify Step 15's three fixes) or do something else — do not run anything
+live without my explicit go-ahead first."
