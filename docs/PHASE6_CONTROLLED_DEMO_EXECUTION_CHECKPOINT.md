@@ -389,7 +389,7 @@ ever been placed live; `_submit_market()` has never made a real MCP call.
 - Pipeline wiring (`run_grid_cycle`/`run_runner_cycle`) remains explicitly out of scope for
   this whole phase's current plan, unaffected by this step.
 
-## Step 6 — live smoke-test script built, not yet run
+## Step 6 — live smoke-test script built, then run (attach failed, ticket left OPEN_UNPROTECTED)
 
 `scripts/run_demo_execution_market_smoke_test.py` added, mirroring
 `run_demo_execution_close_smoke_test.py`'s pattern. Syntax- and import-checked (module-level
@@ -449,32 +449,94 @@ still open, none newly resolved by this session — no live call was made):
   script were ever repurposed. Not a concern for this specific run, since BTCUSD is the only
   symbol every prior Phase 6 live step has used.
 
-**Exact live-test procedure** (once approved):
-1. Confirm the MT5 terminal's AutoTrading toggle is enabled (same operator prerequisite Step 4
-   hit on its first live attempt — retcode `10027` otherwise, unrelated to this project's code).
+**Live result — 2026-08-03, one attempt, exactly as designed**:
+
+Preflight (all confirmed before running): required `.env` vars present (values never
+displayed); `MT5_PATH` pointed at "TF Global Markets MetaTrader 5 Terminal" -- user confirmed
+this is ThinkMarkets' legal entity name, correct terminal; `MT5_ACCOUNT_KIND=DEMO`; terminal
+open with AutoTrading enabled (user-confirmed, unverifiable by any tool on this MCP server).
+
+- **`place_market_order`**: retcode `10009` (`TRADE_RETCODE_DONE`). Real position opened:
+  ticket `171617865`, BTCUSD BUY, `0.01` lots (live `volume_min`) @ `62880.2`.
+- **`modify_position` (SL/TP attach)**: retcode `10016` ("Invalid stops") -- **rejected**. The
+  tool's own message string said `"...success, SL at 62879.0, TP at 62881.4, current price
+  0.0"` despite the real retcode being a rejection -- a **live-confirmed instance of the known
+  retcode-trust bug (Known Issues item 7), now confirmed for `modify_position` specifically**
+  (previously only observed for place/cancel/close). `parse_trade_response()` correctly ignored
+  the misleading message and read the real retcode; `SlTpAttachmentFailedError` was raised
+  exactly as designed.
+- **Local state**: `record_submission(..., status="OPEN_UNPROTECTED")` had already been written
+  before the attach attempt (confirmed by reading `var/order_state.json` after the run --
+  `retcode=10009`, `requested_sl=62879.0`, `requested_tp=62881.4`, `strategy=
+  "unknown_magic_79999"`, `status="OPEN_UNPROTECTED"`). No automatic retry or close was
+  attempted -- the script stopped immediately after printing ticket/reason/retcode, exactly as
+  designed.
+- **Post-run read-only verification** (a fresh, separate read, no mutating call): ticket
+  `171617865` is present among live BTCUSD positions with `sl=0.0, tp=0.0` -- confirmed
+  genuinely open and unprotected, matching the local record exactly.
+
+**Root cause of the attach failure**: `GAP_SAFETY_MULTIPLIER=10` was far too small for BTCUSD.
+`stops_level=10` points x `point=0.01` x 10 = a $1.20 offset on a ~$62,880 price (~0.002%) --
+evidently still inside the broker's real minimum distance. A points-based formula scales badly
+for a high-priced instrument like this; needs a much larger multiplier or a percentage-of-price
+approach before any retry.
+
+**New bug found, not previously known**: the script's own pre-submission "abort if a leftover
+position already exists" check filters live positions by `magic=SMOKE_TEST_MAGIC` -- but MT5 is
+confirmed (again, live, just now) to always report `magic=0` on positions this project places,
+regardless of what was requested. That abort check would therefore silently pass (report zero)
+even with a genuine `OPEN_UNPROTECTED` leftover still open, exactly the scenario this run just
+created. **Must be fixed to check local `StateStore` instead of live MT5 `magic`** before this
+script is safely re-run.
+
+**Recovery — SUCCESS, same session, user approved closing the position**:
+
+A fresh live read (no magic filter, matching Step 5's discipline) re-confirmed an exact match
+on ticket/symbol/side/volume before sending anything. Local state (`status="OPEN_UNPROTECTED"`)
+was printed before, for the record.
+
+- **Request**: `close_position(ticket=171617865)`.
+- **ExecutionResult**: `success=True`, `retcode=10009` (`TRADE_RETCODE_DONE`),
+  `ticket=171617865`, `deal=99723684`, `executed_price=62893.9`, `verified=True`,
+  `verification_details='ticket=171617865 confirmed absent from live positions'`.
+- **Local state after**: `status='CLOSED'`, `closed_reason='close confirmed via
+  McpOrderExecutor.close_position()'`, `origin` still `'system_owned'` (unchanged).
+- **Live positions after**: ticket `171617865` confirmed absent. Zero open positions/exposure
+  remaining from this step.
+
+One attempt, no retry, exactly as instructed. The account is clean: nothing is currently open
+from Phase 6 Step 6's work.
+
+```
+pytest -q                        -> 302 passed (unchanged by this live run -- no code changed)
+```
+
+**Exact live-test procedure** (as actually executed, kept for reference/repeatability):
+1. Confirm required `.env` vars present, `MT5_PATH`/`MT5_ACCOUNT_KIND` correct, terminal open
+   with AutoTrading enabled -- all via explicit human confirmation, values never displayed.
 2. Run `.venv/Scripts/python.exe scripts/run_demo_execution_market_smoke_test.py` once.
-3. Read the full output: live tick/symbol_info, computed order plan, `ExecutionResult` for the
-   submit, and — only on success — the close `ExecutionResult` and before/after position counts.
-4. If `SlTpAttachmentFailedError` was raised: **stop, report the ticket, and treat it as needing
-   its own separate recovery approval** — do not re-run this script or attempt any close/retry
-   without a fresh, explicit go-ahead for that specific ticket.
-5. If it succeeded end-to-end: confirm zero positions remain for `magic=SMOKE_TEST_MAGIC` on
-   BTCUSD (the script's own final printout already checks this) before considering the step done.
-6. Report retcode/ticket/verified for both the submit and the close, plus local state
-   before/after, back in this checkpoint (mirroring how Steps 4-5's live results are recorded
-   above), then request approval before committing (this session has not committed the script
-   yet — see git status at time of writing).
+3. Read the full output.
+4. If `SlTpAttachmentFailedError` is raised: stop, report the ticket, treat it as needing its
+   own separate recovery approval -- do not re-run this script or attempt any close/retry
+   without a fresh, explicit go-ahead for that specific ticket. (This is what happened.)
+5. If it succeeds end-to-end: confirm zero positions remain for that ticket before considering
+   the step done.
+6. Report retcode/ticket/verified for submit (and close, if reached), plus local state
+   before/after, in this checkpoint.
 
 **Continuation prompt for the next session**:
-> Continue Phase 6 Step 6. Planning, implementation (6a-6d), and the live smoke-test script are
-> done — read this checkpoint's "Step 6" sections and `mt5_adapter/mcp_order_executor.py`'s
-> module docstring first. `scripts/run_demo_execution_market_smoke_test.py` exists,
-> syntax/import-checked, never run. Next: if not already explicitly approved, ask for approval
-> to run it once (see "Exact live-test procedure" above); if approved, run it, report the exact
-> result (retcode/ticket/verified for submit and close, or the SlTpAttachmentFailedError detail
-> if attach failed), update this checkpoint with the real outcome, then stop. Do not make any
-> live MCP/MT5 call without that explicit approval, and do not attempt any automated recovery if
-> SlTpAttachmentFailedError is raised.
+> Continue Phase 6 Step 6. Read this checkpoint's "Step 6" sections (especially the "Live
+> result" and "Recovery" entries) and `mt5_adapter/mcp_order_executor.py`'s module docstring
+> first. Ticket `171617865` (BTCUSD, demo account) was closed successfully (retcode `10009`,
+> verified absent) -- the account is clean, nothing open from this step. Two known issues still
+> need fixing before any re-run of `scripts/run_demo_execution_market_smoke_test.py`: (1) its
+> leftover-position abort check filters live positions by `magic`, but MT5 always reports
+> `magic=0` on positions this project places, so that check can never actually detect a
+> leftover -- must check local `StateStore` instead; (2) `GAP_SAFETY_MULTIPLIER=10` was proven
+> too small for BTCUSD live (a `10016` "Invalid stops" rejection resulted) -- needs a much
+> larger multiplier or a percentage-of-price approach. Fix both, add/update tests, before asking
+> to re-run live. Do not make any live MCP/MT5 call without explicit, separately-scoped
+> approval.
 
 ## Incomplete / explicitly deferred — do NOT treat as done
 
