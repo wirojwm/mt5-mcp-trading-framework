@@ -635,20 +635,47 @@ pytest tests/test_architecture.py -q -> 13 passed
 **Files changed this step**: `tests/unit/test_mt5_adapter_mcp_order_executor.py`,
 `scripts/run_demo_execution_market_smoke_test.py`, this checkpoint doc.
 
-**Not done**: no live call. The SELL-side live proof (the actual "MARKET SELL-side live test"
-requested) has not happened yet — needs its own explicit approval, same as every prior live
-step. Same preflight discipline applies: confirm `.env` vars present, `MT5_PATH`/
-`MT5_ACCOUNT_KIND` correct, terminal open with AutoTrading enabled, before running.
+**Live result — 2026-08-03, one attempt, SUCCESS on the first try**:
+
+Preflight leftover check: `state_store.all_open()` filtered to `magic=79999` → 0 records.
+Correctly passed (account was clean from Step 6).
+
+- **`place_market_order`** (`type="SELL"`): retcode `10009` (`TRADE_RETCODE_DONE`). Real
+  position opened: ticket `171618202`, BTCUSD SELL, `0.01` lots @ `62771.0`.
+- **Computed SL/TP**: `reference_price=62771.0` (live `bid`, correct for SELL — BUY used
+  `ask`), `offset=627.71` (the 1%-of-price floor dominated again). Placement correctly flipped
+  vs. BUY: `sl=63398.71` (**above** price), `tp=62143.29` (**below** price), matching
+  `_validate_market_sl_tp()`'s SELL requirement (`tp < price < sl`) exactly.
+- **`modify_position` (SL/TP attach)**: retcode `10009` — succeeded. Live read confirmed
+  `sl=63398.71`/`tp=62143.29` matching exactly on the first verification attempt. Unlike Step
+  6's first BUY attempt, no attach failure occurred here — the 1%-of-price margin (already
+  fixed after Step 6's BUY failure) comfortably covered SELL too, on the first try.
+- **`submit()` result**: `success=True`, `verified=True`. Local state transitioned
+  `OPEN_UNPROTECTED` → `OPEN`.
+- **Cleanup `close_position()`**: retcode `10009`, `success=True`, `verified=True`,
+  `executed_price=62797.17`, confirmed absent from live positions immediately after.
+- **Final live check**: 0 positions on BTCUSD, ticket `171618202` confirmed absent.
+
+**This closes out Step 7.** Both MARKET sides (BUY: Step 6; SELL: this step) are now live-proven
+end-to-end — placement, mandatory SL/TP attach with live verification, and cleanup close.
+Account is clean, nothing open from this work.
+
+```
+pytest -q -> 304 passed (unchanged by this live run -- no code changed)
+```
 
 **Continuation prompt for the next session**:
-> Continue Phase 6 Step 7 (MARKET SELL-side — a Phase-6-internal sub-step, not the project's
-> overall "Phase 7"). Mocked coverage and the generalized live script
-> (`scripts/run_demo_execution_market_smoke_test.py`, `SIDE="SELL"`) are done and tested (304
-> passed) but **not yet run live**. Read this checkpoint's "Step 7" section and
-> `mt5_adapter/mcp_order_executor.py`'s module docstring first. Ask for explicit approval before
-> running the script; if approved, run it once, report the exact result (same format as Step
-> 6's "Live result" entries), update this checkpoint, and stop. Do not make any live MCP/MT5
-> call without that explicit approval, and do not begin pipeline wiring or a new phase.
+> Phase 6 Steps 6 and 7 are both complete and fully live-proven: MARKET orders on both BUY
+> (Step 6, tickets `171617865`/`171618036`) and SELL (Step 7, ticket `171618202`) sides, with
+> mandatory SL/TP attach observed both failing (Step 6's first BUY attempt, cleanly recovered)
+> and succeeding (every attempt since). Read this checkpoint's "Step 6"/"Step 7" sections in
+> order and `mt5_adapter/mcp_order_executor.py`'s module docstring for full context. The account
+> is currently clean. Per "Incomplete / explicitly deferred" below, the next not-yet-started
+> items are: wiring `McpOrderExecutor` into `run_grid_cycle`/`run_runner_cycle` for autonomous
+> trading (a separate, later-approved effort), or the project's overall "Phase 7" (regression
+> and failure testing, not to be confused with this doc's Step 7) — ask the user which they want
+> before starting either. Do not make any live MCP/MT5 call, and do not begin pipeline wiring or
+> a new phase, without explicit approval.
 
 ## Incomplete / explicitly deferred — do NOT treat as done
 
