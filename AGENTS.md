@@ -52,29 +52,47 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     against real, populated, differently magic-tagged data — only that the real adapters
     integrate without error against an empty account. Re-verify once real positions/orders
     exist.
-- **Phase 6 (controlled demo execution): in progress.** No code path has ever placed, modified,
-  or closed a real order yet — `McpOrderExecutor`, the first `OrderExecutor` implementation
-  that could, exists but has never made a live call. Planned (via Claude Code plan mode) and
-  implemented so far, in small individually-tested steps:
-  - Found two blocking safety problems before writing any executor code: (1) `require_demo_account()`
-    is unreliable when fed by `McpAccountReader` (the same `account_type` inversion bug as
-    elsewhere) — fixed with a second, reliable, env-sourced hard gate,
-    `require_demo_account_kind()`. (2) `metatrader_client`'s own `send_order()` silently drops
-    `magic` (and forces `comment`, ignores `deviation`/`filling_mode`/`expiry`, and — worst —
-    determines success from a terminal-level error code rather than the broker's real
-    `retcode`) — deliberately NOT fixed by writing new order-placement code (highest-risk code
-    this project could contain); instead the `state/` package now tracks intended
+- **Phase 6 (controlled demo execution): in progress, Steps 0–5 done.** `McpOrderExecutor`
+  (the first `OrderExecutor` implementation that can place/modify/close a real order) has now
+  made real, explicitly-approved live calls on the demo account, each verified against actual
+  MT5 state afterward — not just unit-tested. Implemented and proven so far, in small
+  individually-tested and individually-approved steps:
+  - **Steps 0–3** — Found two blocking safety problems before writing any executor code: (1)
+    `require_demo_account()` is unreliable when fed by `McpAccountReader` (the same
+    `account_type` inversion bug as elsewhere) — fixed with a second, reliable, env-sourced
+    hard gate, `require_demo_account_kind()`. (2) `metatrader_client`'s own `send_order()`
+    silently drops `magic` (and forces `comment`, ignores `deviation`/`filling_mode`/`expiry`,
+    and — worst — determines success from a terminal-level error code rather than the broker's
+    real `retcode`) — deliberately NOT fixed by writing new order-placement code (highest-risk
+    code this project could contain); instead the `state/` package tracks intended
     magic/comment/strategy locally, reconciled against real MT5 state by ticket only, with an
     explicit `NORMAL`/`MANAGE_ONLY`/`BLOCKED` posture that refuses new orders (or even
     management of unattributed tickets) whenever local state can't be trusted.
-  - `McpOrderExecutor` built and unit-tested for LIMIT-order `submit()`/`cancel()` only
-    (`close_position()` and MARKET orders explicitly raise `NotImplementedError`, deferred).
-    Retcode read from the raw response only, never the tool's own success flag. Composition
-    root (`execution/composition.py`) is the one place `trading_enabled=True` is ever
-    constructed outside a test.
-  - **Not yet done**: any live call at all. The next step (place-then-cancel a single
-    far-from-market LIMIT order) needs its own explicit approval before running, per this
-    project's established practice.
+    `McpOrderExecutor` built and unit-tested for LIMIT-order `submit()`/`cancel()`; retcode read
+    from the raw response only, never the tool's own success flag. Composition root
+    (`execution/composition.py`) is the one place `trading_enabled=True` is ever constructed
+    outside a test.
+  - **Step 4 — live-proven**: a real LIMIT order was placed and then cancelled on the demo
+    account (ticket `171604513`, retcode `10009`/`TRADE_RETCODE_DONE` both times,
+    `verified=True` both times via a fresh live read). Along the way, `parse_trade_response()`
+    correctly refused to guess when a live response arrived as a positional list rather than
+    the assumed dict shape (`MalformedTradeResponseError`, no state written) — fixed by
+    accepting both shapes, dict kept only as a fallback.
+  - **Step 5 — live-proven**: `close_position()` implemented, unit-tested, and used to close a
+    real demo position for real (ticket `171604527`, retcode `10009`, `verified=True`). Live
+    attempt #1 was correctly *refused* first — the position had been opened manually outside
+    `McpOrderExecutor`, so reconciliation classified it `unknown_real` → `MANAGE_ONLY`, which by
+    design blocks unattributed tickets — proving that safety path works, not just the happy
+    path. An explicit, narrowly-scoped manual-adoption workflow was then approved
+    (`LocalOrderRecord.origin: "manual_adoption"`, exact ticket/symbol/side/volume match against
+    a fresh live read required before adopting) before the real close succeeded.
+  - **Not yet done**: `submit()` still raises `NotImplementedError` for anything other than
+    `order_type="LIMIT"` — MARKET orders (Step 6) need a mandatory SL/TP follow-up via
+    `modify_position` since `place_market_order` cannot carry them at placement; this is called
+    out in the checkpoint doc as the highest-consequence remaining step, done last. Wiring
+    `McpOrderExecutor` into `run_grid_cycle`/`run_runner_cycle` for autonomous trading is a
+    separate, later-approved effort, out of scope for the current plan. Both need their own
+    explicit approval before any code or live call, per this project's established practice.
   - Full detail: `docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`.
 - **Phase 7 (regression and failure testing): not started.**
 
