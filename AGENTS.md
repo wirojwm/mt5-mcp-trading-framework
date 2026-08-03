@@ -202,8 +202,13 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   be picked up by a later cycle. A second live `STRATEGY="GRID"` run followed (ticket
   `171621825` still open at the time, no conflict — disjoint magics): both sides submitted and
   verified again, tickets `171621926` (BUY_LIMIT)/`171621927` (SELL_LIMIT), retcode 10009 each,
-  both left open by the same no-cleanup design. Account currently holds 3 intentionally-open
-  live items from this effort. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  both left open by the same no-cleanup design. A cleanup script written against that reported
+  state correctly aborted before touching anything — the account had moved on since (ticket
+  `171621825` already closed by its own broker-side SL/TP, ticket `171621926` filled into a real
+  position). Rewritten against confirmed-current live state and re-run: all three resolved
+  (`171621926` closed retcode 10009, `171621927` cancelled retcode 10009, `171621825`
+  reconciled locally as `CLOSED` — no MCP call needed, already gone). Account is now clean (0
+  open items from this effort). Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

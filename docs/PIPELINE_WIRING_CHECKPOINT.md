@@ -241,17 +241,55 @@ picked up by a later cycle/reconciliation rather than closed now.
 **Files changed this step**: this checkpoint doc only (no code changes — this step only ran the
 already-committed script).
 
+## Step 9 — closing all 3 open items: account had moved since Step 8
+
+User asked to close all three open items. First attempt, a new one-off script
+(`scripts/run_demo_execution_close_pipeline_open_items.py`) written against the state as
+reported in Step 8, **correctly aborted before touching anything**: a fresh live check showed
+the account had moved on since that report —
+
+- Ticket `171621825` (runner SELL position) was **already absent** from live positions — most
+  likely closed automatically by the broker hitting its own SL (`62572.03`) or TP (`62519.44`).
+  This is itself a good live proof point: the SL/TP fix isn't just passing validation, it's
+  real, broker-monitored protection that actually triggers. Local `StateStore` had no way to
+  learn about this on its own (it only updates via an explicit `record_closed()`/`record_cancelled()`
+  call from `McpOrderExecutor`, never automatically) — the local record was stale, still `OPEN`.
+- Ticket `171621926` (grid BUY_LIMIT) had **filled** into a real, live BUY position — needing
+  `close_position()`, not `cancel()`.
+- Ticket `171621927` (grid SELL_LIMIT) was unchanged, still a live pending order.
+
+Asked the user how to proceed given the changed state. **Decision**: close the now-filled
+position, cancel the still-pending order, and reconcile the stale local record for the
+already-gone position (mark it `CLOSED` locally, no MCP call needed since there was nothing
+left on the broker side to act on).
+
+Script rewritten against the confirmed-current state (re-verified live immediately before
+acting, not trusting the Step 8 report) and re-run. **Result: PASSED, all three resolved.**
+
+- Ticket `171621926`: `close_position()` — retcode `10009` (done), `executed_price=62494.58`,
+  deal `99727478`, `verified=True`, confirmed absent afterward. Local status → `CLOSED`.
+- Ticket `171621927`: `cancel()` — retcode `10009` (done), `verified=True`, confirmed absent
+  afterward. Local status → `CANCELLED`.
+- Ticket `171621825`: `StateStore.record_closed()` only (no MCP call) — local status → `CLOSED`,
+  reason recorded as "confirmed absent from live positions — closed outside this process, most
+  likely via broker-side SL/TP execution".
+
+Final state: 0 live positions, 0 live pending orders on BTCUSD. Account is fully clean. `pytest -q`
+still 327 passed, architecture tests still 13 passed (no test/production code changed this step).
+
+**Files changed this step**: `scripts/run_demo_execution_close_pipeline_open_items.py` (new,
+rewritten once mid-step against the corrected live state), this checkpoint doc.
+
 ## Remaining risks / not done
 
 - `run_grid_cycle()`'s LIMIT orders still carry `sl=0.0, tp=0.0` today (same underlying gap as
   Step 4, never hard-validated for LIMIT so never blocked) — worth a decision on whether grid's
   pending orders are supposed to be protected at placement too, separately from Step 5's fix.
   Now demonstrated twice live (Step 2, Step 8) without ever being blocked.
-- **Account currently has 3 live, intentionally-open items from this effort**: ticket
-  `171621825` (SELL position, `magic=72101`, `strategy='runner'`, Step 7) and tickets
-  `171621926`/`171621927` (BUY_LIMIT/SELL_LIMIT pending orders, `magic=71101`,
-  `strategy='grid'`, Step 8). All left open by explicit design/decision, not leftover mistakes —
-  anyone continuing this account's management needs to know they exist.
+- Account is currently clean (0 open items from this effort, as of Step 9) — a real,
+  live-confirmed reminder that account state can move between a report and a follow-up action
+  (order fills, broker-side SL/TP triggers), so any future cleanup script must re-verify live
+  immediately before acting, never trust an earlier report as still current.
 - Still no internal scheduler/loop — every cycle requires a separate, manual, human-approved
   invocation. Whether/when to build a bounded autonomous loop (the option not chosen when this
   effort started) is undecided.
@@ -263,7 +301,7 @@ already-committed script).
 
 ## Exact next smallest task
 
-Not started — ask the user whether to run another cycle (GRID or RUNNER, now with 3 open items
-to account for), address the grid LIMIT-orders-unprotected
+Not started — account is clean, so ask the user whether to run another cycle (GRID or RUNNER),
+address the grid LIMIT-orders-unprotected
 question, design the bounded-autonomous-loop option, or something else next. Stopping here per
 this project's standard "explain, implement, report, stop for approval" workflow.
