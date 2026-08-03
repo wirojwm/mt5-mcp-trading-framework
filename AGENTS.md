@@ -52,7 +52,7 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     against real, populated, differently magic-tagged data — only that the real adapters
     integrate without error against an empty account. Re-verify once real positions/orders
     exist.
-- **Phase 6 (controlled demo execution): in progress, Steps 0–5 done.** `McpOrderExecutor`
+- **Phase 6 (controlled demo execution): in progress, Steps 0–6 done.** `McpOrderExecutor`
   (the first `OrderExecutor` implementation that can place/modify/close a real order) has now
   made real, explicitly-approved live calls on the demo account, each verified against actual
   MT5 state afterward — not just unit-tested. Implemented and proven so far, in small
@@ -86,13 +86,40 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     path. An explicit, narrowly-scoped manual-adoption workflow was then approved
     (`LocalOrderRecord.origin: "manual_adoption"`, exact ticket/symbol/side/volume match against
     a fresh live read required before adopting) before the real close succeeded.
-  - **Not yet done**: `submit()` still raises `NotImplementedError` for anything other than
-    `order_type="LIMIT"` — MARKET orders (Step 6) need a mandatory SL/TP follow-up via
-    `modify_position` since `place_market_order` cannot carry them at placement; this is called
-    out in the checkpoint doc as the highest-consequence remaining step, done last. Wiring
-    `McpOrderExecutor` into `run_grid_cycle`/`run_runner_cycle` for autonomous trading is a
-    separate, later-approved effort, out of scope for the current plan. Both need their own
-    explicit approval before any code or live call, per this project's established practice.
+  - **Step 6 — live-proven, both paths**: `submit()` now supports `order_type="MARKET"` via
+    `_submit_market()`. `place_market_order` (confirmed by reading source) accepts only
+    `symbol`/`volume`/`type` — every MARKET order opens completely naked — so a mandatory
+    follow-up `modify_position` call attaches SL/TP; local state is written
+    `status="OPEN_UNPROTECTED"` *before* that attempt (never after), exactly one attempt is
+    made with no retry, and success requires both a confirmed-done retcode AND a fresh live
+    read agreeing SL/TP now matches — retcode alone is never trusted. On failure,
+    `SlTpAttachmentFailedError` is raised and the ticket stays `OPEN_UNPROTECTED`; no automatic
+    retry or close is ever attempted — recovery is a separate, explicitly-approved action, never
+    automated. `OPEN_UNPROTECTED` is included in `StateStore.all_open()` so reconciliation still
+    treats the ticket as locally known, scoping any failure to that one ticket rather than
+    forcing the whole executor into `MANAGE_ONLY`. Broker-side minimum stop-distance
+    (`stops_level`/`freeze_level`) is deliberately not pre-validated locally, by explicit user
+    decision — reliable `SymbolInfo` isn't available through the current MCP connection path.
+    **Both live outcomes observed**: first live attempt (ticket `171617865`) hit exactly the
+    designed failure path — `modify_position` rejected with retcode `10016` ("Invalid stops"),
+    a live-confirmed instance of the known retcode-trust bug (the tool's own message claimed
+    success), correctly left `OPEN_UNPROTECTED`, no auto-remediation attempted; recovered via a
+    separately-approved `close_position()` call (retcode `10009`, verified absent). After fixing
+    the SL/TP margin (a percentage-of-price floor now dominates the old
+    stops_level-gap-multiplier-only formula, which was far too small for a high-priced
+    instrument like BTCUSD) and a smoke-test-script-only bug (its leftover-detection check had
+    been filtering live positions by `magic`, which MT5 always reports as `0` on positions this
+    project places — fixed to check local `StateStore` instead), a second live attempt (ticket
+    `171618036`) succeeded end-to-end: place, mandatory attach, and the script's own designed
+    cleanup close all confirmed via live reads, not retcode alone. This closes out Step 6's
+    live-proof requirement — every branch of `_submit_market()` is now live-proven, the same
+    bar Step 4 met for LIMIT orders and Step 5 met for `close_position()`. Account is clean, no
+    positions open from this work.
+  - **Not yet done**: Wiring `McpOrderExecutor` into `run_grid_cycle`/`run_runner_cycle` for
+    autonomous trading remains a separate, later-approved effort, out of scope for the current
+    plan. Only BUY-side MARKET orders have been exercised live (SELL isn't restricted in code,
+    just not yet observed). Both need their own explicit approval before any code or live call,
+    per this project's established practice.
   - Full detail: `docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`.
 - **Phase 7 (regression and failure testing): not started.**
 
