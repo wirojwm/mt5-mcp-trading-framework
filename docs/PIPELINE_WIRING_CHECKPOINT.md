@@ -195,17 +195,38 @@ by a live run, as expected — no test changes this step, only a new one-off scr
 **Files changed this step**: `scripts/run_demo_execution_runner_sltp_smoke_test.py` (new), this
 checkpoint doc.
 
+## Step 7 — first real (non-smoke-test) live RUNNER submission
+
+`scripts/run_demo_execution_pipeline_cycle.py` run live with `STRATEGY="RUNNER"`
+(`magic=72101`, the real registered "runner" strategy identity — not the Step 6 smoke test's
+throwaway `79999`). **Result: PASSED, submitted and verified, left open by design.**
+
+- Signal: SHORT → SELL MARKET (live MACD sign at run time).
+- Ticket `171621825`: requested `side=SELL, volume=0.01, price=62554.5, sl=62572.03,
+  tp=62519.44`. Retcode `10009` (done), `executed_price=62552.54`, deal `99727187`,
+  `verified=True` — `McpOrderExecutor`'s internal check confirmed both position presence and
+  exact SL/TP match (attempt 1/3).
+- Local record: `strategy='runner'`, `status='OPEN'`.
+
+Per this script's designed behavior (see its module docstring and the Goal section above), **no
+cleanup was performed** — asked the user explicitly what to do with it. **Decision: leave it
+open.** Unlike Step 3's GRID orders (which the user chose to cancel), ticket `171621825` stays
+live on the demo account, `magic=72101`, `strategy='runner'`, to be picked up and managed by a
+later cycle/reconciliation — consistent with this whole effort's designed behavior for the real
+pipeline-wiring script (not the smoke test's disposable, self-cleaning pattern).
+
+**Files changed this step**: this checkpoint doc only (no code changes — this step only ran the
+already-committed script).
+
 ## Remaining risks / not done
 
 - `run_grid_cycle()`'s LIMIT orders still carry `sl=0.0, tp=0.0` today (same underlying gap as
   Step 4, never hard-validated for LIMIT so never blocked) — worth a decision on whether grid's
   pending orders are supposed to be protected at placement too, separately from Step 5's fix.
-- `STRATEGY="GRID"` has been run live once (Step 2, then cleaned up Step 3); `STRATEGY="RUNNER"`
-  has now been proven live end-to-end via the dedicated smoke test (Step 6), but
-  `scripts/run_demo_execution_pipeline_cycle.py` itself (the "real", non-cleaning
-  pipeline-wiring script, magic=72101) has still never completed a `STRATEGY="RUNNER"`
-  submission — only the Step 4 failure and this step's separate smoke test have exercised the
-  runner MARKET path live so far.
+- **Ticket `171621825` (Step 7) is intentionally OPEN on the real account, `magic=72101`,
+  `strategy='runner'`** — user chose to leave it open rather than close it, to be picked up by a
+  later cycle/reconciliation. Anyone continuing this account's management needs to know this
+  position exists and is deliberate, not a leftover mistake.
 - Still no internal scheduler/loop — every cycle requires a separate, manual, human-approved
   invocation. Whether/when to build a bounded autonomous loop (the option not chosen when this
   effort started) is undecided.
@@ -213,12 +234,11 @@ checkpoint doc.
   `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md` remains unaddressed — still not a real
   problem at current ticket volumes.
 - No live run has yet exercised a `GridCycleError` (partial-failure) path for real, nor a
-  `STRATEGY="RUNNER"` FLAT/rejected/no-submission outcome.
+  `STRATEGY="RUNNER"` FLAT/rejected/no-submission outcome via the real pipeline-wiring script.
 
 ## Exact next smallest task
 
-Not started — ask the user whether to run `STRATEGY="RUNNER"` live via the actual, non-cleaning
-`scripts/run_demo_execution_pipeline_cycle.py` next (the smoke test in Step 6 only proved the
-fix in isolation, magic=79999), address the grid LIMIT-orders-unprotected question, design the
-bounded-autonomous-loop option, or something else. Stopping here per this project's standard
-"explain, implement, report, stop for approval" workflow.
+Not started — ask the user whether to run another cycle (GRID or RUNNER) that would now also
+need to account for ticket `171621825` being open, address the grid LIMIT-orders-unprotected
+question, design the bounded-autonomous-loop option, or something else next. Stopping here per
+this project's standard "explain, implement, report, stop for approval" workflow.

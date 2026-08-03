@@ -193,8 +193,13 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   project-original design — the legacy runner never attached SL/TP at all, so there was no
   formula to port. `run_grid_cycle()`'s parallel LIMIT-orders-unprotected question is untouched,
   left as a separate, undecided question. +4 tests (327 passed total), architecture tests still
-  pass. Not yet re-run live — that's a separate, explicit next action. Full detail:
-  `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  pass. Live-verified twice since: a dedicated, self-cleaning smoke test
+  (`scripts/run_demo_execution_runner_sltp_smoke_test.py`, magic=79999, ticket `171621792`,
+  SELL, retcode 10009 both submit and close, independent live re-read confirmed sl/tp matched
+  exactly, account left clean), then the actual, non-cleaning pipeline-wiring script itself
+  (`STRATEGY="RUNNER"`, magic=72101, ticket `171621825`, SELL, retcode 10009, verified). The
+  second run's position is, by that script's design, left open on the account — not yet
+  resolved, tracked as a remaining risk. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
