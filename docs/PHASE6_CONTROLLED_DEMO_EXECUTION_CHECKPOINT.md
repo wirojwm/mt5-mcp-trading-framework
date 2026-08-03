@@ -595,19 +595,60 @@ distance for BTCUSD on this broker remains unpublished and unqueryable via this 
 Fine as-is for this smoke test's purposes; worth revisiting if this margin is ever reused
 for real strategy logic rather than a self-closing smoke test.
 
+## Step 7 — MARKET SELL-side: mocked coverage added, live script updated, not yet run
+
+**Note on numbering**: this "Step 7" is a Phase-6-internal sub-step (continuing the Steps 0-6
+sequence tracked in this doc), NOT the project's overall numbered "Phase 7 (regression and
+failure testing)" from `AGENTS.md`'s phase list — those are two different sequences that happen
+to share a number. Don't confuse them; Phase 7 proper has not started.
+
+**Gap found**: Step 6 live-proved `_submit_market()` for `side="BUY"` only. Neither
+`_validate_market_sl_tp()`'s SELL branch (`tp < price < sl` check) nor the full SELL flow
+through `_submit_market()` had ANY test coverage, mocked or live, until this step — a real gap
+against this project's own rule that every new adapter capability needs passing- and
+failure-case tests before being considered done.
+
+**Implemented (mocked only, zero live calls)**:
+- `tests/unit/test_mt5_adapter_mcp_order_executor.py`: `SUCCESS_MARKET_SELL_PLACE_JSON`/
+  `SUCCESS_MODIFY_POSITION_SELL_JSON` fixtures (mirror the existing BUY fixtures exactly, sides
+  swapped). Two new tests: `test_submit_market_sell_success_places_and_attaches_protection`
+  (full SELL happy path — place, attach, live-verify, state transitions `OPEN_UNPROTECTED` →
+  `OPEN`, mirrors the BUY happy-path test) and
+  `test_submit_market_rejects_wrong_side_sl_tp_for_sell_before_any_mcp_call` (SELL with sl/tp
+  in BUY order must be rejected pre-flight, no MCP call — exercises the previously-untested
+  `else:` branch of `_validate_market_sl_tp()`).
+- `scripts/run_demo_execution_market_smoke_test.py` generalized: new `SIDE = "SELL"` constant
+  (set for this step; flip back to `"BUY"` to re-exercise that side). `reference_price` now
+  `tick.ask` for BUY / `tick.bid` for SELL; `sl`/`tp` placement around `reference_price` now
+  flips direction by side, matching `_validate_market_sl_tp()`'s requirement exactly (BUY:
+  `sl < price < tp`; SELL: `tp < price < sl`). `comment` now
+  `f"phase6_step7_market_{SIDE.lower()}_smoke_test"`. Everything else (leftover-check via
+  `StateStore`, the 1%-of-price SL/TP floor, one-attempt/no-retry, no auto-cleanup on
+  `SlTpAttachmentFailedError`, cleanup-close only on full success) is unchanged from Step 6's
+  already-fixed version. Syntax/import-checked; `main()` never invoked.
+
+```
+pytest -q                        -> 304 passed (302 previously + 2 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `tests/unit/test_mt5_adapter_mcp_order_executor.py`,
+`scripts/run_demo_execution_market_smoke_test.py`, this checkpoint doc.
+
+**Not done**: no live call. The SELL-side live proof (the actual "MARKET SELL-side live test"
+requested) has not happened yet — needs its own explicit approval, same as every prior live
+step. Same preflight discipline applies: confirm `.env` vars present, `MT5_PATH`/
+`MT5_ACCOUNT_KIND` correct, terminal open with AutoTrading enabled, before running.
+
 **Continuation prompt for the next session**:
-> Phase 6 Step 6 is fully live-proven and complete: MARKET order placement, mandatory SL/TP
-> attach (both the failure path — Known Issues item 7's retcode-trust bug live-confirmed for
-> modify_position — and the success path), and cleanup close have all been observed live on the
-> demo account, with clean recovery when attach failed. Read this checkpoint's "Step 6" sections
-> in order (planning → implementation → live result/attach-failed → recovery → bug fixes →
-> re-run/success) and `mt5_adapter/mcp_order_executor.py`'s module docstring for full context.
-> The account is currently clean. Per "Incomplete / explicitly deferred" below, the next
-> not-yet-started items are: MARKET-order support for anything beyond BUY-side mandatory-SL/TP
-> (not actually restricted, but only BUY was exercised live), and separately, whether/how to
-> proceed toward Step 7 (regression and failure testing) or further Phase 6 hardening — ask the
-> user which they want before starting either. Do not make any live MCP/MT5 call, and do not
-> begin pipeline wiring or a new phase, without explicit approval.
+> Continue Phase 6 Step 7 (MARKET SELL-side — a Phase-6-internal sub-step, not the project's
+> overall "Phase 7"). Mocked coverage and the generalized live script
+> (`scripts/run_demo_execution_market_smoke_test.py`, `SIDE="SELL"`) are done and tested (304
+> passed) but **not yet run live**. Read this checkpoint's "Step 7" section and
+> `mt5_adapter/mcp_order_executor.py`'s module docstring first. Ask for explicit approval before
+> running the script; if approved, run it once, report the exact result (same format as Step
+> 6's "Live result" entries), update this checkpoint, and stop. Do not make any live MCP/MT5
+> call without that explicit approval, and do not begin pipeline wiring or a new phase.
 
 ## Incomplete / explicitly deferred — do NOT treat as done
 

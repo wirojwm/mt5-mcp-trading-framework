@@ -146,6 +146,21 @@ MODIFY_POSITION_REJECTED_JSON = json.dumps({
     "data": [10016, 0, 0, 0.0, 0.0, 0.0, 0.0, "Invalid stops", 0, 0, _REQUEST_STUB],
 })
 
+# Phase 6 Step 7: SELL-side fixtures -- mirrors the BUY fixtures above exactly, just the
+# opposite side, to close the SELL-branch test gap (_validate_market_sl_tp's `else:` clause and
+# the full SELL flow through _submit_market() were never exercised by any test until now).
+SUCCESS_MARKET_SELL_PLACE_JSON = json.dumps({
+    "error": False,
+    "message": "SELL BTCUSD 0.01 LOT at 62875.0 success (Position ID: 555778)",
+    "data": [10009, 987002, 555778, 0.01, 62875.0, 62874.0, 62876.0, "Request executed", 1, 0, _REQUEST_STUB],
+})
+
+SUCCESS_MODIFY_POSITION_SELL_JSON = json.dumps({
+    "error": False,
+    "message": "Modify position 555778 success, SL at 64000.0, TP at 62000.0, current price 62875.0",
+    "data": [10009, 0, 0, 0.0, 62875.0, 0.0, 0.0, "Request executed", 1, 0, _REQUEST_STUB],
+})
+
 
 def _account_json() -> str:
     return json.dumps({"balance": 10000.0, "equity": 10000.0, "free_margin": 10000.0, "account_type": "real"})
@@ -545,6 +560,55 @@ def test_open_unprotected_ticket_allows_explicit_protective_close(tmp_path: Path
 
     assert result.success is True
     assert client.calls == [("close_position", {"id": 555777})]
+
+
+# ---------- submit() MARKET SELL-side (Phase 6 Step 7) ----------
+# Step 6 only exercised BUY -- _validate_market_sl_tp()'s `else:` (SELL) branch and the full
+# SELL flow through _submit_market() had zero test coverage, mocked or live, until now.
+
+def test_submit_market_sell_success_places_and_attaches_protection(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({
+        "place_market_order": SUCCESS_MARKET_SELL_PLACE_JSON,
+        "modify_position": SUCCESS_MODIFY_POSITION_SELL_JSON,
+    })
+    account_state = AccountState(balance=10000.0, equity=10000.0, margin_free=10000.0, trade_mode="DEMO")
+    account = _SequencedPositionsAccountReader(account_state, positions_sequence=[
+        [],  # pre-submit posture check
+        [PositionState(ticket=555778, symbol="BTCUSD", side="SELL", volume=0.01, price_open=62875.0, profit=0.0, magic=0, sl=0.0, tp=0.0)],  # verify_position_present
+        [PositionState(ticket=555778, symbol="BTCUSD", side="SELL", volume=0.01, price_open=62875.0, profit=0.0, magic=0, sl=64000.0, tp=62000.0)],  # verify_sl_tp_attached
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    # SELL: tp < price < sl (opposite of BUY) -- sl above price, tp below.
+    result = asyncio.run(executor.submit(
+        _order_plan(order_type="MARKET", side="SELL", sl=64000.0, tp=62000.0)
+    ))
+
+    assert result.success is True
+    assert result.retcode == 10009
+    assert result.ticket == 555778
+    assert result.verified is True
+
+    record = store.lookup(555778)
+    assert record is not None
+    assert record.status == "OPEN"
+    assert [name for name, _ in client.calls] == ["place_market_order", "modify_position"]
+    assert client.calls[0] == ("place_market_order", {"symbol": "BTCUSD", "volume": 0.01, "type": "SELL"})
+    assert client.calls[1] == ("modify_position", {"id": 555778, "stop_loss": 64000.0, "take_profit": 62000.0})
+
+
+def test_submit_market_rejects_wrong_side_sl_tp_for_sell_before_any_mcp_call(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "order_state.json")
+    client = _StubMcpClient({})
+    executor = McpOrderExecutor(client, _mock_account(), store, mt5_account_kind="DEMO")
+
+    # SELL with sl/tp in BUY order (sl below price, tp above) -- must never reach MT5.
+    with pytest.raises(InvalidOrderPlanError):
+        asyncio.run(executor.submit(
+            _order_plan(order_type="MARKET", side="SELL", sl=62000.0, tp=64000.0)
+        ))
+    assert client.calls == []
 
 
 def test_require_demo_account_kind_blocks_submit_before_any_mcp_call(tmp_path: Path) -> None:

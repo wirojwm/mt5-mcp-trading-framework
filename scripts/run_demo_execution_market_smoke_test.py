@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-Phase 6, Step 6: places a single real MT5 MARKET order with mandatory SL/TP via
+Phase 6, Steps 6-7: places a single real MT5 MARKET order with mandatory SL/TP via
 McpOrderExecutor.submit(), then closes the resulting position -- the smallest possible real
 action that proves the whole MARKET path (place_market_order -> confirmed-done retcode ->
 local state written OPEN_UNPROTECTED -> mandatory modify_position attach -> live-verified
 SL/TP -> state transitioned to OPEN) actually works end-to-end, not just against mocks.
 
-See docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md, "Step 6" for the full design this
-mirrors, and mt5_adapter/mcp_order_executor.py's module docstring for _submit_market()'s exact
-behavior. Run only once, with explicit approval, reviewed live -- do not add this to any
+Step 6 (2026-08-03) live-proved this for SIDE="BUY" only (both the attach-failure and
+attach-success paths -- see the checkpoint doc's "Step 6" entries). Step 7 generalizes SIDE to
+also cover "SELL" -- _validate_market_sl_tp()'s SELL branch and the full SELL flow through
+_submit_market() had mocked coverage added (test_mt5_adapter_mcp_order_executor.py) but were
+never live-proven before Step 7. Flip SIDE below to choose which direction this run exercises.
+
+See docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md, "Step 6"/"Step 7" for the full design
+this mirrors, and mt5_adapter/mcp_order_executor.py's module docstring for _submit_market()'s
+exact behavior. Run only once, with explicit approval, reviewed live -- do not add this to any
 automated/scheduled run.
 
 SAFETY:
@@ -71,6 +77,10 @@ PYTHON = Path(sys.executable)
 STATE_PATH = PROJECT_ROOT / "var" / "order_state.json"
 
 SYMBOL = "BTCUSD"
+SIDE = "SELL"  # Phase 6 Step 7: MARKET SELL-side live test. Step 6 already live-proved BUY
+# (tickets 171617865, 171618036) -- this run exercises the SELL branch of
+# _validate_market_sl_tp() and the full SELL flow through _submit_market() live for the first
+# time. Flip back to "BUY" to re-exercise that side instead; both are equally supported.
 SMOKE_TEST_MAGIC = 79999  # same convention as Step 4/5's smoke tests -- deliberately outside
 # the 71101/72101 grid/runner range, and not in strategy_registry.py's known map, so it always
 # resolves to a loud "unknown_magic_79999" rather than being mistaken for a real strategy.
@@ -128,29 +138,36 @@ async def main() -> None:
         market_data = McpMarketDataSource(client)
         tick = await market_data.get_tick(SYMBOL)
         symbol_info = await market_data.get_symbol_info(SYMBOL)
-        reference_price = tick.ask  # a BUY market order fills at or near the current ask
+        # A BUY market order fills at or near the current ask; SELL at or near the current bid.
+        reference_price = tick.ask if SIDE == "BUY" else tick.bid
         gap = (symbol_info.stops_level + symbol_info.freeze_level + 2) * symbol_info.point
         gap_offset = gap * GAP_SAFETY_MULTIPLIER
         price_fraction_offset = reference_price * MIN_SL_TP_FRACTION_OF_PRICE
         offset = round(max(gap_offset, price_fraction_offset), symbol_info.digits)
-        sl = round(reference_price - offset, symbol_info.digits)
-        tp = round(reference_price + offset, symbol_info.digits)
+        # _validate_market_sl_tp() requires sl < price < tp for BUY, tp < price < sl for SELL --
+        # opposite placement of the same offset around reference_price.
+        if SIDE == "BUY":
+            sl = round(reference_price - offset, symbol_info.digits)
+            tp = round(reference_price + offset, symbol_info.digits)
+        else:
+            sl = round(reference_price + offset, symbol_info.digits)
+            tp = round(reference_price - offset, symbol_info.digits)
         volume = symbol_info.volume_min
 
         print(f"\n=== Live tick: bid={tick.bid}, ask={tick.ask} ===")
         print(f"=== symbol_info: digits={symbol_info.digits}, point={symbol_info.point}, "
               f"stops_level={symbol_info.stops_level}, freeze_level={symbol_info.freeze_level}, "
               f"volume_min={volume} ===")
-        print(f"=== Computed: reference_price={reference_price}, gap={gap}, "
+        print(f"=== Computed: side={SIDE}, reference_price={reference_price}, gap={gap}, "
               f"gap_offset={gap_offset} ({GAP_SAFETY_MULTIPLIER}x gap), "
               f"price_fraction_offset={price_fraction_offset} "
               f"({MIN_SL_TP_FRACTION_OF_PRICE:.1%} of price), offset={offset} (max of the two), "
               f"sl={sl}, tp={tp}, volume={volume} ===")
 
         order_plan = OrderPlan(
-            symbol=SYMBOL, order_type="MARKET", side="BUY", volume=volume, price=reference_price,
+            symbol=SYMBOL, order_type="MARKET", side=SIDE, volume=volume, price=reference_price,
             sl=sl, tp=tp, deviation=150, magic=SMOKE_TEST_MAGIC,
-            comment="phase6_step6_market_smoke_test",
+            comment=f"phase6_step7_market_{SIDE.lower()}_smoke_test",
         )
 
         print(f"\n=== submit({order_plan}) -- ONE attempt, no retry ===")
