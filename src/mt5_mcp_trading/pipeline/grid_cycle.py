@@ -107,8 +107,15 @@ async def run_grid_cycle(
                           symbol, intent.side, combined.blocking_guard, combined.reasons)
             continue
 
+        if intent.side == "BUY":
+            sl = round(intent.reference_price - levels.sl_price, symbol_info.digits)
+            tp = round(intent.reference_price + levels.tp_price, symbol_info.digits)
+        else:
+            sl = round(intent.reference_price + levels.sl_price, symbol_info.digits)
+            tp = round(intent.reference_price - levels.tp_price, symbol_info.digits)
+
         plan = build_order_plan(sized, combined, symbol_info, tick, magic=magic,
-                                 comment=f"grid_{intent.side.lower()}")
+                                 comment=f"grid_{intent.side.lower()}", sl=sl, tp=tp)
         if plan is None:
             _logger.info("[GRID] %s %s LIMIT price could not be normalized far enough "
                           "from the market, skipping", symbol, intent.side)

@@ -208,7 +208,16 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   position). Rewritten against confirmed-current live state and re-run: all three resolved
   (`171621926` closed retcode 10009, `171621927` cancelled retcode 10009, `171621825`
   reconciled locally as `CLOSED` — no MCP call needed, already gone). Account is now clean (0
-  open items from this effort). Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  open items from this effort).
+  **Grid's parallel LIMIT-orders-unprotected gap is now fixed too**: research found
+  `GridLevels.tp_price` already existed (computed by `compute_grid_levels()`) but was completely
+  dropped — never read by `trade_intent/grid.py` or `pipeline/grid_cycle.py`. Grid's SL side had
+  no precedent at all. Added `GridStrategyConfig.sl_atr_mult` (new, project-original, default
+  `2.0`) mirroring runner's independent-multiplier pattern; `compute_grid_levels()` now computes
+  `sl_price` alongside the existing, untouched `tp_price`; `grid_cycle.py` now passes both into
+  `build_order_plan()`. +4 tests (330 passed total), architecture tests still pass. Not yet
+  live-verified — a separate, explicit next action. Full detail:
+  `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

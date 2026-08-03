@@ -51,6 +51,12 @@ class GridStrategyConfig:
     # NOTE: legacy always derives tp from step_mult dynamically (`step_mult * 1.2`), not from
     # an independent value -- deliberately NOT a separate config field here, so overriding
     # step_mult can never silently leave tp_mult stale/inconsistent. See compute_grid_levels.
+    # sl_atr_mult has NO legacy precedent -- launcher_grid.py never attached a stop-loss to its
+    # pending orders at all (this module's docstring says nothing about legacy SL/TP behavior
+    # either way, unlike strategy/runner.py, which explicitly confirms its legacy had none).
+    # New, project-original design, deliberately independent of step_mult/tp's formula so this
+    # can never make the existing, legacy-matched tp_price computation stale.
+    sl_atr_mult: float = 2.0
 
 
 def compute_grid_levels(bars: Sequence[MarketBar], point: float, config: GridStrategyConfig) -> GridLevels:
@@ -70,9 +76,12 @@ def compute_grid_levels(bars: Sequence[MarketBar], point: float, config: GridStr
     if atr_value <= 0:
         # Legacy fallback: center = last close, step = tp = exactly min_step_points * point
         # (not step_mult/tp_mult-scaled -- that asymmetry is in the original code too).
+        # sl_price mirrors the same fallback shape -- no legacy behavior to preserve here, but
+        # consistent with tp_price/step_price's existing floor convention.
         center = closes[-1]
         step_price = config.min_step_points * point
         tp_price = config.min_step_points * point
+        sl_price = config.min_step_points * point
         atr_value = 0.0
     else:
         center = (
@@ -82,6 +91,7 @@ def compute_grid_levels(bars: Sequence[MarketBar], point: float, config: GridStr
         )
         step_price = max(config.min_step_points * point, atr_value * config.step_mult)
         tp_price = max(config.min_step_points * point, atr_value * config.step_mult * 1.2)
+        sl_price = max(config.min_step_points * point, atr_value * config.sl_atr_mult)
 
     return GridLevels(
         symbol=symbol,
@@ -90,6 +100,7 @@ def compute_grid_levels(bars: Sequence[MarketBar], point: float, config: GridStr
         atr=atr_value,
         step_price=step_price,
         tp_price=tp_price,
+        sl_price=sl_price,
         buy_price=center - step_price,
         sell_price=center + step_price,
     )

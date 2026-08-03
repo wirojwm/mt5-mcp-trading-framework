@@ -163,6 +163,26 @@ def test_both_sides_reach_the_dry_run_executor_and_nothing_else() -> None:
     assert executor.closed == []
 
 
+def test_both_sides_produce_protected_orders_with_correct_sl_tp_ordering() -> None:
+    # Regression test for the pipeline-wiring finding (docs/PIPELINE_WIRING_CHECKPOINT.md,
+    # "grid's LIMIT orders unprotected"): run_grid_cycle() used to always produce sl=tp=0.0.
+    # Fails before the fix, passes after -- same shape as the analogous runner regression test.
+    market_data = _market_data(tick_bid=63009.0, tick_ask=63011.0)
+    executor = DryRunExecutor()
+
+    results = _run(market_data, _account(), executor)
+
+    assert len(results) == 2
+    buy_plan = next(r.order_plan for r in results if r.order_plan.side == "BUY")
+    sell_plan = next(r.order_plan for r in results if r.order_plan.side == "SELL")
+
+    assert buy_plan.sl > 0 and buy_plan.tp > 0
+    assert buy_plan.sl < buy_plan.price < buy_plan.tp
+
+    assert sell_plan.sl > 0 and sell_plan.tp > 0
+    assert sell_plan.tp < sell_plan.price < sell_plan.sl
+
+
 def test_duplicate_pending_order_blocks_only_that_side_end_to_end() -> None:
     market_data = _market_data(tick_bid=63009.0, tick_ask=63011.0)
     # Figure out the proposed buy price the same way the pipeline will, to place a

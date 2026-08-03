@@ -73,6 +73,7 @@ class GridLevels:
     atr: float
     step_price: float
     tp_price: float
+    sl_price: float
     buy_price: float
     sell_price: float
 

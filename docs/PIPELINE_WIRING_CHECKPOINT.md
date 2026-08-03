@@ -280,12 +280,73 @@ still 327 passed, architecture tests still 13 passed (no test/production code ch
 **Files changed this step**: `scripts/run_demo_execution_close_pipeline_open_items.py` (new,
 rewritten once mid-step against the corrected live state), this checkpoint doc.
 
+## Step 10 — fix: grid's LIMIT orders now get a real SL/TP
+
+Design chosen after research (not the only option, but the one that reuses the most existing
+code and best matches this project's own conventions): research found a real asymmetry with the
+runner fix. `domain/models.py`'s `GridLevels` already had a `tp_price` field, computed by
+`strategy/grid.py`'s `compute_grid_levels()` — but it was **completely dropped**:
+`trade_intent/grid.py` never reads it, and `pipeline/grid_cycle.py` never referenced
+`levels.tp_price` after computing it. Grid's TP distance already existed and was already fully
+tested (`tests/unit/test_strategy_grid.py`), just never wired into an actual order. Grid's
+stop-loss side, by contrast, had **no precedent at all** — no field, no legacy formula, no
+docstring mention either way (unlike runner's docstring, which explicitly confirmed its legacy
+never had SL/TP — grid's docstring is simply silent on the question). No existing test locked
+in `sl=0.0`/`tp=0.0` as correct, so nothing needed to break to fix this.
+
+Also confirmed: unlike runner's MARKET path (place naked, then a mandatory separate
+`modify_position` call to attach SL/TP), grid's LIMIT path sends `stop_loss`/`take_profit`
+**directly** to the broker in the same `place_pending_order` call (confirmed by reading the
+vendored `metatrader_client` source) — no second call needed, and no mandatory-non-zero
+validation exists for it in `McpOrderExecutor` either, which is exactly why this shipped silently
+unprotected for two live runs (Step 2, Step 8) without ever erroring.
+
+**User chose the SL design**: a new, independent ATR-based multiplier
+(`GridStrategyConfig.sl_atr_mult`, default `2.0`), mirroring the exact pattern already built for
+runner (`compute_stop_distances()`'s independent `sl_atr_mult`/`tp_atr_mult`) — both strategies
+now share the same "ATR × configurable multiplier" convention for their stop, while grid's
+existing, already-tested `tp_price` formula (`step_mult*1.2`) is left completely untouched.
+
+**Implemented**:
+- `domain/models.py`: `GridLevels` gains `sl_price: float`.
+- `strategy/grid.py`: `GridStrategyConfig` gains `sl_atr_mult: float = 2.0` — new,
+  project-original, no legacy value (documented as such), deliberately independent of
+  `step_mult` so it can never make the existing `tp_price` formula stale.
+  `compute_grid_levels()` computes `sl_price` alongside `tp_price`, same fallback shape
+  (`atr<=0` → `min_step_points*point`; else → `max(min_step_points*point, atr*sl_atr_mult)`).
+- `pipeline/grid_cycle.py`: mirrors `runner_cycle.py`'s already-established pattern (compute
+  sl/tp from a levels-derived distance anchored to the intent's reference price, pass as
+  `sl=`/`tp=` kwargs into `build_order_plan()`, not a post-hoc mutation) — BUY:
+  `sl=reference_price-levels.sl_price, tp=reference_price+levels.tp_price`; SELL: mirrored.
+  `run_runner_cycle()` untouched (already fixed, Step 5).
+
+**Tests**: `tests/unit/test_strategy_grid.py` (+3 — `sl_price`'s ATR-scaled value, floor
+fallback, and independence from `step_mult`/coupling only to `sl_atr_mult`).
+`tests/integration/test_grid_dry_run_pipeline.py` (+1 —
+`test_both_sides_produce_protected_orders_with_correct_sl_tp_ordering`, asserting `sl>0`, `tp>0`,
+and the same BUY/SELL ordering `McpOrderExecutor` would enforce for MARKET — the direct
+regression proof, failing before this fix and passing after).
+
+```
+pytest -q                        -> 330 passed (327 previously + 3 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Not yet live-verified.** No live call was made this step, matching the runner fix's own
+two-step "fix then separately-approved live verification" precedent — a follow-up live GRID run
+(smoke test or the real `scripts/run_demo_execution_pipeline_cycle.py`) is a separate, explicit
+next action.
+
+**Files changed this step**: `src/mt5_mcp_trading/domain/models.py`,
+`src/mt5_mcp_trading/strategy/grid.py`, `src/mt5_mcp_trading/pipeline/grid_cycle.py`,
+`tests/unit/test_strategy_grid.py`, `tests/integration/test_grid_dry_run_pipeline.py`,
+`AGENTS.md`, this checkpoint doc.
+
 ## Remaining risks / not done
 
-- `run_grid_cycle()`'s LIMIT orders still carry `sl=0.0, tp=0.0` today (same underlying gap as
-  Step 4, never hard-validated for LIMIT so never blocked) — worth a decision on whether grid's
-  pending orders are supposed to be protected at placement too, separately from Step 5's fix.
-  Now demonstrated twice live (Step 2, Step 8) without ever being blocked.
+- Grid's LIMIT-orders-unprotected gap (Step 4/Step 8) is **fixed** (Step 10, above) but **not
+  yet live-verified** — the fix has only been proven against `DryRunExecutor`/tests so far, the
+  same gap runner's original bug hid behind before its own live verification (Steps 6-7).
 - Account is currently clean (0 open items from this effort, as of Step 9) — a real,
   live-confirmed reminder that account state can move between a report and a follow-up action
   (order fills, broker-side SL/TP triggers), so any future cleanup script must re-verify live
@@ -301,7 +362,7 @@ rewritten once mid-step against the corrected live state), this checkpoint doc.
 
 ## Exact next smallest task
 
-Not started — account is clean, so ask the user whether to run another cycle (GRID or RUNNER),
-address the grid LIMIT-orders-unprotected
-question, design the bounded-autonomous-loop option, or something else next. Stopping here per
-this project's standard "explain, implement, report, stop for approval" workflow.
+Not started — account is clean. Ask the user whether to live-verify Step 10's grid SL/TP fix
+next (smoke test or the real pipeline-wiring script), design the bounded-autonomous-loop option,
+or something else. Stopping here per this project's standard "explain, implement, report, stop
+for approval" workflow.
