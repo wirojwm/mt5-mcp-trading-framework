@@ -84,11 +84,53 @@ docs/
 
 ## Setup
 
-```bash
-python3 -m venv .venv
-.venv/Scripts/python.exe -m pip install -e ".[dev]"   # Windows
-# .venv/bin/python -m pip install -e ".[dev]"          # macOS/Linux
-```
+This project targets **Python 3.12 (64-bit) exactly** on both development machines (home and
+work) -- see `.python-version` and `requires-python` in `pyproject.toml`.
+`metatrader-mcp-server==0.5.1` requires Python >=3.10, so Python 3.9 is not a supported
+runtime here even though it may be present on a machine for other projects. If you run
+`pytest` (or import `mt5_mcp_trading`) under anything older than 3.12, it fails immediately
+with a clear error rather than a confusing dependency or syntax error further in.
+
+1. **Install Python 3.12 64-bit** if it isn't already on the machine. On Windows, the
+   [py launcher](https://docs.python.org/3/using/windows.html#launcher) makes it easy to have
+   multiple versions installed side by side; confirm 3.12 is available with `py -0p`.
+
+2. **Create a fresh virtual environment** in the project root, using Python 3.12 specifically
+   (don't let this pick up whatever `python` resolves to on the machine):
+
+   ```bash
+   py -3.12 -m venv .venv          # Windows, via the py launcher
+   # python3.12 -m venv .venv      # macOS/Linux
+   ```
+
+3. **Install dependencies** -- the project package in editable mode, plus everything pinned
+   in `requirements-dev.txt` (which itself pulls in `requirements.txt`):
+
+   ```bash
+   .venv/Scripts/python.exe -m pip install --upgrade pip
+   .venv/Scripts/python.exe -m pip install -e . -r requirements-dev.txt   # Windows
+   # .venv/bin/python -m pip install --upgrade pip                       # macOS/Linux
+   # .venv/bin/python -m pip install -e . -r requirements-dev.txt
+   ```
+
+4. **Create `.env` from `.env.example`** and fill in machine-specific values. `.env` is
+   git-ignored and must never be committed:
+
+   ```bash
+   cp .env.example .env   # Windows: copy .env.example .env
+   ```
+
+5. **Configure `MT5_PATH` locally** in your `.env` (not `.env.example`) to this machine's
+   `terminal64.exe` path -- it differs between the home and work machines whenever the
+   installed terminal build or broker differs. See the comment above `MT5_PATH` in
+   `.env.example` for why this is needed.
+
+6. **Run the test suite before starting development**, to confirm the environment is sound
+   on this machine:
+
+   ```bash
+   .venv/Scripts/python.exe -m pytest -v
+   ```
 
 ## Running tests
 

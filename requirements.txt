@@ -1,3 +1,16 @@
-MetaTrader5
+# Windows-only; both dev machines install to a real MT5 terminal (see .env.example MT5_PATH).
+# Exact-pinned: this is the version installed and verified (pytest -v, 289 passed) in the
+# Python 3.12 environment-standardization pass on 2026-08-03. Re-pin after re-verifying if
+# bumped.
+MetaTrader5==5.0.6090
+
+# Exact-pinned: this is the version this codebase's mcp_adapter/execution layers were built
+# and verified against (see docs/MCP_ADAPTER_WIRING_CHECKPOINT.md, docs/mcp_tool_classification.md).
 metatrader-mcp-server==0.5.1
+
+# Pinned <2.0 deliberately: metatrader-mcp-server==0.5.1 imports
+# mcp.server.fastmcp.FastMCP, which does not exist in mcp>=2.0.0 (the module was
+# restructured there). metatrader-mcp-server's own packaging does not pin this, so an
+# unconstrained install resolves mcp==2.0.0 and breaks at import time. Revisit this pin
+# if/when metatrader-mcp-server ships a release compatible with mcp 2.x.
 mcp>=1.9.0,<2.0
