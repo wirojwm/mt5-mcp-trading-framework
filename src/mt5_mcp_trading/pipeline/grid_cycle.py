@@ -29,6 +29,8 @@ raw exception propagates unchanged.
 
 from __future__ import annotations
 
+import dataclasses
+
 from mt5_mcp_trading.domain.models import ExecutionResult
 from mt5_mcp_trading.market_data.interfaces import MarketDataSource
 from mt5_mcp_trading.monitoring.logging_setup import get_logger
@@ -107,19 +109,28 @@ async def run_grid_cycle(
                           symbol, intent.side, combined.blocking_guard, combined.reasons)
             continue
 
-        if intent.side == "BUY":
-            sl = round(intent.reference_price - levels.sl_price, symbol_info.digits)
-            tp = round(intent.reference_price + levels.tp_price, symbol_info.digits)
-        else:
-            sl = round(intent.reference_price + levels.sl_price, symbol_info.digits)
-            tp = round(intent.reference_price - levels.tp_price, symbol_info.digits)
-
         plan = build_order_plan(sized, combined, symbol_info, tick, magic=magic,
-                                 comment=f"grid_{intent.side.lower()}", sl=sl, tp=tp)
+                                 comment=f"grid_{intent.side.lower()}")
         if plan is None:
             _logger.info("[GRID] %s %s LIMIT price could not be normalized far enough "
                           "from the market, skipping", symbol, intent.side)
             continue
+
+        # SL/TP must be anchored to plan.price (the actual, broker-normalized entry
+        # normalize_limit_price() decided on), NOT intent.reference_price (the pre-normalization
+        # center +/- step_price level) -- live-confirmed bug (docs/PIPELINE_WIRING_CHECKPOINT.md,
+        # "Step 11"): normalize_limit_price() can push the entry far enough from
+        # intent.reference_price (to satisfy the broker's minimum-distance gap from the current
+        # market) that an SL/TP computed from the old reference price ends up on the wrong side
+        # of the real entry -- an inverted SL, rejected by the broker (or worse, silently wrong
+        # if it happened to still validate).
+        if intent.side == "BUY":
+            sl = round(plan.price - levels.sl_price, symbol_info.digits)
+            tp = round(plan.price + levels.tp_price, symbol_info.digits)
+        else:
+            sl = round(plan.price + levels.sl_price, symbol_info.digits)
+            tp = round(plan.price - levels.tp_price, symbol_info.digits)
+        plan = dataclasses.replace(plan, sl=sl, tp=tp)
 
         try:
             results.append(await executor.submit(plan))

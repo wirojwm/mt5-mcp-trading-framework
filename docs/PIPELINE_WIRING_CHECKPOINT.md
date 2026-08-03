@@ -342,14 +342,88 @@ next action.
 `tests/unit/test_strategy_grid.py`, `tests/integration/test_grid_dry_run_pipeline.py`,
 `AGENTS.md`, this checkpoint doc.
 
+## Step 11 — first live GRID run of the SL/TP fix: found a real bug in the anchor price
+
+`scripts/run_demo_execution_pipeline_cycle.py` run live with `STRATEGY="GRID"`. **Result: SELL
+side succeeded and verified; BUY side rejected — a genuine bug in Step 10's fix, not a broker
+quirk, with no live impact from the rejection itself.**
+
+- SELL: ticket `171622543`, `price=62499.26, sl=62558.89, tp=62484.95` — correct ordering
+  (`tp<price<sl`), retcode `10009`, `verified=True`. Left open on the account by this script's
+  design.
+- BUY: `price=62287.56, sl=62415.79, tp=62489.72` — `sl` is **above** `price`, backwards for a
+  BUY. Rejected client-side (`"Stop loss must be less than price"`, retcode `-1`, no ticket,
+  `success=False`) before any request reached the broker — no invalid order was ever placed.
+
+**Root cause**: Step 10's `grid_cycle.py` fix computed `sl`/`tp` relative to
+`intent.reference_price` (`levels.buy_price`/`levels.sell_price`, i.e. `center ± step_price`,
+computed from bars alone) rather than the final, broker-normalized `plan.price` returned by
+`build_order_plan()`/`normalize_limit_price()`. The Step 10 plan explicitly assumed this
+difference would be "negligible relative to ATR-scaled distances" — **that assumption was
+wrong**: `normalize_limit_price()` pushed this BUY's actual entry down by over 160 points to
+satisfy the broker's minimum-distance gap from the current market, but the SL/TP were still
+anchored to the old, un-pushed reference price, inverting the SL relative to the real entry.
+Neither of Step 10's new tests caught this because `tests/integration/test_grid_dry_run_pipeline.py`'s
+fixture keeps bid/ask deliberately close to `center`, so normalization never needs to push far
+enough to expose the divergence — a gap in what those tests actually cover, not proof they were
+wrong for what they did cover.
+
+**Not fixed yet.** Needs: recomputing `sl`/`tp` relative to the actual `plan.price` (after
+`build_order_plan()` returns, not before) instead of `intent.reference_price`, plus a new
+regression test that deliberately forces `normalize_limit_price()` to push the price away from
+the naive `center ± step_price` level (unlike the existing fixture, which never does).
+
+**Files changed this step**: this checkpoint doc only (no code changes yet — this step only ran
+the already-committed code and found the bug).
+
+## Step 12 — fix: anchor grid's SL/TP to the actual normalized entry price
+
+User approved the recommended fix. `pipeline/grid_cycle.py` now calls `build_order_plan()`
+first (as before Step 10, no `sl=`/`tp=` kwargs), then computes `sl`/`tp` from the returned
+`plan.price` (the real, broker-normalized entry `normalize_limit_price()` decided on) instead of
+`intent.reference_price`, and attaches them via `dataclasses.replace(plan, sl=sl, tp=tp)` before
+`executor.submit()`. `strategy/grid.py`/`domain/models.py` (Step 10's `sl_price`/`tp_price`
+computation itself) are untouched — only the anchor point for applying them changed.
+
+**New regression test**, `tests/integration/test_grid_dry_run_pipeline.py`'s
+`test_sl_tp_ordering_holds_even_when_normalize_limit_price_pushes_the_entry_far`: sets bid/ask
+far below the fixture's `center` (~63010 vs. bid=62000/ask=62002), deliberately forcing
+`normalize_limit_price()` to push the BUY_LIMIT price down substantially (confirmed via an
+explicit `abs(buy_plan.price - levels.buy_price) > 100` assertion, so the test can't pass by
+accident without actually exercising the push) — then asserts the same `sl<price<tp`/
+`tp<price<sl` invariants as the existing regression test. **Verified this test actually catches
+the bug**, not just theoretically: ran it against the pre-fix code (`git stash` on
+`grid_cycle.py` alone) and confirmed it fails with the exact live-observed shape (`sl=62949.3`
+above `price=61999.8`); passes again with the fix restored.
+
+```
+pytest -q                        -> 331 passed (330 previously + 1 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Decision on the open position from Step 11**: ticket `171622543` (SELL, `magic=71101`,
+`strategy='grid'`, correct SL/TP, unaffected by the bug) — user chose to leave it open, same as
+every other open-position decision this effort.
+
+**Not yet re-verified live.** The fix is proven against a dry-run test that specifically
+reproduces the failure mode, but has not yet been re-run against the real `McpOrderExecutor` —
+a follow-up live GRID run (ideally one that would have triggered the same normalization push,
+though that depends on live market conditions, not something this script controls) is a
+separate, explicit next action.
+
+**Files changed this step**: `src/mt5_mcp_trading/pipeline/grid_cycle.py`,
+`tests/integration/test_grid_dry_run_pipeline.py`, `AGENTS.md`, this checkpoint doc.
+
 ## Remaining risks / not done
 
-- Grid's LIMIT-orders-unprotected gap (Step 4/Step 8) is **fixed** (Step 10, above) but **not
-  yet live-verified** — the fix has only been proven against `DryRunExecutor`/tests so far, the
-  same gap runner's original bug hid behind before its own live verification (Steps 6-7).
-- Account is currently clean (0 open items from this effort, as of Step 9) — a real,
-  live-confirmed reminder that account state can move between a report and a follow-up action
-  (order fills, broker-side SL/TP triggers), so any future cleanup script must re-verify live
+- Grid's SL/TP anchor-price bug (Step 11) is **fixed** (Step 12, above) and covered by a
+  regression test verified to actually catch it — but **not yet re-verified live**. The exact
+  live scenario that triggered it (a large normalization push) depends on live market
+  conditions at the time of a future run, not something reliably reproducible on demand.
+- Ticket `171622543` (SELL, `magic=71101`, `strategy='grid'`, correct SL/TP) is intentionally
+  open on the account, by user decision (Step 12) — not a leftover mistake.
+- Account state can move between a report and a follow-up action (order fills, broker-side
+  SL/TP triggers, confirmed in Step 9) — any future cleanup script must re-verify live
   immediately before acting, never trust an earlier report as still current.
 - Still no internal scheduler/loop — every cycle requires a separate, manual, human-approved
   invocation. Whether/when to build a bounded autonomous loop (the option not chosen when this
@@ -362,7 +436,6 @@ next action.
 
 ## Exact next smallest task
 
-Not started — account is clean. Ask the user whether to live-verify Step 10's grid SL/TP fix
-next (smoke test or the real pipeline-wiring script), design the bounded-autonomous-loop option,
-or something else. Stopping here per this project's standard "explain, implement, report, stop
-for approval" workflow.
+Not started — ask the user whether to live-verify Step 12's anchor-price fix next, design the
+bounded-autonomous-loop option, or something else. Stopping here per this project's standard
+"explain, implement, report, stop for approval" workflow.

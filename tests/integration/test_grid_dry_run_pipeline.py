@@ -183,6 +183,40 @@ def test_both_sides_produce_protected_orders_with_correct_sl_tp_ordering() -> No
     assert sell_plan.tp < sell_plan.price < sell_plan.sl
 
 
+def test_sl_tp_ordering_holds_even_when_normalize_limit_price_pushes_the_entry_far() -> None:
+    # Live-confirmed bug (docs/PIPELINE_WIRING_CHECKPOINT.md, "Step 11"): sl/tp anchored to
+    # intent.reference_price (the pre-normalization center +/- step_price level) rather than
+    # plan.price (the actual, broker-normalized entry) produced an INVERTED sl for BUY once
+    # normalize_limit_price() pushed the entry far enough away -- which the other regression
+    # test above can't catch, since its bid/ask sit deliberately close to center, so
+    # normalization barely moves the price. Here, bid/ask sit far BELOW center (~63010), forcing
+    # normalize_limit_price() to push the BUY_LIMIT price down substantially to respect the
+    # broker's minimum-distance gap from the (much lower) current bid -- the exact scenario that
+    # broke live. SELL is naturally unaffected in this scenario (its naive price is already far
+    # enough above ask+gap), matching what was actually observed live.
+    market_data = _market_data(tick_bid=62000.0, tick_ask=62002.0)
+    executor = DryRunExecutor()
+
+    levels = compute_grid_levels(_bars(), point=0.01,
+                                  config=GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4))
+
+    results = _run(market_data, _account(), executor)
+
+    assert len(results) == 2
+    buy_plan = next(r.order_plan for r in results if r.order_plan.side == "BUY")
+    sell_plan = next(r.order_plan for r in results if r.order_plan.side == "SELL")
+
+    # Confirm normalization actually pushed the BUY price far from the naive reference level --
+    # otherwise this test wouldn't actually be exercising the bug scenario.
+    assert abs(buy_plan.price - levels.buy_price) > 100
+
+    assert buy_plan.sl > 0 and buy_plan.tp > 0
+    assert buy_plan.sl < buy_plan.price < buy_plan.tp  # would have been inverted under the bug
+
+    assert sell_plan.sl > 0 and sell_plan.tp > 0
+    assert sell_plan.tp < sell_plan.price < sell_plan.sl
+
+
 def test_duplicate_pending_order_blocks_only_that_side_end_to_end() -> None:
     market_data = _market_data(tick_bid=63009.0, tick_ask=63011.0)
     # Figure out the proposed buy price the same way the pipeline will, to place a

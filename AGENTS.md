@@ -215,9 +215,19 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   no precedent at all. Added `GridStrategyConfig.sl_atr_mult` (new, project-original, default
   `2.0`) mirroring runner's independent-multiplier pattern; `compute_grid_levels()` now computes
   `sl_price` alongside the existing, untouched `tp_price`; `grid_cycle.py` now passes both into
-  `build_order_plan()`. +4 tests (330 passed total), architecture tests still pass. Not yet
-  live-verified — a separate, explicit next action. Full detail:
-  `docs/PIPELINE_WIRING_CHECKPOINT.md`.
+  `build_order_plan()`. +4 tests (330 passed total), architecture tests still pass.
+  **Live-verified once, found a real bug**: SELL submitted and verified correctly (ticket
+  `171622543`, retcode 10009, left open on the account), but BUY was rejected —
+  `sl`/`tp` were computed relative to `intent.reference_price` (the pre-normalization
+  `center ± step_price` level), not the final, broker-normalized `plan.price`; when
+  `normalize_limit_price()` pushed this BUY's entry down by over 160 points, the anchored SL
+  ended up above the actual price, rejected client-side (`"Stop loss must be less than price"`,
+  no live impact). **Fixed**: `grid_cycle.py` now anchors `sl`/`tp` to the actual `plan.price`
+  (post-normalization) via `dataclasses.replace()`, not `intent.reference_price`. New regression
+  test deliberately forces `normalize_limit_price()` to push the entry far, and was verified (via
+  `git stash` on just the fix) to actually fail pre-fix and pass post-fix — not just assumed to.
+  +1 test (331 passed total), architecture tests still pass. Ticket `171622543` left open by
+  user decision. Not yet re-verified live. Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
