@@ -136,7 +136,13 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   scenario) — confirmed by test, not assumed. Added 13 tests: failure injection at every
   read/submit stage for both cycle functions, plus a repeated-cycle regression test proving the
   duplicate-order guard works across chained invocations, not just within one call.
-  Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
+  State-store-at-scale sweep (+3 tests: many-tickets round trip with mixed statuses, a rapid
+  sequential-mutation burst, and `reconcile()` at a 600-ticket realistic mixed scale) found a
+  genuine scaling property, not just confirmed correctness: `StateStore` does a full
+  load-serialize-write cycle on every single write, so N writes is O(N²) total real disk I/O —
+  fine at current usage, a real risk if this store is ever wired into a long-running autonomous
+  pipeline accumulating many tickets over time. Flagged, not fixed (out of scope for this
+  phase). Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in

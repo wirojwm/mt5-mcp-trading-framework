@@ -95,6 +95,55 @@ pytest tests/test_architecture.py -q -> 13 passed
 `tests/integration/test_grid_dry_run_pipeline.py`,
 `tests/integration/test_runner_dry_run_pipeline.py`, this checkpoint doc.
 
+## Step 4 — state-store-at-scale sweep
+
+`tests/unit/test_state_store.py` (+2 tests, +1 helper `_submit_n()`):
+- `test_many_tickets_round_trip_correctly_with_mixed_statuses` — 40 tickets, mixed
+  OPEN/OPEN_UNPROTECTED/CANCELLED/CLOSED, full write-then-reload-fresh round trip (simulating a
+  process restart), confirms every single ticket survives with the exact expected status and
+  `all_open()` returns exactly the OPEN+OPEN_UNPROTECTED subset with no duplicates.
+- `test_rapid_sequential_mutations_remain_consistent` — 30 tickets, a rapid burst of
+  submit/cancel/close calls against the SAME store instance with no reload in between (the
+  realistic pattern for this architecture: no threading/multiprocessing anywhere in this
+  codebase's actual usage, so genuine concurrent-access testing was deliberately scoped out as
+  not applicable — every call is a sequential `await` within one async event loop). Confirms no
+  update is lost to the load-mutate-write cycle under a burst.
+
+`tests/unit/test_state_reconcile.py` (+1 test):
+- `test_reconciles_correctly_at_scale_with_a_realistic_mixed_dataset` — 600 total tickets
+  across disjoint ranges (200 matched, 150 local_only, 120 unknown-via-positions, 130
+  unknown-via-orders), with the expected sets computed independently of `reconcile()`'s own
+  logic (disjoint ranges by construction) rather than by trusting the function under test.
+  Confirms exact correctness at scale, no duplicates, no missing tickets. `reconcile()` is pure
+  set arithmetic with no I/O, so this ran in negligible time.
+
+**Real finding, not just confirmation**: the first version of the `StateStore` tests used 250
+and 100 tickets and took **36+ seconds** (vs. this project's normal ~5s full suite). Profiled
+and root-caused: every `StateStore` write method does a full `_load()` (reads the ENTIRE file)
++ `_write()` (serializes and `os.replace()`s the ENTIRE file) cycle — so N sequential writes is
+O(N) work per write, O(N²) total, and `os.replace()`'s per-call overhead on this machine
+dominates at any real N. Reduced to 40/30 tickets (still an order of magnitude beyond the
+existing 1-2 ticket tests, still catches the same class of bug) to keep the suite fast — see
+the in-file comments. **This is a genuine scaling property of `StateStore` as currently
+implemented**, not a test artifact: a real long-running deployment accumulating thousands of
+tickets in `var/order_state.json` over weeks/months would see every single write get
+progressively slower. Not a problem at current usage volume (a handful of smoke-test tickets
+so far), but worth knowing before this state store is ever wired into a long-running
+autonomous pipeline (see "pipeline wiring" in `AGENTS.md` — exactly the scenario where ticket
+counts would actually grow large over time). A future fix, if ever needed, would likely be
+pruning closed/cancelled records past some age, or moving to an append-only/indexed format —
+out of scope for this phase, flagging only.
+
+```
+pytest -q                        -> 320 passed (317 previously + 3 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+Full suite wall time: ~7.4s (up from ~5s baseline — the reduced-scale tests still add ~2.4s,
+acceptable for what they prove).
+
+**Files changed this step**: `tests/unit/test_state_store.py`,
+`tests/unit/test_state_reconcile.py`, this checkpoint doc.
+
 ## Remaining risks / not done
 
 - `GridCycleError`'s consumers: nothing in this codebase currently calls `run_grid_cycle()`
@@ -102,17 +151,17 @@ pytest tests/test_architecture.py -q -> 13 passed
   scope, see `AGENTS.md`'s "pipeline wiring" note). Whoever eventually does needs to actually
   catch `GridCycleError` and decide what to do with `.completed_results`/`.errors` — this phase
   only guarantees the information is available, not that anything downstream consumes it yet.
-- State-file-level failure/regression testing (corruption, concurrent access, larger realistic
-  ticket volumes) was not covered this pass — `test_state_store.py` already has some of this
-  (`test_corrupted_file_raises_state_load_error`, `test_write_is_atomic_even_if_replace_fails`)
-  but a broader sweep (e.g. many tickets, mixed local/real reconciliation at scale) is a
-  reasonable next slice if this phase continues.
+- `StateStore`'s O(N) per-write / O(N²)-for-N-writes scaling (found this step, see above) is
+  unaddressed — fine at current usage, a real risk if ticket volume ever grows large under
+  sustained autonomous use.
 - No live/MCP-adjacent failure testing (e.g. actually killing the MCP subprocess mid-call) —
   everything in this phase is pure/mock-based, no live call was made or needed.
 
 ## Exact next smallest task
 
-Ask the user whether to continue Phase 7 with the state-store-at-scale sweep noted above, or
-consider this phase's first slice sufficient and move to pipeline wiring (a separate,
-later-approved effort per `AGENTS.md`) or something else. Not started — stopping here per this
-project's standard "explain, implement, report, stop for approval" workflow.
+Both scoped slices of this phase are done (grid_cycle failure handling + state-store-at-scale
+sweep). Ask the user whether to continue Phase 7 further (e.g. live/MCP-adjacent failure
+testing, or addressing the StateStore scaling finding), or consider this phase sufficient for
+now and move to pipeline wiring (a separate, later-approved effort per `AGENTS.md`) or
+something else. Not started — stopping here per this project's standard "explain, implement,
+report, stop for approval" workflow.

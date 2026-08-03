@@ -79,3 +79,42 @@ def test_matching_is_by_ticket_only_never_symbol() -> None:
     report = reconcile([_local(1, symbol="BTCUSD")], [_position(1, symbol="XAUUSD")], [])
     assert report.matched == (1,)
     assert report.unknown_real == ()
+
+
+def test_reconciles_correctly_at_scale_with_a_realistic_mixed_dataset() -> None:
+    """Phase 7: everything above uses 1-4 tickets. reconcile() is pure set arithmetic, which
+    shouldn't degrade with size, but this project's culture is "prove it, don't assume" -- a
+    realistic-scale, deliberately non-trivial mix (positions AND orders both contributing to
+    unknown_real, ticket ranges that don't overlap by construction) confirms matched/local_only/
+    unknown_real all remain exactly correct, with no duplicates and no missing tickets, at a
+    size an actual multi-week grid/runner deployment could realistically accumulate."""
+    # Disjoint ticket ranges by construction, so the expected sets can be computed independently
+    # of reconcile()'s own logic (an independent check, not a self-fulfilling one):
+    #   matched:      200 tickets, in both local records AND real positions
+    #   local_only:   150 tickets, in local records only (closed/cancelled live, never synced)
+    #   unknown_real (via positions): 120 tickets, live positions with no local record
+    #   unknown_real (via orders):    130 tickets, live pending orders with no local record
+    matched_tickets = range(1_000_000, 1_000_200)
+    local_only_tickets = range(2_000_000, 2_000_150)
+    unknown_via_positions = range(3_000_000, 3_000_120)
+    unknown_via_orders = range(4_000_000, 4_000_130)
+
+    local = [_local(t) for t in matched_tickets] + [_local(t) for t in local_only_tickets]
+    positions = [_position(t) for t in matched_tickets] + [_position(t) for t in unknown_via_positions]
+    orders = [_order(t) for t in unknown_via_orders]
+
+    report = reconcile(local, positions, orders)
+
+    assert set(report.matched) == set(matched_tickets)
+    assert len(report.matched) == 200  # no duplicates
+    assert set(report.local_only) == set(local_only_tickets)
+    assert len(report.local_only) == 150
+    assert set(report.unknown_real) == set(unknown_via_positions) | set(unknown_via_orders)
+    assert len(report.unknown_real) == 120 + 130
+    # Every input ticket lands in exactly one output set -- nothing counted twice, nothing lost.
+    all_input_tickets = (
+        set(matched_tickets) | set(local_only_tickets)
+        | set(unknown_via_positions) | set(unknown_via_orders)
+    )
+    all_output_tickets = set(report.matched) | set(report.local_only) | set(report.unknown_real)
+    assert all_output_tickets == all_input_tickets

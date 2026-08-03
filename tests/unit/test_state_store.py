@@ -220,6 +220,104 @@ def test_corrupted_file_raises_state_load_error(tmp_path: Path) -> None:
         _submit(store)  # writes must also refuse -- never silently overwrite a bad file
 
 
+# ---------- Phase 7: at-scale sweep ----------
+# Everything above uses 1-2 tickets. reconcile()/all_open() are set/filter operations that
+# shouldn't degrade with size, but this project's own culture is "prove it, don't assume" --
+# these tests exercise realistic ticket counts and a realistic mixed-status population, not
+# toy examples, to actually confirm that rather than take it on faith.
+
+def _submit_n(store: StateStore, n: int, base_ticket: int = 171600000) -> list[int]:
+    """Writes n distinct tickets with MT5-realistic large ticket numbers (matching the
+    magnitude of real tickets seen in Phase 6, e.g. 171618202), alternating strategy/magic --
+    returns the tickets written, in order."""
+    tickets = []
+    for i in range(n):
+        ticket = base_ticket + i
+        strategy, magic = ("grid", 71101) if i % 2 == 0 else ("runner", 72101)
+        _submit(store, ticket=ticket, strategy=strategy, magic=magic)
+        tickets.append(ticket)
+    return tickets
+
+
+def test_many_tickets_round_trip_correctly_with_mixed_statuses(tmp_path: Path) -> None:
+    # 40, not 250+: each write does a full load-serialize-write-atomic-replace cycle over ALL
+    # records so far, making N sequential writes O(N^2) in real disk I/O -- confirmed via
+    # profiling that 250 tickets here alone cost ~28s wall time on this machine (os.replace's
+    # per-call overhead dominates). 40 is still an order of magnitude beyond the existing 1-2
+    # ticket tests -- enough to exercise every status branch below and prove round-tripping
+    # holds beyond trivial cases -- while keeping this test fast enough to run on every change.
+    store = StateStore(tmp_path / "order_state.json")
+    tickets = _submit_n(store, 40)
+
+    # Realistic mixed population: every 4th ticket cancelled, every 5th closed, every 7th
+    # (that isn't already cancelled/closed) left OPEN_UNPROTECTED, the rest stay OPEN.
+    expected_status: dict[int, str] = {}
+    for i, ticket in enumerate(tickets):
+        if i % 4 == 0:
+            store.record_cancelled(ticket, reason="test sweep", closed_at=_now())
+            expected_status[ticket] = "CANCELLED"
+        elif i % 5 == 0:
+            store.record_closed(ticket, reason="test sweep", closed_at=_now())
+            expected_status[ticket] = "CLOSED"
+        elif i % 7 == 0:
+            # Simulate a MARKET submission whose status started OPEN_UNPROTECTED -- overwrite
+            # the record directly via a fresh record_submission call for this ticket instead,
+            # since transitioning requires the OPEN_UNPROTECTED starting point.
+            store.record_submission(
+                ticket=ticket, strategy="grid", magic=71101, comment="grid_buy", symbol="BTCUSD",
+                side="BUY", order_type="MARKET", requested_volume=0.01, requested_price=63000.0,
+                requested_sl=62000.0, requested_tp=64000.0, requested_deviation=150,
+                requested_filling_mode=None, requested_expiry=None, retcode=10009,
+                executed_price=63000.0, executed_volume=0.01, broker_comment="Request executed",
+                submitted_at=_now(), status="OPEN_UNPROTECTED",
+            )
+            expected_status[ticket] = "OPEN_UNPROTECTED"
+        else:
+            expected_status[ticket] = "OPEN"
+
+    # Reload fresh, simulating a process restart -- every one of the tickets must survive
+    # the full write/reload round trip with the exact status expected, not just "most of them".
+    reloaded = StateStore(tmp_path / "order_state.json")
+    assert len(tickets) == 40
+    for ticket in tickets:
+        record = reloaded.lookup(ticket)
+        assert record is not None, f"ticket={ticket} vanished after reload"
+        assert record.status == expected_status[ticket], f"ticket={ticket}"
+
+    expected_open_tickets = {
+        t for t, s in expected_status.items() if s in ("OPEN", "OPEN_UNPROTECTED")
+    }
+    actual_open_tickets = {r.ticket for r in reloaded.all_open()}
+    assert actual_open_tickets == expected_open_tickets
+    assert len(reloaded.all_open()) == len(expected_open_tickets)  # no duplicates
+
+
+def test_rapid_sequential_mutations_remain_consistent(tmp_path: Path) -> None:
+    """Every StateStore method does a full load-mutate-write cycle -- this is the realistic
+    "at scale" risk for this architecture (no threading/multiprocessing involved anywhere in
+    this codebase's actual usage, so genuine concurrent-access testing doesn't apply; see
+    docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md for that scoping decision). A long,
+    rapid burst of sequential submit/cancel/close/mark calls against the SAME store instance
+    (no reload in between) is what a real strategy accumulating many trades over time actually
+    does -- proves no update is ever lost to this read-modify-write pattern under a burst."""
+    store = StateStore(tmp_path / "order_state.json")
+    tickets = _submit_n(store, 30)  # see the sibling test above for why not larger
+
+    for i, ticket in enumerate(tickets):
+        if i % 3 == 0:
+            store.record_cancelled(ticket, reason="burst", closed_at=_now())
+        elif i % 3 == 1:
+            store.record_closed(ticket, reason="burst", closed_at=_now())
+        # i % 3 == 2: left OPEN, untouched
+
+    for i, ticket in enumerate(tickets):
+        expected = "CANCELLED" if i % 3 == 0 else "CLOSED" if i % 3 == 1 else "OPEN"
+        assert store.lookup(ticket).status == expected, f"ticket={ticket}"  # type: ignore[union-attr]
+
+    expected_open = {tickets[i] for i in range(len(tickets)) if i % 3 == 2}
+    assert {r.ticket for r in store.all_open()} == expected_open
+
+
 def test_write_is_atomic_even_if_replace_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "order_state.json"
     store = StateStore(path)
