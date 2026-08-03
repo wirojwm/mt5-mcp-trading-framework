@@ -159,14 +159,53 @@ Re-running it live to prove the fix for real is a separate, explicit next action
 `src/mt5_mcp_trading/pipeline/runner_cycle.py`, `tests/unit/test_strategy_runner.py`,
 `tests/integration/test_runner_dry_run_pipeline.py`, `AGENTS.md`, this checkpoint doc.
 
+## Step 6 — live verification of Step 5's fix
+
+New one-off, self-cleaning smoke test (unlike `scripts/run_demo_execution_pipeline_cycle.py`,
+which deliberately does not clean up): `scripts/run_demo_execution_runner_sltp_smoke_test.py`.
+Calls the real, fixed `run_runner_cycle()` (not a hand-built `OrderPlan`) against the real
+`McpOrderExecutor`, using `SMOKE_TEST_MAGIC=79999` (the Phase 6 convention, distinct from the
+"real" `72101` used by the pipeline-wiring script) and the symbol's live `volume_min`. Verifies
+a local-state leftover guard before running, asserts non-zero/correctly-ordered SL/TP on the
+resulting plan, independently re-reads the live position's actual SL/TP after opening (not just
+`ExecutionResult.verified`), and cleans up with one `close_position()` call on full success only
+— mirroring every prior Phase 6 smoke test's "prove it round-trips, then leave the account
+clean" pattern.
+
+**Run 2026-08-03, result: PASSED, full round trip confirmed live.**
+
+- Signal: SHORT → SELL MARKET (`runner_signal()`'s live MACD sign at run time — not
+  controllable in advance).
+- Ticket `171621792`: requested `side=SELL, volume=0.01, price=62564.91, sl=62585.4,
+  tp=62523.94` (the fixed code's ATR-based `compute_stop_distances()` output).
+- Submit: retcode `10009` (done), `executed_price=62565.92`, deal `99727152`, `verified=True`
+  (`McpOrderExecutor`'s internal check confirmed both position presence and exact SL/TP match,
+  attempt 1/3).
+- **Independent re-read** (`account.get_positions()`, separate from the internal verification
+  above): live `sl=62585.4, tp=62523.94` — exact match to requested. This is the direct,
+  live-confirmed proof that Step 5's fix produces a real, broker-attached SL/TP, not just a
+  locally-computed value that happens to satisfy validation.
+- Cleanup: `close_position()` — retcode `10009` (done), `executed_price=62583.86`, deal
+  `99727153`, `verified=True`, confirmed absent from live positions afterward.
+
+Final state: 0 live positions on BTCUSD (all magics); local record transitioned to `CLOSED`.
+Account is clean. `pytest -q` still 327 passed, architecture tests still 13 passed (unaffected
+by a live run, as expected — no test changes this step, only a new one-off script).
+
+**Files changed this step**: `scripts/run_demo_execution_runner_sltp_smoke_test.py` (new), this
+checkpoint doc.
+
 ## Remaining risks / not done
 
 - `run_grid_cycle()`'s LIMIT orders still carry `sl=0.0, tp=0.0` today (same underlying gap as
   Step 4, never hard-validated for LIMIT so never blocked) — worth a decision on whether grid's
   pending orders are supposed to be protected at placement too, separately from Step 5's fix.
-- `STRATEGY="GRID"` has been run live once (Step 2, then cleaned up Step 3);
-  `STRATEGY="RUNNER"` has been attempted once (Step 4, failed with no live impact) and fixed
-  since (Step 5) but never actually completed a live submission.
+- `STRATEGY="GRID"` has been run live once (Step 2, then cleaned up Step 3); `STRATEGY="RUNNER"`
+  has now been proven live end-to-end via the dedicated smoke test (Step 6), but
+  `scripts/run_demo_execution_pipeline_cycle.py` itself (the "real", non-cleaning
+  pipeline-wiring script, magic=72101) has still never completed a `STRATEGY="RUNNER"`
+  submission — only the Step 4 failure and this step's separate smoke test have exercised the
+  runner MARKET path live so far.
 - Still no internal scheduler/loop — every cycle requires a separate, manual, human-approved
   invocation. Whether/when to build a bounded autonomous loop (the option not chosen when this
   effort started) is undecided.
@@ -178,7 +217,8 @@ Re-running it live to prove the fix for real is a separate, explicit next action
 
 ## Exact next smallest task
 
-Not started — ask the user whether to re-run `STRATEGY="RUNNER"` live now to prove Step 5's fix
-for real, address the grid LIMIT-orders-unprotected question, design the bounded-autonomous-loop
-option, or something else. Stopping here per this project's standard "explain, implement,
-report, stop for approval" workflow.
+Not started — ask the user whether to run `STRATEGY="RUNNER"` live via the actual, non-cleaning
+`scripts/run_demo_execution_pipeline_cycle.py` next (the smoke test in Step 6 only proved the
+fix in isolation, magic=79999), address the grid LIMIT-orders-unprotected question, design the
+bounded-autonomous-loop option, or something else. Stopping here per this project's standard
+"explain, implement, report, stop for approval" workflow.
