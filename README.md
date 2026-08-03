@@ -95,6 +95,14 @@ with a clear error rather than a confusing dependency or syntax error further in
    [py launcher](https://docs.python.org/3/using/windows.html#launcher) makes it easy to have
    multiple versions installed side by side; confirm 3.12 is available with `py -0p`.
 
+   > **Home machine:** Python 3.12 is already installed, so this step is just a check --
+   > run `py -3.12 --version` to confirm it resolves. If a `.venv` from before this
+   > standardization already exists in the project root, delete it rather than reusing it;
+   > a stale environment can mask version drift instead of surfacing it. Also confirm
+   > `py -0p` lists only one 3.12 install if multiple Pythons are present, and always invoke
+   > it explicitly as `py -3.12` in the next step -- never rely on a bare `python`/`python3`
+   > to resolve to the right one.
+
 2. **Create a fresh virtual environment** in the project root, using Python 3.12 specifically
    (don't let this pick up whatever `python` resolves to on the machine):
 
