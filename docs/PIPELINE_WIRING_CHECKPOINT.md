@@ -1056,30 +1056,111 @@ pytest tests/test_architecture.py -q -> 13 passed
 **Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
 scripts, no live call.
 
+## Step 25 — third live loop run: exposure cap confirmed binding for the first time, safe midday stop
+
+User approved a fresh bounded autonomous loop run (Step 24's identified next live milestone), to
+confirm the exposure cap and duplicate-order guard now actually bind in a real multi-cycle run —
+the exact scenario Step 17 exposed as broken, fixed in Steps 18-19, live-verified only in
+isolation (Step 19) until now. Pre-flight, all confirmed fresh: working tree clean, no stale
+`var/STOP_PIPELINE_LOOP`, loop config unchanged from Step 15/17 (`SYMBOL="BTCUSD"`,
+`GRID_MAGIC=71101`, `RUNNER_MAGIC=72101`, `ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)`,
+5-minute cycle interval, 12-cycle/90-minute ceiling), account confirmed flat (0 live
+positions/orders) immediately before launch.
+
+Launched `scripts/run_demo_execution_pipeline_loop.py` live in the background. Mid-run, the user
+requested a safe midday stop ahead of a lunch break: no new cycle after the one in progress, no
+new orders beyond it, stop via the project's normal stop-file mechanism, then report state —
+explicitly not a rushed kill, and explicitly not touching anything beyond the loop's own designed
+no-cleanup behavior.
+
+**Result: ran 6 of 12 cycles, then stopped cleanly and exactly as designed** — `touch
+var/STOP_PIPELINE_LOOP` created during cycle 6's inter-cycle wait; the loop's poll (every
+`POLL_INTERVAL_SECONDS=5s` during the wait) picked it up at 12:09:01, logged `"Stop requested
+during inter-cycle wait: stop file present"`, disconnected cleanly, and exited — `"Done. 6
+cycle(s) run. No cleanup performed."` No cycle 7 was ever started; nothing was submitted after
+cycle 6. Zero `ERROR`-level log lines, no tracebacks, no exceptions, across the entire run (`grep`-
+confirmed, not assumed).
+
+**The exposure cap bound for the first time in this project's history, live, in cycles 5 and 6**:
+```
+[GRID] BTCUSD BUY rejected (portfolio.max_open_lots): open=0, pending=0.05, proposed=0.01,
+  projected_total=0.06 exceeds max_open_lots=0.06
+[GRID] BTCUSD SELL rejected (portfolio.max_open_lots): open=0, pending=0.05, proposed=0.01,
+  projected_total=0.06 exceeds max_open_lots=0.06
+```
+(cycle 5, and again structurally identically in cycle 6 with `open=0.01, pending=0.04`). This is
+the exact scenario Step 17 exposed as silently broken (12 straight grid cycles blew past this
+same 0.06 cap unblocked) — now genuinely enforced, live, not a mock. Closes the loop on the
+entire magic-filter investigation's original goal.
+
+**Cycle-by-cycle results**:
+
+| Cycle | Grid (magic 71101) | Runner (magic 72101) |
+|---|---|---|
+| 1 | BUY `171648990`@63784.29, SELL `171648991`@63957.24 — both retcode 10009 | BUY MARKET `171648992`@63957.10, SL/TP attached, retcode 10009 |
+| 2 | BUY `171649324`@63822.06, SELL `171649325`@64138.03 — both retcode 10009 | BUY MARKET `171649326`@64141.73, SL/TP attached, retcode 10009 |
+| 3 | BUY `171649422`@63859.65, SELL `171649423`@64072.50 — both retcode 10009 | BUY MARKET `171649424`@64068.23, SL/TP attached, retcode 10009 |
+| 4 | BUY `171649460`@63893.48, SELL `171649461`@64053.69 — both retcode 10009 | BUY MARKET `171649463`@64053.54, SL/TP attached, retcode 10009 |
+| 5 | **Both sides rejected** — `portfolio.max_open_lots` | BUY MARKET `171649552`@63925.44, SL/TP attached, retcode 10009 |
+| 6 | **Both sides rejected** — `portfolio.max_open_lots` | SELL MARKET `171649631`@63870.10, SL/TP attached, retcode 10009 |
+
+14 tickets submitted total (8 grid, 6 runner), every one retcode 10009/`verified=True`, every
+runner MARKET order's SL/TP attach succeeded on the first attempt (no recurrence of Step 19's
+retcode-10016 quirk this run). Runner never signaled FLAT — a directional signal existed every
+single cycle.
+
+**Live state re-checked immediately after the stop** (`scripts/
+run_demo_execution_magic_filter_fix_verification.py`, read-only): of the 14 tickets this run
+created, **8 had already resolved on their own** before the check even ran — closed via their own
+broker-side SL/TP (grid SELLs `171648991`/`171649325`/`171649423`; runner positions `171648992`/
+`171649326`/`171649424`/`171649463`/`171649552`) — the same live-triggering-protection evidence
+this project has observed repeatedly (Steps 15, 17), now at a smaller but still real scale.
+**6 tickets remain live, all correctly protected with real SL/TP**:
+- 2 open positions: `171649460` (grid BUY, filled from its own pending order) and `171649631`
+  (runner SELL).
+- 4 pending orders: `171648990`, `171649324`, `171649422` (grid BUY), `171649461` (grid SELL).
+
+**No cleanup performed** — matches the loop's own designed no-cleanup behavior exactly (`AGENTS.md`
+safety rule: don't act beyond what's designed/approved). All 6 remaining tickets are protected
+(real SL/TP attached at submission), a safe state to leave over a break.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no new
+scripts. `var/STOP_PIPELINE_LOOP` and `var/logs/pipeline_loop_20260804T044217Z.log` were created
+by this step but are git-ignored (`var/`, `logs/` in `.gitignore`) — never committed.
+
+**Known gotcha for the next launch**: `var/STOP_PIPELINE_LOOP` is still present on disk (not
+removed this step, since removal wasn't part of what was asked and leaving it is itself safe — a
+future launch would just see it and exit immediately, a safe no-op, not a hazard). It must be
+deleted before the loop can run again; otherwise it will connect, log the stop-file, and exit on
+its very first check without doing anything. Same gotcha Step 17 hit and documented from Step 15's
+shutdown.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
-every step before this one. What's left, roughly in priority order:
-1. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
-   observed live twice (`171617865` in Phase 6 Step 6, `171647565` in Step 19) — both times
-   correctly caught by trusting retcode over the message and by never skipping the mandatory
-   SL/TP-attach verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s
-   own code), and this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED`
-   status, no auto-remediation) continues to hold up exactly as designed both times it's been
-   exercised for real — no action needed, noted for pattern-recognition only. This is the only
-   remaining item on this list that isn't either resolved or a live milestone.
-2. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
-   pick back up from whenever live testing resumes. With Steps 18-24 now closing out the entire
-   magic-filter investigation and both of its deferred follow-on questions (`all_open()` cost,
-   stale-record staleness), the next natural live milestone — not yet scheduled or approved —
-   would be a fresh bounded autonomous loop run (mirroring Step 15/17's `scripts/
-   run_demo_execution_pipeline_loop.py`) to confirm the exposure cap and duplicate-order guard
-   now actually bind in a real multi-cycle run, the exact scenario Step 17 first exposed as
-   broken. At this point essentially every open, non-live-testing question from this
-   investigation has been resolved, traced, or explicitly deferred with reasoning — this is a
-   natural stopping point until either the retcode-trust bug recurs, or live testing resumes.
+every step before this one.
+1. Before any future loop relaunch: delete `var/STOP_PIPELINE_LOOP` first (see this step's "known
+   gotcha" above), or the loop will exit immediately without running.
+2. Decide what to do with the 6 tickets this run left open (2 positions, 4 pending grid orders,
+   listed above) — currently no action planned, left for a later session/cycle, consistent with
+   this project's standing default for real (non-smoke-test) cycles. All are protected with real
+   SL/TP; no urgency.
+3. The retcode-trust bug (tool message claims success when retcode says otherwise) remains a
+   pattern-recognition-only watch item (`171617865` Phase 6 Step 6, `171647565` Step 19) — did
+   NOT recur this run (all 6 runner SL/TP attaches succeeded first try). No action needed.
+4. With the exposure cap now confirmed binding live (this step's core finding), the magic-filter
+   investigation that began at Step 17 is fully closed: root cause, fix, live verification in
+   isolation, cleanup, guard-intent confirmation, both deferred follow-on questions, and now
+   confirmation the fix holds under a real multi-cycle run. Nothing further is planned here unless
+   something new surfaces.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 24 is the most recent entry), confirm git status is
-clean at the latest commit, then ask me what to do next — do not run anything live without my
-explicit go-ahead first."
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 25 is the most recent entry), confirm git status is
+clean at the latest commit, confirm no live process is running, delete
+`var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
+anything live without my explicit go-ahead first."

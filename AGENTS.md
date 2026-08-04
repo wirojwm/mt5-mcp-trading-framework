@@ -314,6 +314,20 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   and still harmless. Not fixed — the only real fix options either violate this project's
   explicit "never mutate local state automatically" principle or duplicate the `all_open()` cost
   decision already deferred above.
+  **Third live loop run: exposure cap confirmed binding for the first time, safe midday stop.**
+  Launched a fresh bounded autonomous loop (same conservative config as Step 15/17) to confirm the
+  exposure cap and duplicate-order guard now actually bind in a real multi-cycle run. Ran 6 of 12
+  cycles: 14 tickets submitted (8 grid, 6 runner), all retcode 10009/verified, every runner SL/TP
+  attach succeeded first try. **Cycles 5 and 6's grid submissions were both correctly rejected by
+  the exposure cap** (`projected_total=0.06 exceeds max_open_lots=0.06`) — the exact scenario
+  Step 17 exposed as silently broken, now genuinely enforced live, closing the loop on this whole
+  investigation's original goal. Stopped safely mid-run via the project's normal stop-file
+  mechanism (ahead of a lunch break, user-requested): no cycle 7 started, zero errors across the
+  run. 8 of the 14 tickets already resolved on their own (closed via broker-side SL/TP) before the
+  post-stop check ran; 6 remain live (2 positions, 4 pending grid orders), all protected with real
+  SL/TP, no cleanup performed (matches the loop's own no-cleanup design) — safe to leave over a
+  break. `var/STOP_PIPELINE_LOOP` is still present on disk and must be deleted before any future
+  loop relaunch, or it will exit immediately (same gotcha Step 17 hit).
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
