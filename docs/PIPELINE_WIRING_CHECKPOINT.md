@@ -1491,3 +1491,162 @@ clean at the latest commit, confirm no live process is running, confirm/delete
 `var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
 anything live without my explicit go-ahead first. Note: ticket 171654324 is a real, unprotected
 live position awaiting an explicit recovery decision."
+
+## Step 31 — end-of-day safe stop, final confirmation
+
+Same session as Step 30. User approved closing `171654324` (see Step 30's recovery entry above —
+retcode `10009`, verified absent). User then manually cancelled all 5 remaining pending grid
+orders (`171654092`, `171654190`, `171654191`, `171654322`, `171654323`) directly in the MT5
+terminal, outside this project's code, and asked for a pure read-only reconciliation first (no
+writes), then approved reconciling the resulting stale local records, then called time on the
+session and asked for a final safe-stop close-out — no new task, phase, live test, loop, or
+MT5/MCP action.
+
+**Reconciliation of the manual cancellation**: a pure read-only check confirmed all 5 tickets
+absent from live positions/orders but still `OPEN` locally (no `cancel()` call was ever made by
+this project for any of them, since the user cancelled them directly). New one-off script,
+`scripts/run_demo_execution_reconcile_manual_cancel_5_grid_orders.py`, re-verified all 5
+live-absent immediately before acting, then reconciled each via `StateStore.record_cancelled()`
+(the semantically correct terminal status for a cancelled pending order, as opposed to
+`record_closed()` for a filled-then-closed position) — no MCP calls. All 5 confirmed `CANCELLED`.
+
+**Final safe-stop confirmation, independently re-verified**:
+- **No processes running** — confirmed via process listing, no Python process of any kind active
+  (loop, MCP server, or otherwise).
+- **No stop-file present** — `var/STOP_PIPELINE_LOOP` absent (the loop was never running this
+  session to begin with; it exited on its own after Step 30's cycle 3, and Step 30's relaunch
+  was never followed by another launch).
+- **Live state re-checked fresh**: 0 live positions, 0 live pending orders on BTCUSD (all magics)
+  — ground truth confirmed via `scripts/run_demo_execution_magic_filter_fix_verification.py`,
+  immediately after the reconciliation above, not trusting the reconciliation script's own report
+  alone.
+- **Local state fully reconciled**: every ticket touched this session (Step 26 through this step)
+  now has a terminal status (`CLOSED` or `CANCELLED`) matching its real, confirmed-absent live
+  state. No open local records remain for anything this session created.
+
+```
+pytest -q                        -> 348 passed (unchanged since Step 30 -- no production code
+                                     changed this session)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**No code changed this step** — safe-stop confirmation and end-of-day reconciliation only.
+
+**Files changed this step**:
+`scripts/run_demo_execution_readonly_check_5_grid_orders.py`,
+`scripts/run_demo_execution_reconcile_manual_cancel_5_grid_orders.py` (both new), this checkpoint
+doc, `AGENTS.md`. No production code changed.
+
+## Session summary (Steps 26-31): today's work
+
+**Features and fixes completed**: none new this session — all production code (grid/runner SL/TP,
+the magic-filter fix, the loop itself) was already complete and committed before today. This
+session was entirely live-testing, verification, cleanup, and one root-cause investigation.
+
+**Demo tests performed**: three more bounded-autonomous-loop live runs (the project's 4th, 5th,
+and 6th total), each on the real demo account, each user-approved individually:
+- **Step 27** (4th run): 1 cycle completed before the retcode-10016 bug recurred (3rd time
+  overall) on `171651880`; recovered on approval; both grid tickets from that cycle later
+  self-resolved and were reconciled.
+- **Step 29** (5th run): 4 cycles completed before the retcode-10016 bug recurred (4th time) on
+  `171653006`; recovered on approval; all 6 remaining tickets from that run later self-resolved
+  and were reconciled across two follow-up checks.
+- **Step 30** (6th run): a full end-to-end unattended run (no interim status pings, per explicit
+  instruction) — 3 cycles completed before the retcode-10016 bug recurred (5th time) on
+  `171654324`; recovered on approval. The 5 remaining protected tickets were left open per
+  standing design, later manually cancelled by the user directly in MT5, and reconciled locally
+  this step (Step 31).
+
+**Important findings**:
+- **Step 28**: root-caused the recurring retcode-10016 "false success" message to its exact
+  source — the vendored `metatrader_client` package's `send_order()` SLTP branch
+  (`.venv/Lib/site-packages/metatrader_client/order/send_order.py:272-277`), which determines
+  `success` from `mt5.last_error()` (a terminal/API-level code) instead of the broker's real
+  `response.retcode`. The "current price 0.0" text in the message is a red herring — structurally
+  `0.0` on every SLTP response, not diagnostic. Confirmed this project's own executor already
+  handles it correctly (parses retcode directly, requires a fresh live re-read before trusting an
+  attach) — watch item closed as a known, no-fix-needed, already-mitigated broker-side rejection
+  class, not a code defect.
+- The retcode-10016 bug recurred 3 more times today (Steps 27, 29, 30) after being closed as a
+  watch item in Step 28 — every single occurrence was caught correctly by the existing safeguard,
+  with zero silent failures and zero unmanaged risk left behind after recovery. This is now
+  evidence, not just theory, that the mitigation holds under repeated real-world recurrence.
+- Every "leftover ticket" check this session found live state had moved further than the last
+  report by the time a follow-up ran — the same "state moves between a report and an action"
+  pattern this project has observed since Step 9, now reconfirmed at even higher frequency (grid
+  LIMIT orders and runner MARKET positions both routinely self-resolve via their own broker-side
+  SL/TP within minutes).
+
+**Errors or safety stops encountered**: 3 (Steps 27, 29, 30), all the same already-understood
+retcode-10016 SL/TP-attach rejection, all handled exactly as designed — position correctly left
+`OPEN_UNPROTECTED`, loop correctly stopped itself, no automatic retry or close ever attempted, no
+other error type occurred (no exposure-cap violation, no unknown-ownership case, no dropped
+connection).
+
+**Final MT5 and repository state**: account fully clean — 0 live positions, 0 live pending orders
+on BTCUSD (all magics), independently re-verified this step. Every ticket created or touched today
+is reconciled to a terminal local status matching live reality. Repository: working tree clean,
+all changes committed and pushed to `origin/master`, no uncommitted work.
+
+## Remaining roadmap
+
+- **Phase 7 (regression and failure testing)**: closed by user decision (see Phase 7's own
+  checkpoint doc), but one slice was explicitly never done and remains open if resumed: **no
+  live/MCP-adjacent failure testing** (e.g. actually killing the MCP subprocess mid-call, forcing
+  a dropped connection) — everything in Phase 7 itself was pure/mock-based. The pipeline-wiring
+  effort's own loop runs have since observed *organic* connection stability (no drop has ever
+  occurred across 6 live runs), but a *deliberate* forced-disconnect test, proving the loop's
+  documented "a dropped connection is fatal, no reconnect logic" behavior actually behaves as
+  described, has still never been exercised.
+- **Phase 8 (not yet started, not yet scoped in this repo)**: strategy research and demo
+  performance tuning. No formal definition exists yet in `AGENTS.md`'s phase list (which currently
+  only defines phases 0-7) — this would be new scope, not a continuation of an existing checkpoint
+  doc. Likely candidates based on what today's runs surfaced: tuning `sl_atr_mult`/`tp_atr_mult`
+  for both strategies against real observed fill/SL-TP-trigger behavior (today's data shows most
+  positions self-resolve within single-digit minutes — worth understanding whether that reflects
+  genuine signal quality or just current market volatility), and revisiting the grid step-size/TP
+  formula now that real fill data exists across 6 live runs.
+- **Phase 9 (not yet started, not yet scoped in this repo)**: locked demo forward testing and a
+  live-readiness gate. Also undefined in `AGENTS.md` today. Conceptually the natural endpoint of
+  this whole pipeline-wiring effort — a longer, less-supervised demo run (days, not single
+  bounded-loop sessions) with an explicit, objective gate (e.g. N consecutive clean cycles, a
+  maximum acceptable retcode-10016 recurrence rate, a stability/uptime bar) before ever
+  considering anything beyond `DEMO_EXECUTION` mode. Nothing about this project's `no LIVE mode
+  exists in this codebase` boundary (`AGENTS.md`, "Execution modes") is being questioned or
+  proposed to change — this phase would still be entirely on the demo account.
+
+Both Phase 8 and Phase 9 are the user's own forward framing from this instruction, not yet written
+into `AGENTS.md`'s phase list or given their own checkpoint docs — that formalization is itself a
+future task, not done here (per "Do not begin tomorrow's work today").
+
+## Tomorrow's smallest safe task
+
+Recommended order, smallest/lowest-risk first:
+1. **Nothing urgent is outstanding** — account is clean, all state reconciled, no open recovery
+   items. Tomorrow can start from a genuinely clean slate.
+2. If continuing the live-testing thread: the next smallest live action is another bounded loop
+   run (7th total) — no new decision needed, same conservative config, same established recovery
+   pattern if retcode-10016 recurs again. Needs fresh explicit approval, per this project's
+   standing rule (a prior day's approval never carries over).
+3. If shifting toward hardening instead: the deliberate live/MCP-adjacent failure test flagged
+   above (forced MCP subprocess kill mid-cycle) is the smallest well-scoped Phase-7-adjacent gap
+   remaining — pure engineering, no live order risk beyond what any other loop run already
+   carries, and it directly tests a documented-but-never-proven behavior (fatal-on-disconnect).
+4. If shifting toward Phase 8/9 definition: the smallest safe first step is purely
+   documentation — formalizing what Phase 8 and Phase 9 actually mean in `AGENTS.md`'s phase list
+   (today's roadmap section above is a first draft, not a committed definition) — before any
+   strategy-tuning code or extended forward-test script is written.
+
+No single one of these is prescribed — this is a menu for tomorrow's first explicit decision, not
+a plan already put in motion.
+
+## Exact next smallest task
+
+**Live testing remains paused — do not resume without explicit approval**, same standing rule as
+every step before this one. Account is fully clean, nothing outstanding.
+
+**Continuation prompt for a new session**: "Read AGENTS.md and
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 31 is the most recent entry), confirm git status is
+clean at the latest commit, confirm no live process is running, confirm the demo account is clean
+(no positions, no pending orders), confirm live testing is still paused, then ask me what to do
+next — do not run anything live without my explicit go-ahead first."

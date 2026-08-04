@@ -378,6 +378,13 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   self-resolved and reconciled locally (no MCP calls); 5 protected tickets remain live untouched.
   User then approved closing `171654324` (retcode `10009`, verified absent) — 0 unprotected
   positions remain. No production code changed.
+  **Step 31 (end-of-day safe stop)**: user manually cancelled the 5 remaining pending grid orders
+  directly in MT5; reconciled locally via `record_cancelled()` (no MCP calls). Final
+  independently-re-verified state: 0 live positions, 0 live pending orders, no process running, no
+  stop-file, all local records for tickets touched this session reconciled to a terminal status.
+  Retcode-10016 recurred 3 more times today (Steps 27/29/30, 5 occurrences total project-to-date)
+  — every single time caught and handled correctly by the Step 28 mitigation, zero unmanaged risk
+  left behind. No production code changed. **Live testing remains paused.**
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
