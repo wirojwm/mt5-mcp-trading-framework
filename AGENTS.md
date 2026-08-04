@@ -340,6 +340,9 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   verified absent); user chose to leave the 2 grid tickets open. Follow-up same session: a later
   check found `171651878` already closed on its own (broker-side SL/TP); reconciled locally
   (`171651879` still genuinely live, left untouched). No production code changed.
+  Second follow-up: `171651879` was later found closed on its own too (broker-side SL/TP) and
+  reconciled locally the same way — every ticket from Step 27's loop run is now resolved, account
+  fully clean (0 live positions/orders).
   **Step 28**: root-caused the recurring retcode-10016 pattern (read-only, no code change). Traced
   to the vendored `metatrader_client` package's `send_order()` SLTP branch
   (`.venv/Lib/site-packages/metatrader_client/order/send_order.py:272-277`), which determines

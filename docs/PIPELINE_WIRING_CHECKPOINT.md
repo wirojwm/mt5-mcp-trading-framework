@@ -1228,6 +1228,12 @@ pattern as Step 26's reconciliation script), reconciled `171651878` to `CLOSED` 
 call, `171651879` deliberately left untouched (still genuinely live, not stale). Final state: 0
 live positions, 1 live protected pending grid order (`171651879`) on BTCUSD.
 
+**Second follow-up, after Step 28**: a later read-only check found `171651879` also now absent
+from live positions/orders — same pattern, closed via its own broker-side SL/TP. New one-off
+script, `scripts/run_demo_execution_reconcile_171651879.py` (identical pattern), reconciled it to
+`CLOSED` locally — no MCP call. Every ticket from Step 27's loop run is now resolved and
+reconciled. Final state: 0 live positions, 0 live pending orders on BTCUSD.
+
 ## Step 28 — retcode-10016 / "current price 0.0" watch item: root-caused, closed, no fix needed
 
 Same new session as Steps 26-27. User asked to investigate the recurring retcode-10016 pattern
@@ -1301,10 +1307,9 @@ scripts, no live call.
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one.
-1. 1 live protected grid pending order remains (`171651879` SELL) — user's standing decision to
-   leave it open, for a later cycle/session to manage. No urgency, carries real SL/TP.
-   `171651878` (the other grid ticket from this run) was found closed on its own and reconciled
-   locally, same session.
+1. Account is fully clean (0 live positions/orders) — both `171651878` and `171651879` (Step 27's
+   grid tickets) were found closed on their own via broker-side SL/TP and reconciled locally.
+   Nothing left over from Step 27 to decide on.
 2. **The retcode-10016 watch item is now closed** (this step) — root cause fully traced to the
    vendored library's `send_order()` SLTP branch, confirmed not a bug in this project's own code,
    and confirmed already correctly handled by the existing retcode-trust workaround. No further
