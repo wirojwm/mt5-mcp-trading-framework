@@ -300,6 +300,12 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   per real cycle, and nothing ever prunes closed tickets from the directory. Not fixed — flagged
   as the clear next candidate if this project moves toward sustained (not just bounded-test) live
   operation.
+  **Decided: not fixing it now.** Doesn't block anything currently in scope (no sustained live
+  operation has been proposed), and the candidate fixes (in-session caching, a per-magic index,
+  archiving) all carry real risk — caching in particular could feed stale reads to the exposure-
+  cap/duplicate-order guards, the highest-severity failure class for this codebase. Revisit if/
+  when sustained live operation is actually proposed, informed by real usage patterns at that
+  point rather than guessed now.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

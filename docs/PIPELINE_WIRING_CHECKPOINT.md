@@ -961,35 +961,73 @@ scripts, no live call. (The benchmark itself was run ad hoc via the Python REPL 
 throwaway temp directory and the real `var/order_state` directory, read-only; not saved as a
 script since it's a one-time measurement, not a repeatable tool.)
 
+## Step 23 — decided: not fixing all_open()'s cost now
+
+User asked to decide (not just quantify) whether to fix `all_open()`'s per-call cost. Read-only —
+no code or live state changed this step, a decision-and-rationale entry only, same shape as Step
+16's "safe stop" and Step 21's guard-intent confirmation (neither changed code either).
+
+**Decision: not now.** Reasoning:
+
+1. **Doesn't block anything currently in scope.** The system has only ever run bounded test loops
+   (Step 17: 12 cycles, ~56 minutes, 36 tickets). Sustained live operation — the only scenario
+   where Step 22's numbers actually bite (roughly 500+ tickets before it's noticeable) — hasn't
+   been proposed or approved as a next phase. Nothing on the "exact next smallest task" list
+   depends on this being fixed first.
+2. **The candidate fixes aren't low-risk, unlike Phase 7's O(N²) write fix.** That fix (one file
+   per ticket instead of one big file) was a clean, unambiguous format change — zero behavior
+   change for any caller. The three candidates noted in Step 22 are all more invasive:
+   - **In-session caching** — the most obvious option, but risks feeding stale reads to the
+     exposure-cap and duplicate-order guards, exactly the failure class `AGENTS.md` treats as
+     highest-severity ("Never bypass ... duplicate-order ... guards"). A caching bug here
+     wouldn't just be slow, it would be *wrong* — the worst possible category for this codebase.
+   - **A per-magic secondary index** — a new file/data structure, more moving parts, more surface
+     for a subtle bug.
+   - **Archiving resolved tickets** — needs a real answer for whether reconciliation or anything
+     else still needs to read archived records, which nobody has worked out.
+   None of these is a "smallest safe fix"; each is real design work deserving its own scoping, not
+   something to bolt on opportunistically onto a documentation step.
+3. **Matches this project's own established practice**: don't design for hypothetical future
+   requirements, fix things when proven necessary, not before. Step 22 did the "prove it" half
+   (real benchmark); this step is the "not necessary yet" half of that same discipline.
+
+**Revisit when**: sustained (not bounded-test) live operation is actually proposed as a next
+phase — at that point, pick the fix design deliberately, informed by real usage patterns from
+that decision (cycle interval, expected run duration), rather than guessing now.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
+scripts, no live call.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. What's left, roughly in priority order:
-1. Decide whether to design/implement a fix for `all_open()`'s per-call cost now (Step 22 found
-   real, evidence-backed scaling risk for sustained use, though not blocking at current ticket
-   counts) or continue deferring it until ticket volume actually approaches the range where it
-   matters (roughly 500+ tickets based on this step's numbers). Not yet decided.
-2. Stale local `StateStore` records for tickets closed via broker-side SL/TP without an explicit
+1. Stale local `StateStore` records for tickets closed via broker-side SL/TP without an explicit
    `close()`/`cancel()` call remain unaddressed — harmless, `local_only` in any future
    `reconcile()` call, not blocking, but a contributor to `all_open()`'s directory ever only
-   growing (item 1 above) since nothing ever prunes them.
-3. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
+   growing (Step 22/23's deferred item) since nothing ever prunes them.
+2. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
    observed live twice (`171617865` in Phase 6 Step 6, `171647565` in Step 19) — both times
    correctly caught by trusting retcode over the message and by never skipping the mandatory
    SL/TP-attach verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s
    own code), and this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED`
    status, no auto-remediation) continues to hold up exactly as designed both times it's been
    exercised for real — no action needed, noted for pattern-recognition only.
-4. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
-   pick back up from whenever live testing resumes. With Steps 18-22 now closing out the entire
+3. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
+   pick back up from whenever live testing resumes. With Steps 18-23 now closing out the entire
    magic-filter investigation (root cause, fix, live verification, cleanup, guard-intent
-   confirmation, and this cost quantification), the next natural live milestone — not yet
-   scheduled or approved — would be a fresh bounded autonomous loop run (mirroring Step 15/17's
-   `scripts/run_demo_execution_pipeline_loop.py`) to confirm the exposure cap and duplicate-order
-   guard now actually bind in a real multi-cycle run, the exact scenario Step 17 first exposed as
-   broken.
+   confirmation, cost quantification, and the decision to defer that cost fix), the next natural
+   live milestone — not yet scheduled or approved — would be a fresh bounded autonomous loop run
+   (mirroring Step 15/17's `scripts/run_demo_execution_pipeline_loop.py`) to confirm the exposure
+   cap and duplicate-order guard now actually bind in a real multi-cycle run, the exact scenario
+   Step 17 first exposed as broken.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 22 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 23 is the most recent entry), confirm git status is
 clean at the latest commit, then ask me what to do next — do not run anything live without my
 explicit go-ahead first."
