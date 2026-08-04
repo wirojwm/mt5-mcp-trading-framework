@@ -272,9 +272,17 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   needed no change (`DryRunExecutor` has no `StateStore`). +2 regression tests reproducing the
   magic=0 quirk in a mock for the first time — each asserts both the still-blind fallback
   without `state_store` and the corrected behavior with it — 348 passed total, architecture
-  tests still pass. **Not yet live-verified**: whether this correctly discriminates real,
-  populated, differently-magic-tagged data on the demo account has not been exercised against a
-  real connection; requires its own explicit approval before any live run.
+  tests still pass. **Live-verified**: one real GRID cycle (both sides submitted and protected,
+  tickets `171647522`/`171647525`) and one real RUNNER cycle (MARKET order placed but its
+  mandatory SL/TP attach was rejected — retcode `10016`, the same live-confirmed retcode-trust
+  bug from Phase 6 Step 6, recurring on ticket `171647565` — correctly left `OPEN_UNPROTECTED`,
+  no auto-remediation, then closed via a separately-approved recovery call, retcode `10009`,
+  verified absent) produced real, populated, differently-magic-tagged live data. Re-running the
+  fix against it confirmed correct discrimination: grid's magic (`71101`) recovered its own 2
+  live pending orders (`pending_lots=0.02`) via `state_store`, while runner's magic (`72101`)
+  correctly stayed at zero rather than misattributing grid's tickets — exactly the gap this fix
+  was written to close, now proven against the real broker, not just mocks. The 2 grid tickets
+  were left open by user decision, matching every prior real cycle's default.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

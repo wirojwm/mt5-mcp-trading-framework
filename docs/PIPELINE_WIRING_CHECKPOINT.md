@@ -752,7 +752,7 @@ discriminates real, populated, differently-magic-tagged live data on the demo ac
 including the connected account's own pre-existing tickets, and any residual staleness from
 `StateStore` records that went stale via broker-side SL/TP closes (Step 17's separate, still-open
 finding) — has not been observed live. Requires its own explicit approval before any live run,
-same standing rule as every step since Step 15.
+same standing rule as every step since Step 15. **Live-verified in Step 19** — see below.
 
 ```
 pytest -q                        -> 348 passed (was 346 before this step)
@@ -767,29 +767,95 @@ pytest tests/test_architecture.py -q -> 13 passed
 `tests/integration/test_runner_dry_run_pipeline.py`, `AGENTS.md`, this checkpoint doc. Committed
 as `2c7b42b`.
 
+## Step 19 — Step 18's fix live-verified against real, populated, differently-magic-tagged data
+
+User approved live-verifying Step 18's fix (this step's exact predecessor task). Account state at
+the start: 0 live positions/orders on BTCUSD (everything from Step 17 had already closed since
+the last session) — read-only-confirmed via a new script,
+`scripts/run_demo_execution_magic_filter_fix_verification.py`, which computes the OLD
+(broker-side `magic`-filtered) and NEW (Step 18's `state_store`-recovered) results side by side
+for both real magics, without ever calling `submit()`/`cancel()`/`close_position()`. An empty
+account can't prove discrimination, so real data was needed first.
+
+**GRID cycle (`scripts/run_demo_execution_pipeline_cycle.py`, `STRATEGY="GRID"`) — fully
+succeeded**: BUY ticket `171647522` @ 63723.92 and SELL ticket `171647525` @ 63750.01, both
+retcode `10009`, both `verified=True`, both protected (LIMIT orders carry SL/TP at placement).
+
+**RUNNER cycle (same script, `STRATEGY="RUNNER"`) — hit the designed failure path, not a new
+bug**: the MARKET order itself placed fine (SELL ticket `171647565` @ 63737.56, retcode `10009`),
+but the mandatory SL/TP attach (`modify_position`) was rejected — retcode `10016` ("Invalid
+stops"), while the tool's own message text claimed success (`'Modify position 171647565 success,
+SL at 63753.5, TP at 63705.59, current price 0.0'`) — the exact same live-confirmed
+retcode-trust bug already documented for ticket `171617865` (Phase 6 Step 6), recurring here for
+the first time since. Correctly raised `SlTpAttachmentFailedError`, left the position
+`OPEN_UNPROTECTED`, attempted no automatic retry or close, per the established design.
+
+**Recovery (user-approved, separate action)**: a new narrowly-scoped one-off script,
+`scripts/run_demo_execution_close_unprotected_runner_position.py` (same re-verify/abort-if-
+mismatched/one-attempt/verify-after pattern as
+`scripts/run_demo_execution_close_pipeline_open_items.py`), closed ticket `171647565` —
+retcode `10009`, `verified=True`, confirmed absent afterward, local state transitioned to
+`CLOSED`.
+
+**The actual verification, re-run after the close** — `scripts/run_demo_execution_magic_filter_fix_verification.py` against the resulting real state (0 positions, 2 live grid pending orders,
+both broker-reported `magic=0` as always):
+
+| | OLD (`account.get_positions/get_orders(symbol, magic=magic)`) | NEW (Step 18 fix via `state_store`) |
+|---|---|---|
+| grid (`magic=71101`) | 0 orders — blind, confirms the bug is still real | **2 orders, `pending_lots=0.02`** — correctly recovers `171647522`/`171647525` |
+| runner (`magic=72101`) | 0 orders | **0 orders** — correctly does NOT misattribute grid's tickets, despite runner having 12 historical local records of its own |
+
+This is exactly the bar this whole effort was written against (see Step 17's root-cause note and
+Step 18's "not yet live-verified" caveat): the fix recovers real exposure for the magic that
+actually owns it, and does not leak it to the other, against real broker data carrying the real
+`magic=0` quirk — not a mock. **Step 18's fix is now live-verified.**
+
+**User decision: leave the 2 grid tickets open** (`171647522` BUY, `171647525` SELL) — same
+standing default as every prior real (non-smoke-test) cycle, left for a later session/cycle.
+`scripts/run_demo_execution_pipeline_cycle.py`'s `STRATEGY` constant was left at `"RUNNER"` (the
+last value exercised this step) — reviewed before every run regardless, not a safety-relevant
+state.
+
+```
+pytest -q                        -> 348 passed (unchanged since Step 18)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `scripts/run_demo_execution_magic_filter_fix_verification.py`
+(new), `scripts/run_demo_execution_close_unprotected_runner_position.py` (new),
+`scripts/run_demo_execution_pipeline_cycle.py` (`STRATEGY` flipped to `"RUNNER"`), this
+checkpoint doc, `AGENTS.md`.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. What's left, roughly in priority order:
-1. Live-verify Step 18's fix: confirm the `state_store`-based magic recovery actually
-   discriminates correctly against the demo account's real, populated, differently-magic-tagged
-   data (grid `71101` vs runner `72101` vs the account's other live tickets) — the exact gap this
-   whole effort exists to close. Requires explicit approval before any live call.
-2. Decide what to do with the 9 tickets Step 17 left open (7 pending grid BUY_LIMIT orders, 2
-   open positions) — currently no action planned, left for a later session/cycle.
-3. Read `risk/portfolio_guards.py` to confirm whether `ExposureCaps` is meant to bound pending
+1. Decide what to do with the account's currently-open real tickets: the 2 grid pending orders
+   from this step (`171647522`, `171647525`), plus the 9 tickets Step 17 left open if any are
+   still actually live (not re-checked this step past what Step 19's verification script showed
+   for BTCUSD, which found only the 2 grid tickets — the Step 17 nine appear to have since
+   resolved on their own, consistent with the broker-side-SL/TP-closure pattern seen throughout
+   this project, but this has not been explicitly re-confirmed ticket-by-ticket).
+2. Read `risk/portfolio_guards.py` to confirm whether `ExposureCaps` is meant to bound pending
    LIMIT-order exposure across cycles, or only open-position exposure — Step 17 observed 12
    consecutive grid cycles submit without any visible cap-driven rejection; now explained by the
-   magic-filter bug (Step 18), but worth confirming the guard's own intent reading its code
+   magic-filter bug (Steps 18-19), but worth confirming the guard's own intent reading its code
    directly rather than inferring it from the bug alone.
-4. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
+3. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
    `StateStore` records for tickets closed via broker-side SL/TP without an explicit
-   `close()`/`cancel()` call (27 from Step 17, plus `171622789` from Step 13) — harmless,
-   `local_only` in any future `reconcile()` call, not blocking. Step 18's fix makes `StateStore`
-   staleness marginally more load-bearing than before (it's now also read for magic recovery, not
-   just reconciliation), worth keeping in mind if this becomes a real problem at scale.
+   `close()`/`cancel()` call — harmless, `local_only` in any future `reconcile()` call, not
+   blocking. Step 18's fix makes `StateStore` staleness marginally more load-bearing than before
+   (it's now also read for magic recovery, not just reconciliation), worth keeping in mind if this
+   becomes a real problem at scale.
+4. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
+   observed live twice (`171617865` in Phase 6 Step 6, `171647565` here) — both times correctly
+   caught by trusting retcode over the message and by never skipping the mandatory SL/TP-attach
+   verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s own code), and
+   this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED` status, no
+   auto-remediation) continues to hold up exactly as designed both times it's been exercised for
+   real — no action needed, noted for pattern-recognition only.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 18 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 19 is the most recent entry), confirm git status is
 clean at the latest commit, then ask me what to do next — do not run anything live without my
 explicit go-ahead first."
