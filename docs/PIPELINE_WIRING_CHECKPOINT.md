@@ -1140,27 +1140,63 @@ deleted before the loop can run again; otherwise it will connect, log the stop-f
 its very first check without doing anything. Same gotcha Step 17 hit and documented from Step 15's
 shutdown.
 
+## Step 26 — Step 25's 6 leftover tickets: checked live, reconciled
+
+New session. Read `AGENTS.md` and this doc, confirmed working tree clean at `e0f3899` (Step 25's
+commit), confirmed no live process running, confirmed `var/STOP_PIPELINE_LOOP` was already absent
+(no deletion needed). User asked to check the live state of the 6 tickets Step 25 left open, then
+to reconcile the stale local records.
+
+**Live check** (new read-only script, `scripts/run_demo_execution_step25_ticket_status_check.py`,
+same pattern as Step 17's status-check script): all 6 tickets (`171649460` grid BUY position,
+`171649631` runner SELL position, `171648990`/`171649324`/`171649422` grid BUY pending,
+`171649461` grid SELL pending) were already **absent** from both live positions and live pending
+orders — 0/6 still live, account fully flat (0 positions, 0 pending orders on BTCUSD, all magics).
+Same broker-side-SL/TP-closes-things-on-its-own pattern this project has observed repeatedly
+(Steps 9, 15, 17, 20). Local `StateStore` still showed all 6 as `status='OPEN'` (stale, per Step
+24's already-traced-harmless finding).
+
+**Reconciliation** (new one-off script,
+`scripts/run_demo_execution_step25_reconcile_leftover_tickets.py`, same shape as Step 20's
+close-tickets script): re-verified all 6 live-absent immediately before acting (not trusting the
+status-check script's report, per this project's standing "state can move between a report and an
+action" precedent), then called `StateStore.record_closed()` directly for each — no MCP call for
+any of them, since nothing remained on the broker side to act on. **Result: PASSED, all 6
+reconciled to `CLOSED`.**
+
+Account confirmed clean: 0 live positions, 0 live pending orders on BTCUSD (all magics).
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `scripts/run_demo_execution_step25_ticket_status_check.py` (new),
+`scripts/run_demo_execution_step25_reconcile_leftover_tickets.py` (new), this checkpoint doc,
+`AGENTS.md`. No production code changed. No MCP order-affecting call made (`record_closed()` is
+local-state-only).
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one.
-1. Before any future loop relaunch: delete `var/STOP_PIPELINE_LOOP` first (see this step's "known
-   gotcha" above), or the loop will exit immediately without running.
-2. Decide what to do with the 6 tickets this run left open (2 positions, 4 pending grid orders,
-   listed above) — currently no action planned, left for a later session/cycle, consistent with
-   this project's standing default for real (non-smoke-test) cycles. All are protected with real
-   SL/TP; no urgency.
-3. The retcode-trust bug (tool message claims success when retcode says otherwise) remains a
+1. Account is fully clean (0 live positions/orders) and all local `StateStore` records for Step
+   25's run are now reconciled — no leftover items from any prior step remain to decide on.
+2. The retcode-trust bug (tool message claims success when retcode says otherwise) remains a
    pattern-recognition-only watch item (`171617865` Phase 6 Step 6, `171647565` Step 19) — did
-   NOT recur this run (all 6 runner SL/TP attaches succeeded first try). No action needed.
-4. With the exposure cap now confirmed binding live (this step's core finding), the magic-filter
-   investigation that began at Step 17 is fully closed: root cause, fix, live verification in
-   isolation, cleanup, guard-intent confirmation, both deferred follow-on questions, and now
-   confirmation the fix holds under a real multi-cycle run. Nothing further is planned here unless
-   something new surfaces.
+   NOT recur in Step 25's run (all 6 runner SL/TP attaches succeeded first try). No action needed.
+3. With the exposure cap now confirmed binding live (Step 25's core finding) and Step 25's own
+   leftover tickets now reconciled (this step), the magic-filter investigation that began at Step
+   17 is fully closed: root cause, fix, live verification in isolation, cleanup, guard-intent
+   confirmation, both deferred follow-on questions, confirmation the fix holds under a real
+   multi-cycle run, and now cleanup of that run's own residue. Nothing further is planned here
+   unless something new surfaces.
+4. No loop is running and no stop-file is present — a future loop relaunch needs no pre-cleanup
+   step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha Steps 15
+   and 17 both hit) since any future stop would leave it behind again.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 25 is the most recent entry), confirm git status is
-clean at the latest commit, confirm no live process is running, delete
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 26 is the most recent entry), confirm git status is
+clean at the latest commit, confirm no live process is running, confirm/delete
 `var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
 anything live without my explicit go-ahead first."

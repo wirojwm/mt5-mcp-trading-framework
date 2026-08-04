@@ -328,6 +328,10 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   SL/TP, no cleanup performed (matches the loop's own no-cleanup design) — safe to leave over a
   break. `var/STOP_PIPELINE_LOOP` is still present on disk and must be deleted before any future
   loop relaunch, or it will exit immediately (same gotcha Step 17 hit).
+  **Step 26 (new session)**: checked live state of Step 25's 6 leftover tickets — all 6 already
+  absent (closed via their own broker-side SL/TP), account fully flat. Reconciled all 6 stale
+  local `StateStore` records to `CLOSED` via `record_closed()` only, no MCP call needed since
+  nothing remained live on the broker side. No production code changed.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
