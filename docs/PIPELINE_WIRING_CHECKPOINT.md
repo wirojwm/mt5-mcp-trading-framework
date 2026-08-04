@@ -861,32 +861,68 @@ pytest tests/test_architecture.py -q -> 13 passed
 **Files changed this step**: `scripts/run_demo_execution_close_step19_grid_tickets.py` (new),
 this checkpoint doc, `AGENTS.md`.
 
+## Step 21 — confirmed ExposureCaps' own intent: pending orders were always meant to count
+
+User asked to resolve the one open question left from Step 17: whether `ExposureCaps` is meant
+to bound pending LIMIT-order exposure across cycles, or only open-position exposure. Read-only —
+no code or live state changed this step, `risk/portfolio_guards.py` read directly rather than
+inferring intent from the magic-filter bug.
+
+**Answer: pending orders were always meant to count, by explicit design, not by omission.** The
+module's own docstring documents the ported legacy formula directly: `vol_all = current open +
+pending lots for the symbol/magic`, and `check_exposure_cap()`'s own computation matches it
+exactly — `projected_total = open_lots + pending_lots + proposed_volume`, checked against both
+`max_open_lots` and `budget_max_lots`. The docstring also documents a deliberate *strengthening*
+already made over the legacy version: the legacy check compared only *current* `vol_all` before
+seeding a new order (so it could jump from under-cap to over-cap in one order); this project's
+version adds `proposed_volume` into the projected total specifically to close that gap. Neither
+of these was new information requiring a code change — `check_exposure_cap()` itself was already
+confirmed correct in Step 17's original root-cause analysis; this step only confirms the guard's
+*own stated intent* matches that implementation, closing the "not yet explained" gap Step 17 left
+open.
+
+**Conclusion**: Step 17's 12 straight grid cycles blowing past a 0.06-lot cap was never a gap in
+`check_exposure_cap()`'s design — it was always meant to, and does, treat pending orders as real
+exposure. It happened purely because the magic-filter bug (fixed and live-verified in Steps
+18-19) fed it `open_lots=0.0`/`pending_lots=0.0` regardless of real state, so the guard never
+received real numbers to check against in the first place. With that fix live-verified, the
+exposure cap should now genuinely protect pending-order exposure too, not just open-position
+exposure — nothing further needed here; item 1 of Step 20's open-question list is resolved.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
+scripts, no live call.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. What's left, roughly in priority order:
-1. Read `risk/portfolio_guards.py` to confirm whether `ExposureCaps` is meant to bound pending
-   LIMIT-order exposure across cycles, or only open-position exposure — Step 17 observed 12
-   consecutive grid cycles submit without any visible cap-driven rejection; now explained by the
-   magic-filter bug (Steps 18-19), but worth confirming the guard's own intent reading its code
-   directly rather than inferring it from the bug alone.
-2. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
+1. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
    `StateStore` records for tickets closed via broker-side SL/TP without an explicit
    `close()`/`cancel()` call — harmless, `local_only` in any future `reconcile()` call, not
    blocking. Step 18's fix makes `StateStore` staleness marginally more load-bearing than before
    (it's now also read for magic recovery, not just reconciliation), worth keeping in mind if this
    becomes a real problem at scale.
-3. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
+2. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
    observed live twice (`171617865` in Phase 6 Step 6, `171647565` in Step 19) — both times
    correctly caught by trusting retcode over the message and by never skipping the mandatory
    SL/TP-attach verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s
    own code), and this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED`
    status, no auto-remediation) continues to hold up exactly as designed both times it's been
    exercised for real — no action needed, noted for pattern-recognition only.
-4. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
-   pick back up from whenever live testing resumes.
+3. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
+   pick back up from whenever live testing resumes. With Steps 18-21 now closing out the entire
+   magic-filter investigation (root cause, fix, live verification, cleanup, and the guard-intent
+   question it left open), the next natural live milestone — not yet scheduled or approved — would
+   be a fresh bounded autonomous loop run (mirroring Step 15/17's `scripts/
+   run_demo_execution_pipeline_loop.py`) to confirm the exposure cap and duplicate-order guard now
+   actually bind in a real multi-cycle run, the exact scenario Step 17 first exposed as broken.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 20 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 21 is the most recent entry), confirm git status is
 clean at the latest commit, then ask me what to do next — do not run anything live without my
 explicit go-ahead first."

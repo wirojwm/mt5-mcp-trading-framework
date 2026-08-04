@@ -285,6 +285,13 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   now resolved**: `171647522` was already gone from live state on re-check (filled then closed
   via its own SL/TP) and was reconciled locally as `CLOSED`; `171647525` was cancelled (retcode
   `10009`, verified absent). Account is clean — 0 live positions/orders on BTCUSD.
+  **Confirmed `ExposureCaps`' own intent (read-only, no code change)**: `risk/portfolio_guards.py`
+  was always designed to count pending LIMIT orders as real exposure, not just open positions —
+  its docstring and `check_exposure_cap()`'s own `projected_total = open_lots + pending_lots +
+  proposed_volume` computation confirm it directly. Step 17's 12 straight grid cycles blowing past
+  a 0.06-lot cap was never a design gap in this guard; it was purely the magic-filter bug feeding
+  it `open_lots=0.0`/`pending_lots=0.0` regardless of real state — now fixed and live-verified, so
+  the cap should genuinely protect pending-order exposure going forward.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
