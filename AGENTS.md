@@ -368,6 +368,15 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   self-resolved via their own broker-side SL/TP; reconciled to `CLOSED` locally, no MCP calls.
   Every ticket from Step 29's loop run is now resolved; account fully clean. No production code
   changed.
+  **Step 30**: sixth live loop run, user-approved end-to-end unattended run (stop only on the
+  loop's own designed conditions, report once at the end). Ran 3/12 cycles — 4 grid tickets + 2
+  runner positions succeeded in cycles 1-2, cycle 3's grid succeeded too, but its runner MARKET
+  order (`171654324`) hit the retcode-10016 bug a fifth time — loop correctly stopped itself,
+  position correctly left `OPEN_UNPROTECTED`. Per the approved test design, **not** auto-closed —
+  recovery for an unprotected position remains a separate, explicitly-approved action; it is a
+  real, unprotected live position awaiting a decision. 3 of the 8 protected tickets were found
+  self-resolved and reconciled locally (no MCP calls); 5 protected tickets remain live untouched.
+  No production code changed.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

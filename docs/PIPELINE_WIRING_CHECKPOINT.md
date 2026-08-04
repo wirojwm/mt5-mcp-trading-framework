@@ -1402,3 +1402,78 @@ docs/PIPELINE_WIRING_CHECKPOINT.md (Step 29 is the most recent entry), confirm g
 clean at the latest commit, confirm no live process is running, confirm/delete
 `var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
 anything live without my explicit go-ahead first."
+
+## Step 30 — sixth live loop run: end-to-end unattended run, retcode-10016 recurred a fifth time
+
+User approved a full end-to-end run of the bounded autonomous loop with explicit instructions not
+to pause for routine interim status checks, only to stop on the loop's own designed conditions
+(cycle/runtime limit, error, unprotected position, exposure violation, unknown ownership) and
+report a single final summary. Unchanged config (`SYMBOL="BTCUSD"`, `GRID_MAGIC=71101`,
+`RUNNER_MAGIC=72101`, `ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)`, 5-min cycle
+interval, 12-cycle/90-minute ceilings). Pre-flight: working tree clean, no stop-file, no live
+process, account confirmed flat immediately before launch.
+
+**Result: ran 3 of 12 cycles, then stopped itself on cycle 3's runner leg — the fifth recurrence
+of the retcode-10016 SL/TP-attach bug (Step 28's root-caused, already-understood watch item).**
+
+- Cycles 1-2: both grid sides and the runner MARKET order succeeded every cycle — 4 grid tickets
+  (`171654091`/`171654092`, `171654190`/`171654191`) and 2 runner SELL positions (`171654093`,
+  `171654192`), all retcode `10009`, all SL/TP correctly attached and verified.
+- Cycle 3: grid succeeded again (`171654322`/`171654323`), but runner's MARKET SELL order
+  (`171654324`) had its mandatory SL/TP attach rejected — retcode `10016`, tool message falsely
+  claimed success (`'Modify position 171654324 success, SL at 63510.24, TP at 63459.19, current
+  price 0.0'`). Correctly left `OPEN_UNPROTECTED`, no automatic retry or close attempted;
+  `run_runner_cycle()` raised `SlTpAttachmentFailedError`, and the loop stopped itself immediately
+  per its no-error-tolerance design. No cycle 4 attempted. No exposure-cap violation, no unknown-
+  ownership case, no other error — this was the only stop condition triggered.
+
+**Per the approved test design, `171654324` was NOT auto-closed** — recovery for an unprotected
+position has always been a separate, explicitly-approved action in this project (never automated,
+per `AGENTS.md`'s safety rules and every prior recovery script), and the run's instructions
+described stopping on this condition, not auto-remediating it. It remains live and unprotected,
+awaiting a separate approval decision.
+
+**Verification and reconciliation** (read-only + local-state-only, one new script,
+`scripts/run_demo_execution_reconcile_step30_run.py`): a fresh live read found 3 of the 8
+protected tickets already absent (`171654091`, `171654093`, `171654192` — most likely closed via
+their own broker-side SL/TP) and reconciled them to `CLOSED` locally, no MCP calls. The remaining
+5 protected tickets (`171654092`, `171654190`, `171654191`, `171654322`, `171654323`) are still
+live and were left untouched, matching this project's standing "no cleanup" design for real
+cycle results. `171654324` (unprotected) was confirmed still live and was not touched.
+
+**Final live state**: 1 unprotected position (`171654324`), 5 protected pending grid orders
+(`171654092`, `171654190`, `171654191`, `171654322`, `171654323`). No pre-existing tickets were
+touched (there were none — account was confirmed flat before launch).
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `scripts/run_demo_execution_reconcile_step30_run.py` (new), this
+checkpoint doc, `AGENTS.md`. No production code changed.
+
+## Exact next smallest task
+
+**Live testing remains paused — do not resume without explicit approval**, same standing rule as
+every step before this one.
+1. **`171654324` is a real, unprotected live position right now** — the single highest-priority
+   open item. Needs an explicit recovery decision (most likely `close_position()`, the same
+   pattern used for every prior occurrence of this bug) before anything else involving the loop.
+2. 5 protected pending grid orders remain live (`171654092`, `171654190`, `171654191`,
+   `171654322`, `171654323`) — left open per this project's standing default, no urgency, all
+   carry real SL/TP.
+3. The retcode-10016 bug (closed as a watch item in Step 28) has now recurred a fifth time
+   (`171654324`) — still consistent with Step 28's conclusion (expected-possible broker-side
+   stops_level rejection, not a code defect, already correctly handled by the existing
+   retcode-trust + fresh-live-read workaround). No new action needed on the bug itself.
+4. No loop is running and no stop-file is present — a future loop relaunch needs no pre-cleanup
+   step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha several
+   prior steps have hit) since any future stop would leave it behind again.
+
+**Continuation prompt for a new session**: "Read AGENTS.md and
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 30 is the most recent entry), confirm git status is
+clean at the latest commit, confirm no live process is running, confirm/delete
+`var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
+anything live without my explicit go-ahead first. Note: ticket 171654324 is a real, unprotected
+live position awaiting an explicit recovery decision."
