@@ -340,6 +340,19 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   verified absent); user chose to leave the 2 grid tickets open. Follow-up same session: a later
   check found `171651878` already closed on its own (broker-side SL/TP); reconciled locally
   (`171651879` still genuinely live, left untouched). No production code changed.
+  **Step 28**: root-caused the recurring retcode-10016 pattern (read-only, no code change). Traced
+  to the vendored `metatrader_client` package's `send_order()` SLTP branch
+  (`.venv/Lib/site-packages/metatrader_client/order/send_order.py:272-277`), which determines
+  `success` from `mt5.last_error()` (a terminal/API-level code) rather than the broker's real
+  `response.retcode` — the exact source of "Known Issues item 7" for `modify_position`
+  specifically. The message's "current price 0.0" is a red herring: `response['data'].price` is
+  structurally `0.0` on every SLTP response (success or fail), since MT5 never populates an
+  execution price for a pure stop-modification. Confirmed our own `mcp_order_executor.py` already
+  handles this correctly (never trusts the tool's own success field; parses retcode directly;
+  requires a fresh live re-read before confirming) — all 3 recorded occurrences were caught
+  correctly. Retcode `10016` itself is a separate, already-anticipated broker-side
+  stops_level/freeze_level rejection, not explained or caused by the trust bug. **Watch item
+  closed, no fix needed.**
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

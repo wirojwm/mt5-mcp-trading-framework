@@ -1228,6 +1228,75 @@ pattern as Step 26's reconciliation script), reconciled `171651878` to `CLOSED` 
 call, `171651879` deliberately left untouched (still genuinely live, not stale). Final state: 0
 live positions, 1 live protected pending grid order (`171651879`) on BTCUSD.
 
+## Step 28 — retcode-10016 / "current price 0.0" watch item: root-caused, closed, no fix needed
+
+Same new session as Steps 26-27. User asked to investigate the recurring retcode-10016 pattern
+(`171617865` Phase 6 Step 6, `171647565` Step 19, `171651880` Step 27) — read-only research only,
+no code change, no live MCP call.
+
+**Root cause of the misleading message, traced to the exact third-party source line**: the
+vendored `metatrader_client` package, `metatrader_client/order/send_order.py:272-277` (installed
+at `.venv/Lib/site-packages/metatrader_client/order/send_order.py`), the `SLTP`-action branch:
+
+```python
+response = mt5.order_send(request)
+error_code, error_description = mt5.last_error()
+if error_code < 0:
+    return {"success": False, ...}
+return {"success": True, "message": "Order sent successfully", "data": response}
+```
+
+**Why `response["success"]` (and therefore the wrapping `modify_position()`'s own "success"
+message) is not trustworthy**: `mt5.last_error()` is the MetaTrader5 *Python package's own
+terminal/API-level* error code — it reflects whether the request was well-formed and transmitted
+to the terminal, not whether the broker actually accepted the trade. The broker's real decision
+lives in `response.retcode` (e.g. `10016`), which this function never inspects at all. So the
+library reports `success=True` whenever the call itself went through cleanly, regardless of what
+the broker decided — this is "Known Issues item 7", now confirmed at its exact source rather than
+inferred from live symptoms.
+
+**The "current price 0.0" text is a red herring, not a clue**: `modify_position.py:70` builds its
+success message from `response['data'].price`. For an `SLTP`-action MT5 response (a pure
+stop-modification, no trade executed), MT5 never populates a meaningful execution price on that
+field — it is structurally `0.0` on *every* SLTP response, success or failure alike. It appeared
+in all 3 recorded failures simply because it appears in all SLTP responses; it carries no
+diagnostic information about why any particular rejection happened, and does not indicate a stale
+or failed price lookup.
+
+**Our executor already handles this correctly — no code change required**: `mcp_order_executor.py`
+never trusts the tool's own `success`/`error` field for any call, this one included. It parses the
+raw `retcode` directly out of `response.data` via `metatrader_retcodes.parse_trade_response()`,
+and additionally requires a fresh, independent live re-read of the position's actual SL/TP to
+agree before ever treating an attach as confirmed (see this module's own docstring, points 4 and
+"Success is never taken on retcode alone" under `_submit_market()`). All 3 recorded occurrences
+were caught correctly, every single time, and the position was correctly left `OPEN_UNPROTECTED`
+with no automatic retry or close — this is the existing safeguard working exactly as designed, not
+a live gap.
+
+**Retcode `10016` itself is a separate, already-anticipated broker-side rejection — not the trust
+bug, and not newly explained by it**: both recent failures (`171647565`'s 15.97 and `171651880`'s
+9.87 price-unit stop distances — ~1600/~987 points at BTCUSD's real `point=0.01`)
+used real ATR-based distances from `compute_stop_distances()`, nowhere near Phase 6 Step 6's
+original too-tight 1.2-unit distance that caused its own separate, already-fixed rejection. 2
+rejections out of ~9 real MARKET-order SL/TP attaches since the ATR fix (Step 5) is consistent with
+BTCUSD's real minimum-stop-distance (`stops_level`/`freeze_level`) being variable and occasionally
+exceeding even a normal ATR-based distance — exactly the scenario this module's own docstring
+already anticipated and deliberately chose not to pre-validate locally (`reliable SymbolInfo isn't
+available through the current MCP connection path`; see the module docstring's "Broker-side
+minimum stop-distance ... is deliberately NOT pre-validated locally"). Nothing found this step
+contradicts that decision — if anything, it confirms the existing retcode-trust workaround is
+sufficient and was the right call.
+
+**Conclusion: watch item closed, no fix needed.** No production code changed, no live call made.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
+scripts, no live call.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
@@ -1236,21 +1305,21 @@ every step before this one.
    leave it open, for a later cycle/session to manage. No urgency, carries real SL/TP.
    `171651878` (the other grid ticket from this run) was found closed on its own and reconciled
    locally, same session.
-2. **The retcode-10016 SL/TP-attach bug has now recurred three times** (`171617865` Phase 6 Step
-   6, `171647565` Step 19, `171651880` Step 27) — still a pattern-recognition-only watch item, not
-   yet root-caused or fixed (the tool's own message text is known to be untrustworthy; retcode is
-   the only thing ever trusted, which is exactly why this keeps getting caught before real harm).
-   Worth considering as a dedicated investigation if it keeps recurring at this frequency, but not
-   decided or scoped yet.
-3. With the exposure cap confirmed binding live (Step 25) and all residue from that run and this
-   one reconciled/resolved, the magic-filter investigation that began at Step 17 remains fully
+2. **The retcode-10016 watch item is now closed** (this step) — root cause fully traced to the
+   vendored library's `send_order()` SLTP branch, confirmed not a bug in this project's own code,
+   and confirmed already correctly handled by the existing retcode-trust workaround. No further
+   action planned unless it starts recurring at a materially higher frequency, which would suggest
+   revisiting the "don't pre-validate stops_level locally" decision specifically (not the message-
+   trust handling, which is already correct).
+3. With the exposure cap confirmed binding live (Step 25) and all residue from that run and Step
+   27 reconciled/resolved, the magic-filter investigation that began at Step 17 remains fully
    closed. Nothing further planned here unless something new surfaces.
 4. No loop is running and no stop-file is present — a future loop relaunch needs no pre-cleanup
    step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha Steps 15,
    17, and the Step 25 shutdown all hit) since any future stop would leave it behind again.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 27 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 28 is the most recent entry), confirm git status is
 clean at the latest commit, confirm no live process is running, confirm/delete
 `var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
 anything live without my explicit go-ahead first."
