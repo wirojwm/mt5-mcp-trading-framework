@@ -356,6 +356,15 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   correctly. Retcode `10016` itself is a separate, already-anticipated broker-side
   stops_level/freeze_level rejection, not explained or caused by the trust bug. **Watch item
   closed, no fix needed.**
+  **Step 29**: fifth live loop run, user-approved relaunch with unchanged config. Ran 4/12 cycles
+  (6 grid tickets + 3 runner positions all succeeded in cycles 1-3) before cycle 4's runner MARKET
+  order (`171653006`) hit the same retcode-10016 bug a fourth time — loop correctly stopped
+  itself, position correctly left `OPEN_UNPROTECTED`. User approved closing `171653006` (retcode
+  `10009`, verified absent). Follow-up checks found 6 more tickets from this run had since
+  self-resolved via their own broker-side SL/TP (`171652731`, `171652799`, `171652801`,
+  `171652846`, `171653005`, `171652845`); all reconciled to `CLOSED` locally, no MCP calls. 5
+  tickets remain live and protected (1 position, 4 pending grid orders), left open by design. No
+  production code changed.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

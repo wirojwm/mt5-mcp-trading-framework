@@ -1303,28 +1303,81 @@ pytest tests/test_architecture.py -q -> 13 passed
 **Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
 scripts, no live call.
 
+## Step 29 — fifth live loop run: retcode-10016 recurred a fourth time, recovered and cleaned up
+
+Same session as Step 28, later. User approved relaunching the loop with unchanged config
+(`SYMBOL="BTCUSD"`, `GRID_MAGIC=71101`, `RUNNER_MAGIC=72101`,
+`ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)`, 5-min cycle interval, 12-cycle/90-minute
+ceilings). Pre-flight: no stop-file, no live process.
+
+**Result: ran 4 of 12 cycles, then stopped itself on another retcode-10016 SL/TP-attach
+rejection.**
+
+- Cycles 1-3: both grid sides and the runner MARKET order succeeded every cycle — 6 grid tickets
+  (`171652730`/`171652731`, `171652797`/`171652799`, `171652844`/`171652845`) and 3 runner
+  positions (`171652732`, `171652801`, `171652846`), all retcode `10009`, all runner SL/TP
+  attaches confirmed on the first attempt.
+- Cycle 4: grid succeeded again (`171653004`/`171653005`), but runner's MARKET order
+  (`171653006`, BUY) hit the same recurring bug root-caused in Step 28 — `modify_position`
+  rejected with retcode `10016`, tool message falsely claimed success. Correctly left
+  `OPEN_UNPROTECTED`, no auto-remediation; `run_runner_cycle()` raised `SlTpAttachmentFailedError`,
+  and the loop stopped itself immediately per its no-error-tolerance design. No cycle 5 attempted.
+
+**Recovery (user-approved, separate action)**: re-confirmed `171653006` still live and unprotected
+via a fresh read-only check, then a new one-off script,
+`scripts/run_demo_execution_close_unprotected_runner_position_171653006.py` (same
+re-verify/abort-if-mismatched/one-attempt/verify-after pattern as every prior recovery script for
+this bug), closed it — retcode `10009`, `verified=True`, confirmed absent afterward.
+
+**Cleanup of self-resolved tickets, in two passes** (state moved between checks, consistent with
+this project's own repeated precedent — Step 9, Step 15, and now again here):
+- First read-only check (right after the `171653006` close) found 4 of the remaining tickets
+  already absent from live state: `171652731`, `171652799` (grid SELL, filled then closed via
+  their own SL/TP) and `171652801`, `171652846` (runner BUY, closed via their own SL/TP). New
+  one-off script, `scripts/run_demo_execution_reconcile_fifth_loop_run_leftovers.py`, reconciled
+  all 4 to `CLOSED` locally — no MCP calls.
+- That same check incidentally revealed 2 more tickets (`171653005`, `171652845`, both grid SELL
+  positions confirmed live moments earlier) had *also* since closed — noticed but out of scope for
+  that script, reported separately. User approved reconciling those too; a second new one-off
+  script, `scripts/run_demo_execution_reconcile_171653005_171652845.py`, confirmed both absent and
+  reconciled them to `CLOSED` — no MCP calls.
+
+**Final state**: 1 live protected position (`171652732`, runner BUY, sl=63579.86/tp=63684.98) and
+4 live protected pending grid orders (`171652730`, `171652797`, `171652844`, `171653004`) remain —
+left open, no cleanup performed on them, matching this project's standing default for real
+(non-smoke-test) cycles. All 6 self-resolved tickets from this run are now reconciled.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**:
+`scripts/run_demo_execution_close_unprotected_runner_position_171653006.py`,
+`scripts/run_demo_execution_reconcile_fifth_loop_run_leftovers.py`,
+`scripts/run_demo_execution_reconcile_171653005_171652845.py` (all new), this checkpoint doc,
+`AGENTS.md`. No production code changed.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one.
-1. Account is fully clean (0 live positions/orders) — both `171651878` and `171651879` (Step 27's
-   grid tickets) were found closed on their own via broker-side SL/TP and reconciled locally.
-   Nothing left over from Step 27 to decide on.
-2. **The retcode-10016 watch item is now closed** (this step) — root cause fully traced to the
-   vendored library's `send_order()` SLTP branch, confirmed not a bug in this project's own code,
-   and confirmed already correctly handled by the existing retcode-trust workaround. No further
-   action planned unless it starts recurring at a materially higher frequency, which would suggest
-   revisiting the "don't pre-validate stops_level locally" decision specifically (not the message-
-   trust handling, which is already correct).
-3. With the exposure cap confirmed binding live (Step 25) and all residue from that run and Step
-   27 reconciled/resolved, the magic-filter investigation that began at Step 17 remains fully
-   closed. Nothing further planned here unless something new surfaces.
+1. 5 live protected tickets remain from Step 29 (`171652732` position, `171652730`/`171652797`/
+   `171652844`/`171653004` pending grid orders) — user's standing decision to leave real cycle
+   results open for a later cycle/session to manage. No urgency, all carry real SL/TP.
+2. The retcode-10016 bug (closed as a watch item in Step 28) recurred a fourth time in Step 29
+   (`171653006`) — consistent with Step 28's own conclusion that this is an expected-possible,
+   already-handled broker-side rejection, not a code defect. Still no action needed; the existing
+   retcode-trust + fresh-live-read workaround caught it correctly again.
+3. With the exposure cap confirmed binding live (Step 25) and all residue reconciled through Step
+   29, the magic-filter investigation that began at Step 17 remains fully closed. Nothing further
+   planned here unless something new surfaces.
 4. No loop is running and no stop-file is present — a future loop relaunch needs no pre-cleanup
-   step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha Steps 15,
-   17, and the Step 25 shutdown all hit) since any future stop would leave it behind again.
+   step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha several
+   prior steps have hit) since any future stop would leave it behind again.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 28 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 29 is the most recent entry), confirm git status is
 clean at the latest commit, confirm no live process is running, confirm/delete
 `var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
 anything live without my explicit go-ahead first."
