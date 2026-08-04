@@ -1176,27 +1176,72 @@ pytest tests/test_architecture.py -q -> 13 passed
 `AGENTS.md`. No production code changed. No MCP order-affecting call made (`record_closed()` is
 local-state-only).
 
+## Step 27 — fourth live loop run: retcode-10016 bug recurred cycle 1, unprotected position recovered
+
+Same new session as Step 26, after the lunch break. User approved relaunching the loop with
+unchanged config (`SYMBOL="BTCUSD"`, `GRID_MAGIC=71101`, `RUNNER_MAGIC=72101`,
+`ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)`, 5-min cycle interval, 12-cycle/90-minute
+ceilings). Pre-flight: working tree clean, no live process, no stop-file, account confirmed flat
+via a fresh read-only check immediately before launch.
+
+**Result: cycle 1 hit the recurring retcode-trust bug; loop correctly stopped itself.**
+
+- **Grid (magic 71101) — both sides succeeded, protected**: ticket `171651878` (BUY_LIMIT @
+  63586.21, sl=63573.04, tp=63589.37) and `171651879` (SELL_LIMIT @ 63648.07, sl=63661.24,
+  tp=63644.91), both retcode `10009`, `verified=True`.
+- **Runner (magic 72101) — SL/TP attach rejected, left `OPEN_UNPROTECTED`**: MARKET SELL placed
+  (ticket `171651880`, retcode `10009`), but `modify_position` was rejected — retcode `10016`
+  ("Invalid stops") — while the tool's own message text claimed success (`'Modify position
+  171651880 success, SL at 63596.23, TP at 63566.61, current price 0.0'`). The exact same
+  live-confirmed retcode-trust bug as `171617865` (Phase 6 Step 6) and `171647565` (Step 19),
+  recurring a third time. Correctly left `OPEN_UNPROTECTED`, no automatic retry or close
+  attempted. `run_runner_cycle()` raised `SlTpAttachmentFailedError`, and the loop stopped itself
+  immediately after cycle 1 per its no-error-tolerance design — no cycle 2 was ever attempted.
+
+**Recovery (user-approved, separate action)**: re-confirmed `171651880` still live and unprotected
+(`sl=0.0, tp=0.0`) via a fresh read-only check, then a new narrowly-scoped one-off script,
+`scripts/run_demo_execution_close_unprotected_runner_position_171651880.py` (same
+re-verify/abort-if-mismatched/one-attempt/verify-after pattern as Step 19's equivalent recovery
+script), closed it — retcode `10009`, `verified=True`, confirmed absent afterward, local state
+`CLOSED`.
+
+**User decision on the 2 remaining grid tickets**: leave both open (`171651878`, `171651879`),
+same standing default as every prior real (non-smoke-test) cycle — no cleanup performed on them.
+
+Final state: 0 live positions, 2 live protected pending grid orders on BTCUSD. Loop remains
+stopped; no relaunch attempted this step.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**:
+`scripts/run_demo_execution_close_unprotected_runner_position_171651880.py` (new), this checkpoint
+doc, `AGENTS.md`. No production code changed.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one.
-1. Account is fully clean (0 live positions/orders) and all local `StateStore` records for Step
-   25's run are now reconciled — no leftover items from any prior step remain to decide on.
-2. The retcode-trust bug (tool message claims success when retcode says otherwise) remains a
-   pattern-recognition-only watch item (`171617865` Phase 6 Step 6, `171647565` Step 19) — did
-   NOT recur in Step 25's run (all 6 runner SL/TP attaches succeeded first try). No action needed.
-3. With the exposure cap now confirmed binding live (Step 25's core finding) and Step 25's own
-   leftover tickets now reconciled (this step), the magic-filter investigation that began at Step
-   17 is fully closed: root cause, fix, live verification in isolation, cleanup, guard-intent
-   confirmation, both deferred follow-on questions, confirmation the fix holds under a real
-   multi-cycle run, and now cleanup of that run's own residue. Nothing further is planned here
-   unless something new surfaces.
+1. 2 live protected grid pending orders remain (`171651878` BUY, `171651879` SELL) — user's
+   standing decision to leave them open, for a later cycle/session to manage. No urgency, both
+   carry real SL/TP.
+2. **The retcode-10016 SL/TP-attach bug has now recurred three times** (`171617865` Phase 6 Step
+   6, `171647565` Step 19, `171651880` Step 27) — still a pattern-recognition-only watch item, not
+   yet root-caused or fixed (the tool's own message text is known to be untrustworthy; retcode is
+   the only thing ever trusted, which is exactly why this keeps getting caught before real harm).
+   Worth considering as a dedicated investigation if it keeps recurring at this frequency, but not
+   decided or scoped yet.
+3. With the exposure cap confirmed binding live (Step 25) and all residue from that run and this
+   one reconciled/resolved, the magic-filter investigation that began at Step 17 remains fully
+   closed. Nothing further planned here unless something new surfaces.
 4. No loop is running and no stop-file is present — a future loop relaunch needs no pre-cleanup
-   step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha Steps 15
-   and 17 both hit) since any future stop would leave it behind again.
+   step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha Steps 15,
+   17, and the Step 25 shutdown all hit) since any future stop would leave it behind again.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 26 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 27 is the most recent entry), confirm git status is
 clean at the latest commit, confirm no live process is running, confirm/delete
 `var/STOP_PIPELINE_LOOP` before any loop relaunch, then ask me what to do next — do not run
 anything live without my explicit go-ahead first."

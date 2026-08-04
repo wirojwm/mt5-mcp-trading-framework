@@ -332,6 +332,12 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   absent (closed via their own broker-side SL/TP), account fully flat. Reconciled all 6 stale
   local `StateStore` records to `CLOSED` via `record_closed()` only, no MCP call needed since
   nothing remained live on the broker side. No production code changed.
+  **Step 27**: fourth live loop run, user-approved relaunch with unchanged config. Grid submitted
+  and protected both sides (tickets `171651878`/`171651879`); runner's SL/TP attach hit the
+  retcode-trust bug for the third time (`171651880`, retcode `10016`, tool message falsely claimed
+  success) — loop correctly stopped itself after cycle 1 (no error tolerance), position correctly
+  left `OPEN_UNPROTECTED`, no auto-remediation. User approved closing `171651880` (retcode `10009`,
+  verified absent); user chose to leave the 2 grid tickets open. No production code changed.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
