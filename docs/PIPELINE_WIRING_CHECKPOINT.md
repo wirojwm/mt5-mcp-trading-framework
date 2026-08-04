@@ -598,12 +598,30 @@ this checkpoint doc.
   not a real problem at current ticket volumes/cycle counts.
 - No live run has yet exercised a `GridCycleError` (partial-failure) path for real, nor a
   `STRATEGY="RUNNER"` FLAT/rejected/no-submission outcome via the real pipeline-wiring script.
-- **New from Step 17, not investigated further**: `ExposureCaps(max_open_lots=0.06,
-  budget_max_lots=0.06)` did not visibly block any of the 12 grid cycles from submitting a fresh
-  BUY_LIMIT/SELL_LIMIT pair each time, even as standing exposure accumulated across the run —
-  worth reading `risk/portfolio_guards.py` against this observation before the next multi-cycle
-  live run, to confirm whether pending-order exposure is in scope of that cap by design or a real
-  gap. Not read this step; flagged as an open question only.
+- **CONFIRMED (post-Step-17 investigation): `ExposureCaps`/duplicate-order guard are both
+  effectively no-ops in real live cycles.** Root cause found by reading code, not guessed:
+  `risk/portfolio_guards.py`'s `check_exposure_cap()` itself is implemented correctly (checks
+  *projected* total -- open + pending + proposed -- against the caps, per its own docstring's
+  documented strengthening over the legacy vol_all-only check; not the bug). The bug is one layer
+  up -- `pipeline/grid_cycle.py:86-89` and `pipeline/runner_cycle.py:57-60` compute
+  `open_lots`/`pending_lots` via `account.get_positions(symbol, magic=magic)`/
+  `account.get_orders(symbol, magic=magic)`, and `mt5_adapter/mcp_account.py:94-95,112-113`
+  filters those client-side on `p.magic == magic`. Per this project's own already-documented
+  finding (`docs/mcp_tool_classification.md` item 7, referenced repeatedly elsewhere), MT5
+  always reports `magic=0` on every position/order this project's own executor places -- never
+  the real intended magic -- so that client-side filter silently excludes ALL of this project's
+  own real positions/orders, every call. `open_lots`/`pending_lots` are therefore always `0.0` in
+  real live cycles regardless of actual standing exposure, which is exactly what let Step 17
+  submit 12 straight grid cycles past a 0.06-lot cap unblocked. `grid_cycle.py:102-104`'s
+  `check_duplicate_order()` is fed that same magic-filtered, always-empty `pending_orders` list,
+  so it is equally blind to grid's own previously-placed pending orders in real live cycles --
+  directly touching an `AGENTS.md` safety rule ("Never bypass ... duplicate-order ... guards").
+  No test caught this because `MockAccountReader` filters on whatever `magic` a test fixture set
+  (a normal, correct value) and never reproduces MT5's real `magic=0` quirk. **Not fixed yet** --
+  candidate approaches (not decided): drop the magic filter and rely on local `StateStore` for
+  "is this ticket mine," or filter by `comment` prefix instead of `magic`. Must be resolved (or
+  explicitly accepted as a known limitation) before any future multi-cycle live run relies on
+  either guard for real protection.
 - **New from Step 17**: local `StateStore` is now stale for the 27 (of 36) Step 17 tickets that
   closed via their own broker-side SL/TP without an explicit `close()`/`cancel()` call — same
   well-documented existing pattern (`StateStore` only updates via an explicit call, never
