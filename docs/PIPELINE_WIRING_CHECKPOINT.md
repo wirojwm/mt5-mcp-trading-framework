@@ -897,32 +897,99 @@ pytest tests/test_architecture.py -q -> 13 passed
 **Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
 scripts, no live call.
 
+## Step 22 — quantified the all_open() per-call cost with a real benchmark
+
+User asked to resolve the other open item from Step 21's list: the `all_open()` per-action cost
+question, previously flagged (Phase 7) as "not a real problem at current ticket volumes/cycle
+counts" but never actually measured, and noted in Step 18/20 as "marginally more load-bearing
+than before" now that `run_grid_cycle()`/`run_runner_cycle()` also call it once per cycle (in
+addition to the existing one call per `McpOrderExecutor.submit()`/`cancel()`/`close_position()`
+via `_current_posture()`). Read-only research, no code changed — replaced speculation with a real
+benchmark, matching this project's own established practice (Phase 7 benchmarked the O(N²) write
+fix the same way rather than assuming the fix worked).
+
+**Method**: timed `StateStore.all_open()` directly (no live MCP call involved) — once against the
+real `var/order_state` directory as it exists today (57 ticket files, the accumulated residue of
+every live step this project has run), and once synthetically at larger scales (100/500/1000/
+2000/5000 tickets) in a throwaway temp directory, averaged over repeated calls.
+
+```
+REAL var/order_state (57 files): 23.7 ms/call
+ 100 tickets: 136.7 ms/call
+ 500 tickets: 635.3 ms/call
+1000 tickets: 1394.2 ms/call
+2000 tickets: 2658.7 ms/call
+5000 tickets: 6244.6 ms/call
+```
+
+**Confirms the O(N) documented in `state/store.py`'s module docstring, but with a bigger constant
+factor than expected** — roughly ~1.3 ms/ticket-file, almost certainly dominated by per-file
+open/read/JSON-parse syscall overhead (Windows filesystem `open()` calls are relatively costly
+compared to POSIX). This is notably worse than Phase 7's own write-side benchmark (~3 ms/write
+flat, independent of ticket count, because each write only touches its own file) — `all_open()`
+is fundamentally different: it touches *every* file, every call, by design, and nothing in this
+codebase ever removes or archives a `CLOSED`/`CANCELLED` ticket's file, so the directory only
+grows over the life of the project.
+
+**At today's scale (57 files, ~24 ms/call), this remains genuinely negligible** — even a full
+real cycle with both strategies submitting now triggers `all_open()` up to 4-5 times (1 each from
+`run_grid_cycle()`/`run_runner_cycle()`, plus one per `McpOrderExecutor` action), which is
+~100-120 ms of total overhead against a 300-second cycle interval (Step 15/17's loop config) —
+nowhere close to mattering. **The growth trajectory is the real finding**: at 1000-2000 tickets
+(plausible after weeks of sustained daily loop runs — a single 12-cycle Step 17 run alone created
+36 tickets in about an hour), a single `all_open()` call costs 1.4-2.7 seconds, and a real cycle
+now makes 4-5 such calls, meaning several seconds of `all_open()` overhead per cycle with no
+upper bound in sight — a genuine, evidence-backed problem for sustained/long-term live use, not
+merely a theoretical one. Still not blocking for near-term bounded test runs at current ticket
+counts.
+
+**Not fixed this step** — a code fix (e.g., caching the loaded set within a single cycle/session
+instead of re-reading from disk on every call, or splitting "records I need to check my own
+magic's tickets" from "every ticket ever," or periodically archiving resolved tickets out of the
+live directory) is a real design decision affecting `StateStore`'s public contract and every
+caller listed in `state/store.py`'s own docstring, and deserves its own explicit scoping and
+approval rather than being folded into a documentation step. Flagged as the clear next candidate
+if/when this project moves toward sustained (not just bounded-test) live operation.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
+scripts, no live call. (The benchmark itself was run ad hoc via the Python REPL against a
+throwaway temp directory and the real `var/order_state` directory, read-only; not saved as a
+script since it's a one-time measurement, not a repeatable tool.)
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. What's left, roughly in priority order:
-1. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
-   `StateStore` records for tickets closed via broker-side SL/TP without an explicit
-   `close()`/`cancel()` call — harmless, `local_only` in any future `reconcile()` call, not
-   blocking. Step 18's fix makes `StateStore` staleness marginally more load-bearing than before
-   (it's now also read for magic recovery, not just reconciliation), worth keeping in mind if this
-   becomes a real problem at scale.
-2. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
+1. Decide whether to design/implement a fix for `all_open()`'s per-call cost now (Step 22 found
+   real, evidence-backed scaling risk for sustained use, though not blocking at current ticket
+   counts) or continue deferring it until ticket volume actually approaches the range where it
+   matters (roughly 500+ tickets based on this step's numbers). Not yet decided.
+2. Stale local `StateStore` records for tickets closed via broker-side SL/TP without an explicit
+   `close()`/`cancel()` call remain unaddressed — harmless, `local_only` in any future
+   `reconcile()` call, not blocking, but a contributor to `all_open()`'s directory ever only
+   growing (item 1 above) since nothing ever prunes them.
+3. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
    observed live twice (`171617865` in Phase 6 Step 6, `171647565` in Step 19) — both times
    correctly caught by trusting retcode over the message and by never skipping the mandatory
    SL/TP-attach verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s
    own code), and this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED`
    status, no auto-remediation) continues to hold up exactly as designed both times it's been
    exercised for real — no action needed, noted for pattern-recognition only.
-3. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
-   pick back up from whenever live testing resumes. With Steps 18-21 now closing out the entire
-   magic-filter investigation (root cause, fix, live verification, cleanup, and the guard-intent
-   question it left open), the next natural live milestone — not yet scheduled or approved — would
-   be a fresh bounded autonomous loop run (mirroring Step 15/17's `scripts/
-   run_demo_execution_pipeline_loop.py`) to confirm the exposure cap and duplicate-order guard now
-   actually bind in a real multi-cycle run, the exact scenario Step 17 first exposed as broken.
+4. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
+   pick back up from whenever live testing resumes. With Steps 18-22 now closing out the entire
+   magic-filter investigation (root cause, fix, live verification, cleanup, guard-intent
+   confirmation, and this cost quantification), the next natural live milestone — not yet
+   scheduled or approved — would be a fresh bounded autonomous loop run (mirroring Step 15/17's
+   `scripts/run_demo_execution_pipeline_loop.py`) to confirm the exposure cap and duplicate-order
+   guard now actually bind in a real multi-cycle run, the exact scenario Step 17 first exposed as
+   broken.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 21 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 22 is the most recent entry), confirm git status is
 clean at the latest commit, then ask me what to do next — do not run anything live without my
 explicit go-ahead first."

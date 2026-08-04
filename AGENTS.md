@@ -292,6 +292,14 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   a 0.06-lot cap was never a design gap in this guard; it was purely the magic-filter bug feeding
   it `open_lots=0.0`/`pending_lots=0.0` regardless of real state — now fixed and live-verified, so
   the cap should genuinely protect pending-order exposure going forward.
+  **Quantified `StateStore.all_open()`'s per-call cost with a real benchmark (read-only, no code
+  change)**: ~24 ms/call against the real 57-ticket directory today, but ~1.3 ms/ticket-file
+  scaling confirmed synthetically (1.4s at 1000 tickets, 2.7s at 2000, 6.2s at 5000) — negligible
+  now, but a genuine, evidence-backed problem for sustained live use, since `run_grid_cycle()`/
+  `run_runner_cycle()` (post Steps 18-19) plus `McpOrderExecutor` actions can call it 4-5 times
+  per real cycle, and nothing ever prunes closed tickets from the directory. Not fixed — flagged
+  as the clear next candidate if this project moves toward sustained (not just bounded-test) live
+  operation.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
