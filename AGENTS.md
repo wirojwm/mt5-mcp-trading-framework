@@ -376,7 +376,8 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   recovery for an unprotected position remains a separate, explicitly-approved action; it is a
   real, unprotected live position awaiting a decision. 3 of the 8 protected tickets were found
   self-resolved and reconciled locally (no MCP calls); 5 protected tickets remain live untouched.
-  No production code changed.
+  User then approved closing `171654324` (retcode `10009`, verified absent) — 0 unprotected
+  positions remain. No production code changed.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

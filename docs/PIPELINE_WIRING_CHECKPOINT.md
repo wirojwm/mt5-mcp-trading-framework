@@ -1453,13 +1453,27 @@ pytest tests/test_architecture.py -q -> 13 passed
 **Files changed this step**: `scripts/run_demo_execution_reconcile_step30_run.py` (new), this
 checkpoint doc, `AGENTS.md`. No production code changed.
 
+**Recovery, same session**: user approved closing `171654324`. New one-off script,
+`scripts/run_demo_execution_close_unprotected_runner_position_171654324.py` (same
+re-verify/abort-if-mismatched/one-attempt/verify-after pattern as every prior recovery script for
+this bug), closed it — retcode `10009`, `verified=True`, confirmed absent afterward, local state
+`CLOSED`. Account now holds 0 unprotected positions.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this recovery**:
+`scripts/run_demo_execution_close_unprotected_runner_position_171654324.py` (new), this checkpoint
+doc, `AGENTS.md`. No production code changed.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one.
-1. **`171654324` is a real, unprotected live position right now** — the single highest-priority
-   open item. Needs an explicit recovery decision (most likely `close_position()`, the same
-   pattern used for every prior occurrence of this bug) before anything else involving the loop.
+1. The unprotected-position risk from Step 30 is resolved — `171654324` closed and verified
+   absent. Nothing urgent outstanding.
 2. 5 protected pending grid orders remain live (`171654092`, `171654190`, `171654191`,
    `171654322`, `171654323`) — left open per this project's standing default, no urgency, all
    carry real SL/TP.
