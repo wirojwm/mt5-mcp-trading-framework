@@ -617,11 +617,10 @@ this checkpoint doc.
   so it is equally blind to grid's own previously-placed pending orders in real live cycles --
   directly touching an `AGENTS.md` safety rule ("Never bypass ... duplicate-order ... guards").
   No test caught this because `MockAccountReader` filters on whatever `magic` a test fixture set
-  (a normal, correct value) and never reproduces MT5's real `magic=0` quirk. **Not fixed yet** --
-  candidate approaches (not decided): drop the magic filter and rely on local `StateStore` for
-  "is this ticket mine," or filter by `comment` prefix instead of `magic`. Must be resolved (or
-  explicitly accepted as a known limitation) before any future multi-cycle live run relies on
-  either guard for real protection.
+  (a normal, correct value) and never reproduces MT5's real `magic=0` quirk. Two candidate fixes
+  were considered: drop the magic filter and rely on local `StateStore` for "is this ticket
+  mine," or filter by `comment` prefix instead of `magic`. **Fixed in Step 18** (code only, not
+  yet live-verified) via the `StateStore` approach -- see Step 18 for the full change.
 - **New from Step 17**: local `StateStore` is now stale for the 27 (of 36) Step 17 tickets that
   closed via their own broker-side SL/TP without an explicit `close()`/`cancel()` call — same
   well-documented existing pattern (`StateStore` only updates via an explicit call, never
@@ -705,23 +704,92 @@ No production code changed this step (no fix was needed — this step only ran a
 code and verified it). **Files changed this step**:
 `scripts/run_demo_execution_loop_run_status_check.py` (new), this checkpoint doc.
 
+## Step 18 — magic-filter bug fixed (code only, not yet live-verified)
+
+User approved fixing the root cause confirmed at the end of Step 17 (`ExposureCaps`/duplicate-
+order guard both blind due to MT5 always reporting `magic=0`). No live call made this step —
+code and tests only, read-only verification of git/process state before starting (latest commit
+`8e909c8`, working tree clean, no live process or stop-file present).
+
+**Fix**: `run_grid_cycle()`/`run_runner_cycle()` (`pipeline/grid_cycle.py`,
+`pipeline/runner_cycle.py`) now accept an optional `state_store: Optional[StateStore] = None`
+parameter, chosen over the doc's other candidate (filtering by `comment` prefix) because
+`LocalOrderRecord.magic` already holds the intended value recorded locally at submission time —
+no new field or convention needed. Behavior:
+- `state_store is None` (the default): **unchanged** from every prior step — calls
+  `account.get_positions(symbol, magic=magic)`/`get_orders(symbol, magic=magic)` exactly as
+  before. Every mock/dry-run caller (both integration test files,
+  `scripts/run_live_dry_run_pipeline.py`) is unaffected by this fix and needed no changes.
+- `state_store` supplied: reads `account.get_positions(symbol=symbol)`/`get_orders(symbol=symbol)`
+  **unfiltered** (the broker's own `magic` field is never trusted for this project's own tickets),
+  then intersects the returned tickets against `{r.ticket for r in state_store.all_open() if
+  r.magic == magic}` — recovering "is this mine" from local state instead of the broker's
+  always-`0` echo. `open_lots`/`pending_lots`/`check_duplicate_order()`'s input list are all
+  computed from that intersection; no change to `check_exposure_cap()`/`check_duplicate_order()`
+  themselves, which were already confirmed correct in Step 17's root-cause analysis.
+
+**Wired into all three real-executor call sites** (the only places the `magic=0` quirk actually
+bites): `scripts/run_demo_execution_pipeline_cycle.py` (both `run_grid_cycle`/`run_runner_cycle`
+calls), `scripts/run_demo_execution_pipeline_loop.py` (`state_store` threaded through
+`_run_one_cycle`), `scripts/run_demo_execution_runner_sltp_smoke_test.py` — each already had
+`state_store` in scope from `demo_execution_session()`'s existing return tuple, just not passed
+through before now.
+
+**+2 regression tests**, the first to reproduce MT5's `magic=0` quirk in a mock at all (previously
+impossible to catch, per Step 17's root-cause note): one per pipeline function
+(`tests/integration/test_grid_dry_run_pipeline.py::test_state_store_recovers_duplicate_order_visibility_despite_broker_magic_zero`,
+`tests/integration/test_runner_dry_run_pipeline.py::test_state_store_recovers_exposure_visibility_despite_broker_magic_zero`).
+Each seeds a live position/order with `magic=0` (as real MT5 reports) plus a matching
+`LocalOrderRecord` carrying the true magic, and asserts *both* directions in one test: without
+`state_store` the guard is still blind (documents the fallback as intentional, not an oversight),
+with `state_store` the guard correctly blocks. `pytest -q` → 348 passed (was 346 before this
+step); `pytest tests/test_architecture.py -q` → 13 passed, unchanged.
+
+**AGENTS.md updated** with the same summary (commit `2c7b42b`).
+
+**Not yet live-verified**: this fix has only been exercised against mocks. Whether it correctly
+discriminates real, populated, differently-magic-tagged live data on the demo account —
+including the connected account's own pre-existing tickets, and any residual staleness from
+`StateStore` records that went stale via broker-side SL/TP closes (Step 17's separate, still-open
+finding) — has not been observed live. Requires its own explicit approval before any live run,
+same standing rule as every step since Step 15.
+
+```
+pytest -q                        -> 348 passed (was 346 before this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `src/mt5_mcp_trading/pipeline/grid_cycle.py`,
+`src/mt5_mcp_trading/pipeline/runner_cycle.py`, `scripts/run_demo_execution_pipeline_cycle.py`,
+`scripts/run_demo_execution_pipeline_loop.py`,
+`scripts/run_demo_execution_runner_sltp_smoke_test.py`,
+`tests/integration/test_grid_dry_run_pipeline.py`,
+`tests/integration/test_runner_dry_run_pipeline.py`, `AGENTS.md`, this checkpoint doc. Committed
+as `2c7b42b`.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
-every step before this one. Step 15's three fixes are now fully live-verified (Step 17) — nothing
-from that investigation remains open. What's left, roughly in priority order:
-1. Decide what to do with the 9 tickets Step 17 left open (7 pending grid BUY_LIMIT orders, 2
+every step before this one. What's left, roughly in priority order:
+1. Live-verify Step 18's fix: confirm the `state_store`-based magic recovery actually
+   discriminates correctly against the demo account's real, populated, differently-magic-tagged
+   data (grid `71101` vs runner `72101` vs the account's other live tickets) — the exact gap this
+   whole effort exists to close. Requires explicit approval before any live call.
+2. Decide what to do with the 9 tickets Step 17 left open (7 pending grid BUY_LIMIT orders, 2
    open positions) — currently no action planned, left for a later session/cycle.
-2. Read `risk/portfolio_guards.py` to confirm whether `ExposureCaps` is meant to bound pending
+3. Read `risk/portfolio_guards.py` to confirm whether `ExposureCaps` is meant to bound pending
    LIMIT-order exposure across cycles, or only open-position exposure — Step 17 observed 12
-   consecutive grid cycles submit without any visible cap-driven rejection, not yet explained by
-   reading the actual guard code.
-3. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
+   consecutive grid cycles submit without any visible cap-driven rejection; now explained by the
+   magic-filter bug (Step 18), but worth confirming the guard's own intent reading its code
+   directly rather than inferring it from the bug alone.
+4. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
    `StateStore` records for tickets closed via broker-side SL/TP without an explicit
-   `close()`/`cancel()` call (27 new from Step 17, plus `171622789` from Step 13) — harmless,
-   `local_only` in any future `reconcile()` call, not blocking.
+   `close()`/`cancel()` call (27 from Step 17, plus `171622789` from Step 13) — harmless,
+   `local_only` in any future `reconcile()` call, not blocking. Step 18's fix makes `StateStore`
+   staleness marginally more load-bearing than before (it's now also read for magic recovery, not
+   just reconciliation), worth keeping in mind if this becomes a real problem at scale.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 17 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 18 is the most recent entry), confirm git status is
 clean at the latest commit, then ask me what to do next — do not run anything live without my
 explicit go-ahead first."
