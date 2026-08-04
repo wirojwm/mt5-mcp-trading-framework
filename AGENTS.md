@@ -306,6 +306,14 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   cap/duplicate-order guards, the highest-severity failure class for this codebase. Revisit if/
   when sustained live operation is actually proposed, informed by real usage patterns at that
   point rather than guessed now.
+  **Stale `StateStore` records (tickets closed live via their own SL/TP, never reconciled by an
+  explicit call) traced, not assumed, harmless**: neither `determine_posture()` nor the
+  `cancel()`/`close_position()` `MANAGE_ONLY` gate nor the magic-recovery fix can be misled by a
+  stale record — confirmed by reading each consumer directly. Quantified: 39 of 57 local ticket
+  files are currently marked `OPEN` even though the account is fully flat — 100% stale right now,
+  and still harmless. Not fixed — the only real fix options either violate this project's
+  explicit "never mutate local state automatically" principle or duplicate the `all_open()` cost
+  decision already deferred above.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

@@ -1003,31 +1003,83 @@ pytest tests/test_architecture.py -q -> 13 passed
 **Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
 scripts, no live call.
 
+## Step 24 — stale StateStore records: traced (not assumed) harmless, decided not to fix now
+
+User asked to resolve the last item carried forward since Phase 7: whether stale local
+`StateStore` records (tickets closed live via their own broker-side SL/TP, never reconciled by
+an explicit `close()`/`cancel()` call) are actually harmless, or just assumed to be. Read-only —
+no code or live state changed this step; every actual consumer of `ReconciliationReport.local_only`
+was traced directly, not re-asserted from memory.
+
+**Traced, not assumed**:
+1. `determine_posture()` (`state/policy.py`) never reads `report.local_only` at all — only
+   `report.unknown_real` (a *live* ticket with no local record) can produce `MANAGE_ONLY`/
+   `BLOCKED`. A stale local record for a ticket that's actually gone cannot degrade posture.
+2. `cancel()`/`close_position()`'s `MANAGE_ONLY` gate (`mcp_order_executor.py:454,498`) treats
+   `local_only` tickets the same as `matched` — both are "attributable, allowed to act on."
+   Attempting to cancel/close an already-gone stale ticket would just fail cleanly at the broker
+   (nothing there to act on), never silently do the wrong thing.
+3. Steps 18-19's magic-recovery fix (`pipeline/grid_cycle.py`/`runner_cycle.py`) intersects
+   `state_store.all_open()`'s tickets with a live, unfiltered read every time — a stale local
+   record can never survive that intersection, since the live read is always the final
+   authority. Staleness cannot produce phantom exposure in the fix this project just spent
+   Steps 18-21 proving correct.
+
+**Quantified today's actual staleness**: of 57 total local ticket files, `all_open()` currently
+returns 39 as `OPEN` — but the account is confirmed completely flat (0 live positions/orders,
+per Step 20's cleanup). **100% of the currently-"open" local records are stale.** This isn't new
+or surprising given this project's own repeated observation (Steps 15, 17) that tickets close
+live via their own SL/TP far more often than they're explicitly closed by this project's code —
+but it had never actually been measured before.
+
+**Decision: not fixing this now either**, same reasoning class as Step 23:
+- Confirmed genuinely harmless for correctness by tracing every actual consumer, not by
+  re-asserting the existing "harmless" note.
+- The only two ways to "fix" it are (a) automatic reconciliation — writing local state without
+  an explicit, human-reviewed call, which goes directly against this project's own repeatedly-
+  stated design principle (`state/store.py`'s docstring: "never implicitly trusted"; updates
+  happen "only via an explicit call, never automatically") — or (b) manual pruning, which is
+  really just a partial, premature attempt at reducing `all_open()`'s file count, the exact cost
+  question Step 23 already decided to defer. Fixing this now would either violate an established
+  principle or duplicate a decision already made.
+- Existing precedent already handles this correctly on demand: one-off, explicitly-approved
+  cleanup scripts (Step 17's `run_demo_execution_close_pipeline_open_items.py`, Step 20's
+  `run_demo_execution_close_step19_grid_tickets.py`) re-verify live state and reconcile stale
+  records via `record_closed()` right before acting — the right threat model for a state layer
+  this project has deliberately kept human-gated.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: this checkpoint doc, `AGENTS.md` only — no production code, no
+scripts, no live call.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. What's left, roughly in priority order:
-1. Stale local `StateStore` records for tickets closed via broker-side SL/TP without an explicit
-   `close()`/`cancel()` call remain unaddressed — harmless, `local_only` in any future
-   `reconcile()` call, not blocking, but a contributor to `all_open()`'s directory ever only
-   growing (Step 22/23's deferred item) since nothing ever prunes them.
-2. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
+1. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
    observed live twice (`171617865` in Phase 6 Step 6, `171647565` in Step 19) — both times
    correctly caught by trusting retcode over the message and by never skipping the mandatory
    SL/TP-attach verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s
    own code), and this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED`
    status, no auto-remediation) continues to hold up exactly as designed both times it's been
-   exercised for real — no action needed, noted for pattern-recognition only.
-3. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
-   pick back up from whenever live testing resumes. With Steps 18-23 now closing out the entire
-   magic-filter investigation (root cause, fix, live verification, cleanup, guard-intent
-   confirmation, cost quantification, and the decision to defer that cost fix), the next natural
-   live milestone — not yet scheduled or approved — would be a fresh bounded autonomous loop run
-   (mirroring Step 15/17's `scripts/run_demo_execution_pipeline_loop.py`) to confirm the exposure
-   cap and duplicate-order guard now actually bind in a real multi-cycle run, the exact scenario
-   Step 17 first exposed as broken.
+   exercised for real — no action needed, noted for pattern-recognition only. This is the only
+   remaining item on this list that isn't either resolved or a live milestone.
+2. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
+   pick back up from whenever live testing resumes. With Steps 18-24 now closing out the entire
+   magic-filter investigation and both of its deferred follow-on questions (`all_open()` cost,
+   stale-record staleness), the next natural live milestone — not yet scheduled or approved —
+   would be a fresh bounded autonomous loop run (mirroring Step 15/17's `scripts/
+   run_demo_execution_pipeline_loop.py`) to confirm the exposure cap and duplicate-order guard
+   now actually bind in a real multi-cycle run, the exact scenario Step 17 first exposed as
+   broken. At this point essentially every open, non-live-testing question from this
+   investigation has been resolved, traced, or explicitly deferred with reasoning — this is a
+   natural stopping point until either the retcode-trust bug recurs, or live testing resumes.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 23 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 24 is the most recent entry), confirm git status is
 clean at the latest commit, then ask me what to do next — do not run anything live without my
 explicit go-ahead first."
