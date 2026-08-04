@@ -1220,13 +1220,22 @@ pytest tests/test_architecture.py -q -> 13 passed
 `scripts/run_demo_execution_close_unprotected_runner_position_171651880.py` (new), this checkpoint
 doc, `AGENTS.md`. No production code changed.
 
+**Follow-up, same session**: a later read-only check found `171651878` (grid BUY_LIMIT) already
+absent from live positions/orders — most likely filled then closed via its own broker-side SL/TP,
+same pattern as ever. `171651879` (grid SELL_LIMIT) was still confirmed live. New one-off script,
+`scripts/run_demo_execution_reconcile_171651878.py` (same re-verify-then-`record_closed()`-only
+pattern as Step 26's reconciliation script), reconciled `171651878` to `CLOSED` locally — no MCP
+call, `171651879` deliberately left untouched (still genuinely live, not stale). Final state: 0
+live positions, 1 live protected pending grid order (`171651879`) on BTCUSD.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one.
-1. 2 live protected grid pending orders remain (`171651878` BUY, `171651879` SELL) — user's
-   standing decision to leave them open, for a later cycle/session to manage. No urgency, both
-   carry real SL/TP.
+1. 1 live protected grid pending order remains (`171651879` SELL) — user's standing decision to
+   leave it open, for a later cycle/session to manage. No urgency, carries real SL/TP.
+   `171651878` (the other grid ticket from this run) was found closed on its own and reconciled
+   locally, same session.
 2. **The retcode-10016 SL/TP-attach bug has now recurred three times** (`171617865` Phase 6 Step
    6, `171647565` Step 19, `171651880` Step 27) — still a pattern-recognition-only watch item, not
    yet root-caused or fixed (the tool's own message text is known to be untrustworthy; retcode is

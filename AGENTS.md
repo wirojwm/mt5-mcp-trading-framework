@@ -337,7 +337,9 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   retcode-trust bug for the third time (`171651880`, retcode `10016`, tool message falsely claimed
   success) — loop correctly stopped itself after cycle 1 (no error tolerance), position correctly
   left `OPEN_UNPROTECTED`, no auto-remediation. User approved closing `171651880` (retcode `10009`,
-  verified absent); user chose to leave the 2 grid tickets open. No production code changed.
+  verified absent); user chose to leave the 2 grid tickets open. Follow-up same session: a later
+  check found `171651878` already closed on its own (broker-side SL/TP); reconciled locally
+  (`171651879` still genuinely live, left untouched). No production code changed.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
