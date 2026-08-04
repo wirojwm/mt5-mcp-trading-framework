@@ -826,36 +826,67 @@ pytest tests/test_architecture.py -q -> 13 passed
 `scripts/run_demo_execution_pipeline_cycle.py` (`STRATEGY` flipped to `"RUNNER"`), this
 checkpoint doc, `AGENTS.md`.
 
+## Step 20 — Step 19's 2 grid tickets resolved, account clean
+
+User asked to decide what to do with the 2 grid tickets Step 19 left open (`171647522` BUY,
+`171647525` SELL). Re-checked live first, not trusting Step 19's report (state is known to move
+between a report and any follow-up action, per this project's own repeated precedent) — via
+`scripts/run_demo_execution_magic_filter_fix_verification.py`, re-run read-only: `171647522` was
+already **absent** from both live positions and live pending orders (most likely filled then
+closed via its own broker-side SL/TP, the same pattern observed repeatedly throughout this
+project, e.g. Step 17's 27-of-36), while `171647525` was still a live pending order.
+
+**Decision**: resolve both now rather than leave either open. Reasoning: these existed only as
+residue from Step 19's fix-verification cycles, not a real, ongoing strategy decision — no
+monitoring loop is running to manage them, so an unmonitored live order serves no purpose and the
+cleanest state is to close everything out, matching this project's established end-of-session
+"safe stop" pattern (Step 16).
+
+**Action**: new one-off script, `scripts/run_demo_execution_close_step19_grid_tickets.py`, same
+re-verify/abort-if-mismatched/one-attempt/verify-after pattern as
+`scripts/run_demo_execution_close_pipeline_open_items.py`:
+- `171647522`: reconciled via `StateStore.record_closed()` directly (no MCP call — nothing left
+  on the broker side to act on). Local state now `CLOSED`.
+- `171647525`: cancelled via `McpOrderExecutor.cancel()` — retcode `10009`, `verified=True`,
+  confirmed absent afterward. Local state now `CANCELLED`.
+
+**Result: PASSED, both tickets resolved.** Account is now clean: 0 live positions, 0 live pending
+orders on BTCUSD.
+
+```
+pytest -q                        -> 348 passed (unchanged since Step 18)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this step**: `scripts/run_demo_execution_close_step19_grid_tickets.py` (new),
+this checkpoint doc, `AGENTS.md`.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. What's left, roughly in priority order:
-1. Decide what to do with the account's currently-open real tickets: the 2 grid pending orders
-   from this step (`171647522`, `171647525`), plus the 9 tickets Step 17 left open if any are
-   still actually live (not re-checked this step past what Step 19's verification script showed
-   for BTCUSD, which found only the 2 grid tickets — the Step 17 nine appear to have since
-   resolved on their own, consistent with the broker-side-SL/TP-closure pattern seen throughout
-   this project, but this has not been explicitly re-confirmed ticket-by-ticket).
-2. Read `risk/portfolio_guards.py` to confirm whether `ExposureCaps` is meant to bound pending
+1. Read `risk/portfolio_guards.py` to confirm whether `ExposureCaps` is meant to bound pending
    LIMIT-order exposure across cycles, or only open-position exposure — Step 17 observed 12
    consecutive grid cycles submit without any visible cap-driven rejection; now explained by the
    magic-filter bug (Steps 18-19), but worth confirming the guard's own intent reading its code
    directly rather than inferring it from the bug alone.
-3. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
+2. Lower priority, pre-existing: the `all_open()` per-action cost question, and stale local
    `StateStore` records for tickets closed via broker-side SL/TP without an explicit
    `close()`/`cancel()` call — harmless, `local_only` in any future `reconcile()` call, not
    blocking. Step 18's fix makes `StateStore` staleness marginally more load-bearing than before
    (it's now also read for magic recovery, not just reconciliation), worth keeping in mind if this
    becomes a real problem at scale.
-4. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
-   observed live twice (`171617865` in Phase 6 Step 6, `171647565` here) — both times correctly
-   caught by trusting retcode over the message and by never skipping the mandatory SL/TP-attach
-   verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s own code), and
-   this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED` status, no
-   auto-remediation) continues to hold up exactly as designed both times it's been exercised for
-   real — no action needed, noted for pattern-recognition only.
+3. The retcode-trust bug (tool message claims success when retcode says otherwise) has now been
+   observed live twice (`171617865` in Phase 6 Step 6, `171647565` in Step 19) — both times
+   correctly caught by trusting retcode over the message and by never skipping the mandatory
+   SL/TP-attach verification. Still not fixed upstream (out of scope, `metatrader-mcp-server`'s
+   own code), and this project's defense against it (retcode-only trust, `OPEN_UNPROTECTED`
+   status, no auto-remediation) continues to hold up exactly as designed both times it's been
+   exercised for real — no action needed, noted for pattern-recognition only.
+4. Account is currently clean (0 live positions/orders on BTCUSD) — a good, low-risk point to
+   pick back up from whenever live testing resumes.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 19 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 20 is the most recent entry), confirm git status is
 clean at the latest commit, then ask me what to do next — do not run anything live without my
 explicit go-ahead first."

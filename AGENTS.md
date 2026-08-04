@@ -281,8 +281,10 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   fix against it confirmed correct discrimination: grid's magic (`71101`) recovered its own 2
   live pending orders (`pending_lots=0.02`) via `state_store`, while runner's magic (`72101`)
   correctly stayed at zero rather than misattributing grid's tickets — exactly the gap this fix
-  was written to close, now proven against the real broker, not just mocks. The 2 grid tickets
-  were left open by user decision, matching every prior real cycle's default.
+  was written to close, now proven against the real broker, not just mocks. **Both grid tickets
+  now resolved**: `171647522` was already gone from live state on re-check (filled then closed
+  via its own SL/TP) and was reconciled locally as `CLOSED`; `171647525` was cancelled (retcode
+  `10009`, verified absent). Account is clean — 0 live positions/orders on BTCUSD.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
