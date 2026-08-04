@@ -124,7 +124,7 @@ def _setup_file_logging() -> Path:
     return log_path
 
 
-async def _run_one_cycle(market_data, account, executor, cycle_num: int) -> bool:
+async def _run_one_cycle(market_data, account, executor, state_store, cycle_num: int) -> bool:
     """Runs grid then runner once each, independently isolated (decision 1). Returns True only
     if BOTH completed without raising -- caller stops the loop on False (decision 3)."""
     ok = True
@@ -135,7 +135,7 @@ async def _run_one_cycle(market_data, account, executor, cycle_num: int) -> bool
             market_data=market_data, account=account, executor=executor,
             symbol=SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
             grid_config=GridStrategyConfig(), money_config=MoneyConfig(),
-            caps=CAPS, magic=GRID_MAGIC,
+            caps=CAPS, magic=GRID_MAGIC, state_store=state_store,
         )
     except GridCycleError as exc:
         _logger.info("  GridCycleError: %d side(s) raised, %d side(s) completed",
@@ -162,7 +162,7 @@ async def _run_one_cycle(market_data, account, executor, cycle_num: int) -> bool
             market_data=market_data, account=account, executor=executor,
             symbol=SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
             runner_config=RunnerStrategyConfig(), money_config=MoneyConfig(),
-            caps=CAPS, magic=RUNNER_MAGIC,
+            caps=CAPS, magic=RUNNER_MAGIC, state_store=state_store,
         )
     except Exception as exc:
         _logger.info("  run_runner_cycle() raised: %r", exc)
@@ -234,7 +234,7 @@ async def main() -> None:
                     break
 
                 cycle_num += 1
-                ok = await _run_one_cycle(market_data, account, executor, cycle_num)
+                ok = await _run_one_cycle(market_data, account, executor, state_store, cycle_num)
                 if not ok:
                     _logger.info("Cycle %d had an error -- stopping the loop "
                                   "(no error tolerance in this version)", cycle_num)

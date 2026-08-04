@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -23,6 +24,7 @@ from mt5_mcp_trading.mocks.mock_market_data import MockMarketDataSource
 from mt5_mcp_trading.pipeline.grid_cycle import GridCycleError, run_grid_cycle
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps
 from mt5_mcp_trading.sizing.money import MoneyConfig
+from mt5_mcp_trading.state.store import StateStore
 from mt5_mcp_trading.strategy.grid import GridStrategyConfig, compute_grid_levels
 
 MAGIC = 71101
@@ -60,7 +62,7 @@ def _account(orders: list[OrderState] | None = None) -> MockAccountReader:
     )
 
 
-def _run(market_data, account, executor, caps=None):
+def _run(market_data, account, executor, caps=None, state_store=None):
     return asyncio.run(run_grid_cycle(
         market_data=market_data, account=account, executor=executor,
         symbol=SYMBOL, timeframe="M1", bars_count=len(PRICES),
@@ -68,7 +70,7 @@ def _run(market_data, account, executor, caps=None):
         money_config=MoneyConfig(lot_size_mode="atr_scale", atr_scale_base=0.01,
                                   atr_scale_ref=1.0, atr_scale_min=0.01, atr_scale_max=0.06),
         caps=caps or ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06),
-        magic=MAGIC,
+        magic=MAGIC, state_store=state_store,
     ))
 
 
@@ -355,3 +357,44 @@ def test_second_cycle_sees_first_cycles_submission_as_a_duplicate() -> None:
     assert len(cycle_2) == 1  # BUY correctly blocked as a duplicate of cycle 1's order
     assert cycle_2[0].order_plan.side == "SELL"
     assert len(executor.submitted) == 3  # cycle 1's 2 + cycle 2's 1 -- BUY never resubmitted
+
+
+# ---------- magic=0 quirk regression (docs/PIPELINE_WIRING_CHECKPOINT.md, post-Step-17) ----------
+
+def test_state_store_recovers_duplicate_order_visibility_despite_broker_magic_zero(
+    tmp_path: Path,
+) -> None:
+    """MT5 always reports magic=0 on every order this project's own executor places, never the
+    real intended magic (docs/mcp_tool_classification.md item 7) -- so
+    account.get_orders(symbol, magic=magic)'s client-side filter silently matches nothing
+    against real live data, making check_duplicate_order() blind to grid's own previously-
+    placed pending orders (confirmed root cause, docs/PIPELINE_WIRING_CHECKPOINT.md,
+    post-Step-17). Reproduces the quirk (existing pending order carries magic=0, exactly like a
+    real live read) and confirms passing state_store recovers correct duplicate-order
+    visibility via LocalOrderRecord.magic -- the intended value recorded locally at submission
+    time, never overwritten by the broker's echoed-back 0."""
+    market_data = _market_data(tick_bid=63009.0, tick_ask=63011.0)
+    levels = compute_grid_levels(_bars(), point=0.01,
+                                  config=GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4))
+    existing = [OrderState(ticket=900002, symbol=SYMBOL, side="BUY", volume=0.01,
+                            price=levels.buy_price, magic=0)]
+    account = _account(orders=existing)
+
+    # Without state_store (unchanged default behavior): the magic=0 quirk blinds the duplicate
+    # check -- documents the bug rather than assuming it.
+    blind_results = _run(market_data, account, DryRunExecutor())
+    assert len(blind_results) == 2  # bug: BUY duplicate not caught, both sides submitted
+
+    state_store = StateStore(tmp_path / "order_state")
+    state_store.record_submission(
+        ticket=900002, strategy="grid", magic=MAGIC, comment="grid_buy", symbol=SYMBOL,
+        side="BUY", order_type="LIMIT", requested_volume=0.01, requested_price=levels.buy_price,
+        requested_sl=0.0, requested_tp=0.0, requested_deviation=0, requested_filling_mode=None,
+        requested_expiry=None, retcode=10009, executed_price=None, executed_volume=None,
+        broker_comment="", submitted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    protected_results = _run(market_data, account, DryRunExecutor(), state_store=state_store)
+
+    assert len(protected_results) == 1  # fixed: BUY correctly blocked as a duplicate again
+    assert protected_results[0].order_plan.side == "SELL"

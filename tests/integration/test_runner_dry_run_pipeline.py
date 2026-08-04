@@ -7,17 +7,19 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import pytest
 
-from mt5_mcp_trading.domain.models import AccountState, MarketBar, SymbolInfo, Tick
+from mt5_mcp_trading.domain.models import AccountState, MarketBar, PositionState, SymbolInfo, Tick
 from mt5_mcp_trading.execution.dry_run import DryRunExecutor
 from mt5_mcp_trading.mocks.mock_account_and_executor import MockAccountReader
 from mt5_mcp_trading.mocks.mock_market_data import MockMarketDataSource
 from mt5_mcp_trading.pipeline.runner_cycle import run_runner_cycle
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps
 from mt5_mcp_trading.sizing.money import MoneyConfig
+from mt5_mcp_trading.state.store import StateStore
 from mt5_mcp_trading.strategy.runner import RunnerStrategyConfig
 
 from tests.unit.test_features_macd import DOWNWARD_CLOSES, UPWARD_CLOSES
@@ -53,14 +55,14 @@ def _account() -> MockAccountReader:
     )
 
 
-def _run(market_data, executor, caps=None):
+def _run(market_data, executor, caps=None, account=None, state_store=None):
     return asyncio.run(run_runner_cycle(
-        market_data=market_data, account=_account(), executor=executor,
+        market_data=market_data, account=account or _account(), executor=executor,
         symbol=SYMBOL, timeframe="M5", bars_count=len(UPWARD_CLOSES),
         runner_config=RunnerStrategyConfig(),
         money_config=MoneyConfig(lot_size_mode="fixed", fixed_lot=0.02),
         caps=caps or ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06),
-        magic=MAGIC,
+        magic=MAGIC, state_store=state_store,
     ))
 
 
@@ -169,3 +171,47 @@ def test_market_data_read_failure_propagates_raw(raise_on: str) -> None:
 def test_executor_submit_failure_propagates_raw() -> None:
     with pytest.raises(ConnectionError):
         _run(_market_data(UPWARD_CLOSES), _RaisingExecutor())
+
+
+# ---------- magic=0 quirk regression (docs/PIPELINE_WIRING_CHECKPOINT.md, post-Step-17) ----------
+
+def test_state_store_recovers_exposure_visibility_despite_broker_magic_zero(
+    tmp_path: Path,
+) -> None:
+    """MT5 always reports magic=0 on every position this project's own executor places, never
+    the real intended magic (docs/mcp_tool_classification.md item 7) -- so
+    account.get_positions(symbol, magic=magic)'s client-side filter silently matches nothing
+    against real live data, making check_exposure_cap() blind to real standing exposure
+    (confirmed root cause, docs/PIPELINE_WIRING_CHECKPOINT.md, post-Step-17). Reproduces the
+    quirk (existing position carries magic=0, exactly like a real live read) and confirms
+    passing state_store recovers correct exposure visibility via LocalOrderRecord.magic -- the
+    intended value recorded locally at submission time, never overwritten by the broker's
+    echoed-back 0."""
+    market_data = _market_data(UPWARD_CLOSES)
+    caps = ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)
+    existing_position = PositionState(ticket=900003, symbol=SYMBOL, side="BUY", volume=0.05,
+                                       price_open=100.0, profit=0.0, magic=0)
+    account = MockAccountReader(
+        account_state=AccountState(login=180375, server="ThinkMarkets-Demo", balance=10000.0,
+                                    equity=10000.0, margin_free=10000.0, trade_mode="DEMO"),
+        positions=[existing_position], orders=[],
+    )
+
+    # Without state_store (unchanged default behavior): the magic=0 quirk blinds the exposure
+    # check -- documents the bug rather than assuming it.
+    blind_result = _run(market_data, DryRunExecutor(), caps=caps, account=account)
+    assert blind_result is not None  # bug: 0.05 real exposure invisible, cap never tripped
+
+    state_store = StateStore(tmp_path / "order_state")
+    state_store.record_submission(
+        ticket=900003, strategy="runner", magic=MAGIC, comment="runner", symbol=SYMBOL,
+        side="BUY", order_type="MARKET", requested_volume=0.05, requested_price=100.0,
+        requested_sl=0.0, requested_tp=0.0, requested_deviation=0, requested_filling_mode=None,
+        requested_expiry=None, retcode=10009, executed_price=100.0, executed_volume=0.05,
+        broker_comment="", submitted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    protected_result = _run(market_data, DryRunExecutor(), caps=caps, account=account,
+                             state_store=state_store)
+
+    assert protected_result is None  # fixed: 0.05 existing + 0.02 proposed exceeds 0.06, blocked

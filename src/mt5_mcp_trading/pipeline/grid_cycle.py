@@ -25,11 +25,24 @@ ignore (the function still raises, never returns a falsely-clean empty/partial l
 Read-stage failures (get_bars/get_symbol_info/get_tick/get_positions/get_orders, all before
 the per-side loop) are NOT wrapped -- there's nothing to preserve yet at that point, so the
 raw exception propagates unchanged.
+
+`state_store` (optional): MT5 is confirmed to always report magic=0 on every position/order
+this project's own executor places, never the real intended magic (docs/mcp_tool_
+classification.md item 7) -- so account.get_positions(symbol, magic=magic)/get_orders(...)'s
+client-side magic filter silently matches nothing against real live data, making the exposure
+cap and duplicate-order guards both no-ops (confirmed root cause, docs/
+PIPELINE_WIRING_CHECKPOINT.md, post-Step-17). When a StateStore is supplied, positions/orders
+are instead read unfiltered and cross-referenced against LocalOrderRecord.magic (the intended
+value recorded locally at submission time, never the broker's echoed-back 0) to determine
+which live tickets actually belong to this magic. When omitted (default), behavior is
+unchanged from before this fix -- every mock/dry-run caller, where the magic=0 quirk doesn't
+exist, is unaffected.
 """
 
 from __future__ import annotations
 
 import dataclasses
+from typing import Optional
 
 from mt5_mcp_trading.domain.models import ExecutionResult
 from mt5_mcp_trading.market_data.interfaces import MarketDataSource
@@ -40,6 +53,7 @@ from mt5_mcp_trading.risk.combine import combine
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps, check_exposure_cap
 from mt5_mcp_trading.risk.symbol_guards import check_duplicate_order
 from mt5_mcp_trading.sizing.money import MoneyConfig, decide_lot, to_sized_intent
+from mt5_mcp_trading.state.store import StateStore
 from mt5_mcp_trading.strategy.grid import GridStrategyConfig, compute_grid_levels
 from mt5_mcp_trading.trade_intent.grid import grid_levels_to_trade_intents
 
@@ -78,13 +92,22 @@ async def run_grid_cycle(
     money_config: MoneyConfig,
     caps: ExposureCaps,
     magic: int,
+    state_store: Optional[StateStore] = None,
 ) -> list[ExecutionResult]:
     bars = await market_data.get_bars(symbol, timeframe, bars_count)
     symbol_info = await market_data.get_symbol_info(symbol)
     tick = await market_data.get_tick(symbol)
 
-    positions = await account.get_positions(symbol=symbol, magic=magic)
-    pending_orders = await account.get_orders(symbol=symbol, magic=magic)
+    if state_store is None:
+        positions = await account.get_positions(symbol=symbol, magic=magic)
+        pending_orders = await account.get_orders(symbol=symbol, magic=magic)
+    else:
+        local_tickets = {r.ticket for r in state_store.all_open() if r.magic == magic}
+        all_positions = await account.get_positions(symbol=symbol)
+        all_orders = await account.get_orders(symbol=symbol)
+        positions = [p for p in all_positions if p.ticket in local_tickets]
+        pending_orders = [o for o in all_orders if o.ticket in local_tickets]
+
     open_lots = sum(p.volume for p in positions)
     pending_lots = sum(o.volume for o in pending_orders)
 

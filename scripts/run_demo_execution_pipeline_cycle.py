@@ -132,7 +132,7 @@ async def main() -> None:
                     market_data=market_data, account=account, executor=executor,
                     symbol=SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
                     grid_config=GridStrategyConfig(), money_config=MoneyConfig(),
-                    caps=CAPS, magic=GRID_MAGIC,
+                    caps=CAPS, magic=GRID_MAGIC, state_store=state_store,
                 )
             except GridCycleError as exc:
                 print(f"\n=== GridCycleError: {len(exc.errors)} side(s) raised, "
@@ -156,7 +156,7 @@ async def main() -> None:
                     market_data=market_data, account=account, executor=executor,
                     symbol=SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
                     runner_config=RunnerStrategyConfig(), money_config=MoneyConfig(),
-                    caps=CAPS, magic=RUNNER_MAGIC,
+                    caps=CAPS, magic=RUNNER_MAGIC, state_store=state_store,
                 )
             except Exception as exc:
                 print(f"\n=== run_runner_cycle() raised: {exc!r} ===")

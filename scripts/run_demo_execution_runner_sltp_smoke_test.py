@@ -130,7 +130,7 @@ async def main() -> None:
                 market_data=market_data, account=account, executor=executor,
                 symbol=SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
                 runner_config=runner_config, money_config=money_config,
-                caps=CAPS, magic=SMOKE_TEST_MAGIC,
+                caps=CAPS, magic=SMOKE_TEST_MAGIC, state_store=state_store,
             )
         except SlTpAttachmentFailedError as exc:
             print(f"\n=== SL/TP ATTACHMENT FAILED: ticket={exc.ticket}, reason={exc.reason!r}, "

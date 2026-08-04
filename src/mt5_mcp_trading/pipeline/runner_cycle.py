@@ -8,6 +8,11 @@ No duplicate-order check here, matching tests/integration/test_runner_pipeline_e
 that guard is about pending orders sitting at a price, and runner produces price-less MARKET
 orders. account.get_orders() is still called, only to compute pending_lots for the exposure
 cap, not for duplicate detection.
+
+`state_store` (optional): see grid_cycle.py's module docstring for the full explanation --
+same magic=0 quirk, same fix. When supplied, positions/orders are read unfiltered and
+cross-referenced against LocalOrderRecord.magic instead of trusting the broker's client-side
+magic filter. When omitted (default), behavior is unchanged from before this fix.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from mt5_mcp_trading.order_planning.plan import build_order_plan
 from mt5_mcp_trading.risk.combine import combine
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps, check_exposure_cap
 from mt5_mcp_trading.sizing.money import MoneyConfig, decide_lot, to_sized_intent
+from mt5_mcp_trading.state.store import StateStore
 from mt5_mcp_trading.strategy.runner import (
     RunnerStrategyConfig,
     compute_stop_distances,
@@ -43,6 +49,7 @@ async def run_runner_cycle(
     money_config: MoneyConfig,
     caps: ExposureCaps,
     magic: int,
+    state_store: Optional[StateStore] = None,
 ) -> Optional[ExecutionResult]:
     bars = await market_data.get_bars(symbol, timeframe, bars_count)
     signal = runner_signal(bars, runner_config)
@@ -54,8 +61,17 @@ async def run_runner_cycle(
 
     symbol_info = await market_data.get_symbol_info(symbol)
     tick = await market_data.get_tick(symbol)
-    positions = await account.get_positions(symbol=symbol, magic=magic)
-    pending_orders = await account.get_orders(symbol=symbol, magic=magic)
+
+    if state_store is None:
+        positions = await account.get_positions(symbol=symbol, magic=magic)
+        pending_orders = await account.get_orders(symbol=symbol, magic=magic)
+    else:
+        local_tickets = {r.ticket for r in state_store.all_open() if r.magic == magic}
+        all_positions = await account.get_positions(symbol=symbol)
+        all_orders = await account.get_orders(symbol=symbol)
+        positions = [p for p in all_positions if p.ticket in local_tickets]
+        pending_orders = [o for o in all_orders if o.ticket in local_tickets]
+
     open_lots = sum(p.volume for p in positions)
     pending_lots = sum(o.volume for o in pending_orders)
 

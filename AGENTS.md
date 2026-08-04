@@ -258,6 +258,23 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   state re-checked (only the 2 pre-existing tickets from before the loop run remain, all 6 of
   the loop's own tickets confirmed cleaned up, nothing unexpected), tests still 346/13 passing,
   nothing left uncommitted. **Live testing paused — will not resume without explicit approval.**
+  **Magic-filter bug fixed (code only, not yet live-verified)**: `run_grid_cycle()`/
+  `run_runner_cycle()` (`pipeline/grid_cycle.py`, `pipeline/runner_cycle.py`) now accept an
+  optional `state_store` parameter. When supplied, `open_lots`/`pending_lots`/the duplicate-
+  order check are computed from an unfiltered live read cross-referenced against
+  `StateStore.all_open()`'s `LocalOrderRecord.magic` (the intended magic recorded locally at
+  submission time, never the broker's echoed-back `0`) instead of trusting
+  `account.get_positions()`/`get_orders(symbol, magic=magic)`'s broken client-side filter.
+  Omitting `state_store` (the default) preserves the exact prior behavior, so every mock/dry-run
+  caller is unaffected. Wired into all three real-executor call sites
+  (`scripts/run_demo_execution_pipeline_cycle.py`, `scripts/run_demo_execution_pipeline_loop.py`,
+  `scripts/run_demo_execution_runner_sltp_smoke_test.py`); `scripts/run_live_dry_run_pipeline.py`
+  needed no change (`DryRunExecutor` has no `StateStore`). +2 regression tests reproducing the
+  magic=0 quirk in a mock for the first time — each asserts both the still-blind fallback
+  without `state_store` and the corrected behavior with it — 348 passed total, architecture
+  tests still pass. **Not yet live-verified**: whether this correctly discriminates real,
+  populated, differently-magic-tagged data on the demo account has not been exercised against a
+  real connection; requires its own explicit approval before any live run.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
