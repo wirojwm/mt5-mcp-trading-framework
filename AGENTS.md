@@ -363,8 +363,11 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   `10009`, verified absent). Follow-up checks found 6 more tickets from this run had since
   self-resolved via their own broker-side SL/TP (`171652731`, `171652799`, `171652801`,
   `171652846`, `171653005`, `171652845`); all reconciled to `CLOSED` locally, no MCP calls. 5
-  tickets remain live and protected (1 position, 4 pending grid orders), left open by design. No
-  production code changed.
+  tickets remain live and protected (1 position, 4 pending grid orders), left open by design.
+  Follow-up, later session: a full read-only reconciliation found all 5 had also since
+  self-resolved via their own broker-side SL/TP; reconciled to `CLOSED` locally, no MCP calls.
+  Every ticket from Step 29's loop run is now resolved; account fully clean. No production code
+  changed.
   Full detail: `docs/PIPELINE_WIRING_CHECKPOINT.md`.
 
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in

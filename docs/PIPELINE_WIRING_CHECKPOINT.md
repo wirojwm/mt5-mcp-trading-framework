@@ -1358,20 +1358,41 @@ pytest tests/test_architecture.py -q -> 13 passed
 `scripts/run_demo_execution_reconcile_171653005_171652845.py` (all new), this checkpoint doc,
 `AGENTS.md`. No production code changed.
 
+**Follow-up, later session**: user asked for a full read-only reconciliation of the 5 remaining
+tickets before deciding what to do with them (ticket/symbol/side/volume/SL/TP/magic/local-state
+ownership for each, plus an explanation of the retcode-10016 failure that stopped cycle 4). New
+one-off script, `scripts/run_demo_execution_reconcile_step29_remaining_tickets.py`, found all 5
+had *also* since self-resolved (absent from live positions/orders, most likely triggered via
+their own broker-side SL/TP) — state had moved again since Step 29's report, the same
+repeatedly-observed pattern. User approved reconciling them; a second new one-off script,
+`scripts/run_demo_execution_reconcile_step29_final_5_tickets.py`, re-verified all 5 absent and
+reconciled them to `CLOSED` locally — no MCP calls. **Every ticket from Step 29's loop run is now
+resolved.** Final state: 0 live positions, 0 live pending orders on BTCUSD.
+
+```
+pytest -q                        -> 348 passed (unchanged -- no production code changed this step)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this follow-up**:
+`scripts/run_demo_execution_reconcile_step29_remaining_tickets.py`,
+`scripts/run_demo_execution_reconcile_step29_final_5_tickets.py` (both new), this checkpoint doc,
+`AGENTS.md`. No production code changed.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one.
-1. 5 live protected tickets remain from Step 29 (`171652732` position, `171652730`/`171652797`/
-   `171652844`/`171653004` pending grid orders) — user's standing decision to leave real cycle
-   results open for a later cycle/session to manage. No urgency, all carry real SL/TP.
+1. Account is fully clean (0 live positions/orders) — every ticket from Step 29's loop run,
+   including the 5 initially left open, has self-resolved via broker-side SL/TP and is now
+   reconciled locally. Nothing left over to decide on.
 2. The retcode-10016 bug (closed as a watch item in Step 28) recurred a fourth time in Step 29
    (`171653006`) — consistent with Step 28's own conclusion that this is an expected-possible,
    already-handled broker-side rejection, not a code defect. Still no action needed; the existing
    retcode-trust + fresh-live-read workaround caught it correctly again.
-3. With the exposure cap confirmed binding live (Step 25) and all residue reconciled through Step
-   29, the magic-filter investigation that began at Step 17 remains fully closed. Nothing further
-   planned here unless something new surfaces.
+3. With the exposure cap confirmed binding live (Step 25) and all residue reconciled through this
+   follow-up, the magic-filter investigation that began at Step 17 remains fully closed. Nothing
+   further planned here unless something new surfaces.
 4. No loop is running and no stop-file is present — a future loop relaunch needs no pre-cleanup
    step right now, but should still check for `var/STOP_PIPELINE_LOOP` first (the gotcha several
    prior steps have hit) since any future stop would leave it behind again.
