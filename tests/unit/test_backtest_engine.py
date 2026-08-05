@@ -337,3 +337,57 @@ def test_run_backtest_raises_if_fewer_bars_than_bars_count_are_supplied() -> Non
             caps=ExposureCaps(max_open_lots=1.0, budget_max_lots=1.0),
             grid_magic=71101, runner_magic=72101,
         ))
+
+
+# ---------- grid_max_entry_efficiency_ratio: grid regime filter Step 1 sweep support
+# (docs/GRID_REGIME_FILTER_CHECKPOINT.md) ----------
+
+def _grid_submission_count(ledger: BacktestLedger) -> int:
+    records = [*ledger.pending_orders.values(), *ledger.open_positions.values(), *ledger.closed_trades]
+    return sum(1 for r in records if r.comment.startswith("grid_"))
+
+
+def _runner_submission_count(ledger: BacktestLedger) -> int:
+    records = [*ledger.pending_orders.values(), *ledger.open_positions.values(), *ledger.closed_trades]
+    return sum(1 for r in records if r.comment == "runner")
+
+
+def _regime_filter_kwargs() -> dict:
+    bars = _synthetic_trending_bars(300)
+    return dict(
+        bars=bars, symbol="BTCUSD", timeframe="M1", bars_count=100, symbol_info=SYMBOL_INFO,
+        grid_config=GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4),
+        runner_config=RunnerStrategyConfig(),
+        money_config=MoneyConfig(lot_size_mode="fixed", fixed_lot=0.01),
+        caps=ExposureCaps(max_open_lots=10.0, budget_max_lots=10.0),
+        grid_magic=71101, runner_magic=72101,
+    )
+
+
+def test_grid_max_entry_efficiency_ratio_none_matches_omitting_the_parameter() -> None:
+    kwargs = _regime_filter_kwargs()
+    ledger_omitted = asyncio.run(run_backtest(**kwargs))
+    ledger_explicit_none = asyncio.run(run_backtest(**kwargs, grid_max_entry_efficiency_ratio=None))
+    assert _grid_submission_count(ledger_omitted) == _grid_submission_count(ledger_explicit_none)
+    assert _grid_submission_count(ledger_omitted) > 0  # a meaningful test needs real activity
+
+
+def test_grid_max_entry_efficiency_ratio_of_zero_blocks_essentially_all_grid_submissions() -> None:
+    # efficiency_ratio() is always >= 0.0 for real (non-degenerate) price data, so a threshold of
+    # 0.0 skips run_grid_cycle() on every throttled cycle -- proves the skip actually fires.
+    kwargs = _regime_filter_kwargs()
+    ledger = asyncio.run(run_backtest(**kwargs, grid_max_entry_efficiency_ratio=0.0))
+    assert _grid_submission_count(ledger) == 0
+    # runner must be completely unaffected by a grid-only filter.
+    assert _runner_submission_count(ledger) > 0
+
+
+def test_grid_max_entry_efficiency_ratio_impossibly_high_matches_unfiltered_behavior() -> None:
+    # A threshold efficiency_ratio() can never reach (ratio is bounded in [0, 1]) must never skip
+    # a single cycle -- the filter should be a true no-op at this extreme, same as omitting it.
+    kwargs = _regime_filter_kwargs()
+    ledger_unfiltered = asyncio.run(run_backtest(**kwargs))
+    ledger_high_threshold = asyncio.run(
+        run_backtest(**kwargs, grid_max_entry_efficiency_ratio=999.0)
+    )
+    assert _grid_submission_count(ledger_unfiltered) == _grid_submission_count(ledger_high_threshold)

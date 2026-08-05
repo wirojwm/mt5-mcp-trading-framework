@@ -62,11 +62,11 @@ def _account(orders: list[OrderState] | None = None) -> MockAccountReader:
     )
 
 
-def _run(market_data, account, executor, caps=None, state_store=None):
+def _run(market_data, account, executor, caps=None, state_store=None, grid_config=None):
     return asyncio.run(run_grid_cycle(
         market_data=market_data, account=account, executor=executor,
         symbol=SYMBOL, timeframe="M1", bars_count=len(PRICES),
-        grid_config=GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4),
+        grid_config=grid_config or GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4),
         money_config=MoneyConfig(lot_size_mode="atr_scale", atr_scale_base=0.01,
                                   atr_scale_ref=1.0, atr_scale_min=0.01, atr_scale_max=0.06),
         caps=caps or ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06),
@@ -398,3 +398,93 @@ def test_state_store_recovers_duplicate_order_visibility_despite_broker_magic_ze
 
     assert len(protected_results) == 1  # fixed: BUY correctly blocked as a duplicate again
     assert protected_results[0].order_plan.side == "SELL"
+
+
+# ---------- grid regime filter (docs/GRID_REGIME_FILTER_CHECKPOINT.md, Step 2) ----------
+
+# Strictly monotonic -> efficiency_ratio() ~= 1.0 (net change == total path length), the clearest
+# possible "trending" fixture. Same length as PRICES so _run()'s hardcoded bars_count still lines
+# up (MockMarketDataSource.get_bars() just returns bars[-count:], tolerant either way, but this
+# keeps the fixture directly comparable to the ranging one).
+TRENDING_PRICES = [63000 + i * 50 for i in range(16)]
+
+
+def _trending_market_data(tick_bid: float, tick_ask: float) -> MockMarketDataSource:
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    bars = [
+        MarketBar(symbol=SYMBOL, timeframe="M1", time=base + timedelta(minutes=i),
+                   open=p, high=p + 8, low=p - 8, close=p, tick_volume=10, spread=2)
+        for i, p in enumerate(TRENDING_PRICES)
+    ]
+    symbol_info = SymbolInfo(symbol=SYMBOL, digits=2, point=0.01, volume_min=0.01,
+                              volume_max=100.0, volume_step=0.01, stops_level=10, freeze_level=5)
+    tick = Tick(symbol=SYMBOL, bid=tick_bid, ask=tick_ask, time=bars[-1].time)
+    return MockMarketDataSource(
+        bars={SYMBOL: bars}, ticks={SYMBOL: tick}, symbol_infos={SYMBOL: symbol_info},
+    )
+
+
+class _RaisingIfCalledMarketDataSource:
+    """Wraps a real MarketDataSource but raises if get_symbol_info/get_tick are ever called --
+    proves the regime filter's early return happens BEFORE those reads, mirroring
+    runner_cycle.py's FLAT-signal skip ordering, not just before submission."""
+
+    def __init__(self, inner: MockMarketDataSource) -> None:
+        self._inner = inner
+
+    async def get_bars(self, symbol: str, timeframe: str, count: int):
+        return await self._inner.get_bars(symbol, timeframe, count)
+
+    async def get_tick(self, symbol: str):
+        raise AssertionError("get_tick must not be called when the regime filter blocks the cycle")
+
+    async def get_symbol_info(self, symbol: str):
+        raise AssertionError(
+            "get_symbol_info must not be called when the regime filter blocks the cycle"
+        )
+
+
+def test_regime_filter_off_by_default_matches_existing_behavior() -> None:
+    # GridStrategyConfig() with no override -- max_entry_efficiency_ratio defaults to None.
+    market_data = _market_data(tick_bid=63009.0, tick_ask=63011.0)
+    results = _run(market_data, _account(), DryRunExecutor(),
+                    grid_config=GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4))
+    assert len(results) == 2  # identical to test_both_sides_reach_the_dry_run_executor_and_nothing_else
+
+
+def test_regime_filter_blocks_both_sides_when_market_is_trending() -> None:
+    market_data = _trending_market_data(tick_bid=63700.0, tick_ask=63702.0)
+    executor = DryRunExecutor()
+    grid_config = GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4,
+                                      max_entry_efficiency_ratio=0.5)
+
+    results = _run(market_data, _account(), executor, grid_config=grid_config)
+
+    assert results == []
+    assert executor.submitted == []  # nothing was ever attempted
+
+
+def test_regime_filter_does_not_block_when_market_is_ranging() -> None:
+    # Same _bars() fixture every other test in this file uses (real, choppy oscillation, ER far
+    # below any reasonable threshold) -- proves a configured-but-not-triggered filter behaves
+    # identically to the unfiltered baseline, not just that None is a no-op.
+    market_data = _market_data(tick_bid=63009.0, tick_ask=63011.0)
+    grid_config = GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4,
+                                      max_entry_efficiency_ratio=0.5)
+
+    results = _run(market_data, _account(), DryRunExecutor(), grid_config=grid_config)
+
+    assert len(results) == 2
+    assert {r.order_plan.side for r in results} == {"BUY", "SELL"}
+
+
+def test_regime_filter_skips_symbol_info_and_tick_reads_when_blocking() -> None:
+    market_data = _RaisingIfCalledMarketDataSource(
+        _trending_market_data(tick_bid=63700.0, tick_ask=63702.0)
+    )
+    grid_config = GridStrategyConfig(atr_period=14, center_ema_period=10, step_mult=0.4,
+                                      max_entry_efficiency_ratio=0.5)
+
+    results = _run(market_data, _account(), DryRunExecutor(), grid_config=grid_config)
+
+    assert results == []  # would have raised AssertionError above if the ordering were wrong

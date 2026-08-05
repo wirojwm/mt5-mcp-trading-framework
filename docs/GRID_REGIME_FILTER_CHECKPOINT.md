@@ -109,7 +109,191 @@ adapter/MCP call, no new risk category.
 - Does not revisit or replace Step 7's regime analysis itself — this effort consumes that finding,
   it doesn't redo it.
 
+## Step 1 — threshold sweep: done, a genuine (non-edge) candidate found
+
+Provisional design choices in this doc were approved as written. `backtest/engine.py`'s
+`run_backtest()` grew two new, opt-in, default-`None` parameters
+(`grid_max_entry_efficiency_ratio`/`grid_efficiency_ratio_period`) — deliberately NOT a change to
+`GridStrategyConfig`/`pipeline/grid_cycle.py` (see the module docstring for the full reasoning:
+this lets the sweep dynamically, correctly simulate the filter's real effect — a skipped cycle
+genuinely frees up exposure-cap slots for later cycles — without building the production change
+before a threshold is chosen and validated). 3 new unit tests in `tests/unit/test_backtest_engine.py`:
+`grid_max_entry_efficiency_ratio=None` matches omitting the parameter entirely; `0.0` blocks
+essentially all grid submissions while leaving runner untouched; an impossibly high threshold
+(`999.0`) is a true no-op, matching unfiltered behavior exactly.
+
+`scripts/run_demo_execution_backtest_regime_filter_sweep.py` (new): one real read-only
+`get_symbol_info` call, then fully offline against the training window, candidates spanning Step
+7's own observed ER range plus a "no filter" baseline.
+
+**First pass (0.2–0.7)** found `0.2` — the low EDGE of that range — as the best-expectancy point,
+monotonically improving all the way down to it (every threshold from 0.2–0.5 beat the unfiltered
+baseline; 0.6/0.7 barely filtered anything and were actually slightly worse than no filter at
+all). Same caution already applied to grid's `step_mult` and runner's `sl_atr_mult` sweeps
+earlier in Phase 8: an edge-of-range best point needs widening before it's trusted.
+
+**Widened to 0.05–0.7, full results, training window**:
+
+| threshold | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| unfiltered (baseline) | 119 | 56.3% | −0.302 R | 37.120 R |
+| 0.05 | 139 | 55.4% | −0.313 R | 43.761 R |
+| 0.1 | 115 | 60.9% | −0.245 R | 28.680 R |
+| 0.15 | 139 | 61.9% | −0.233 R | 32.600 R |
+| **0.2** | 141 | 63.8% | **−0.209 R** | 29.920 R |
+| 0.3 | 143 | 60.8% | −0.246 R | 35.760 R |
+| 0.4 | 141 | 59.6% | −0.261 R | 37.560 R |
+| 0.5 | 129 | 58.9% | −0.269 R | 35.241 R |
+| 0.6 | 127 | 55.1% | −0.317 R | 40.680 R |
+| 0.7 | 121 | 53.7% | −0.334 R | 40.880 R |
+
+**This resolves the edge concern**: `0.2` is a genuine interior peak, flanked by tested-worse
+values on both sides (`0.15` and `0.3` both worse; `0.1`/`0.05` reverse further, `0.05` actually
+worse than the unfiltered baseline; `0.4`–`0.7` degrade steadily the other direction) — the same
+bounded shape that made runner's `sl_atr_mult=3.0` trustworthy rather than an untested-edge guess.
+141 trades comfortably clears both the 30-trade minimum and the 50+ preferred sample size.
+
+**Decided candidate for Step 3: `max_entry_efficiency_ratio=0.2`** (`efficiency_ratio_period=14`,
+unchanged) — training-window evidence only. Improvement over the unfiltered baseline: expectancy
+−0.302 R → −0.209 R, drawdown 37.120 R → 29.920 R, trade count 119 → 141 (more trades, not fewer
+— the exposure-cap-freeing dynamic in effect). **No production default changed** —
+`GridStrategyConfig` has no such field yet; this is purely a backtest-engine-level finding.
+
+```
+pytest -q                        -> 424 passed (421 previously + 3 new, engine grid_max_entry_efficiency_ratio)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call beyond each sweep's one read-only `get_symbol_info` pull. Process
+cleanup confirmed clean.
+
+**Files changed this entry**: `src/mt5_mcp_trading/backtest/engine.py` (modified — new opt-in
+`grid_max_entry_efficiency_ratio`/`grid_efficiency_ratio_period` params on `run_backtest()`),
+`tests/unit/test_backtest_engine.py` (modified, +3),
+`scripts/run_demo_execution_backtest_regime_filter_sweep.py` (new), this checkpoint doc.
+
+## Step 2 — opt-in production filter: built, unit + integration tested
+
+Built exactly as designed above, no deviations. `GridStrategyConfig` (`strategy/grid.py`) gained
+`max_entry_efficiency_ratio: Optional[float] = None` and `efficiency_ratio_period: int = 14`.
+`compute_grid_levels()`/`GridLevels` were **not** touched — both fields are read only by
+`pipeline/grid_cycle.py`'s `run_grid_cycle()`, right after `bars = await market_data.get_bars(...)`
+and before `symbol_info`/`tick`/account reads, mirroring `runner_cycle.py`'s own FLAT-signal skip
+ordering exactly: when the threshold is set and `features/regime.py`'s `efficiency_ratio(bars,
+efficiency_ratio_period)` is `>=` it, the cycle logs and returns `[]` immediately — same
+"reject/skip, never raise" convention as every other rejection in this function, and the same
+scope as every other guard here (blocks new submissions only, never touches existing open
+positions or pending orders).
+
+**Tests** (`tests/integration/test_grid_dry_run_pipeline.py`, +4): filter off by default matches
+existing behavior exactly (`GridStrategyConfig()` with no override); a strictly monotonic
+("trending", ER≈1.0) fixture with `max_entry_efficiency_ratio=0.5` blocks both sides, nothing
+submitted; the existing choppy/ranging `_bars()` fixture (ER≈0.008, used by every other test in
+this file) with the same threshold configured but not triggered behaves identically to the
+unfiltered baseline — proving a configured-but-inactive filter is a true no-op, not just that
+`None` is; a dedicated ordering test (`_RaisingIfCalledMarketDataSource`, raises if
+`get_symbol_info`/`get_tick` are ever called) proves the early return actually happens before
+those reads, not just before submission. All existing tests in the file pass completely
+unmodified (only the shared `_run()` helper gained an optional `grid_config` override parameter,
+defaulting to the exact same config every existing call already used).
+
+```
+pytest -q                        -> 428 passed (424 previously + 4 new, grid regime filter integration tests)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call — pure code + tests, no script run this entry.
+
+**Files changed this entry**: `src/mt5_mcp_trading/strategy/grid.py` (modified — new
+`max_entry_efficiency_ratio`/`efficiency_ratio_period` fields),
+`src/mt5_mcp_trading/pipeline/grid_cycle.py` (modified — the gate, right after the bars fetch),
+`tests/integration/test_grid_dry_run_pipeline.py` (modified, +4), this checkpoint doc.
+
+## Exact next smallest task
+
+**Step 2 is done.** Next per the step table: **Step 3** — out-of-sample validation. Re-run the
+`0.2` candidate against the HELD-OUT test window, now against the REAL `pipeline/grid_cycle.py`
+implementation (via `GridStrategyConfig(max_entry_efficiency_ratio=0.2)` passed straight into
+`run_backtest()`'s existing `grid_config` parameter — no need for the engine's parallel
+simulation hook anymore, though that hook still works and remains available for any future
+threshold re-sweeps) rather than the Step 1 sweep's simulation-only path. Report honestly, same
+Step 6 discipline: does the training-window improvement hold on unseen data, or does it collapse
+the way grid's `step_mult=0.25` candidate did in Phase 8. **No production default changed** —
+`GridStrategyConfig`'s own default remains `max_entry_efficiency_ratio=None`; this is still an
+opt-in candidate, not adopted anywhere. Needs explicit go-ahead before Step 3's script is written
+or run.
+
+## Step 3 — out-of-sample validation: run, and the candidate does NOT validate
+
+`scripts/run_demo_execution_backtest_regime_filter_test_window_validation.py` (new): one real,
+read-only `get_symbol_info` call, then fully offline against the held-out 19,000-bar test window
+(never read by Step 1's sweep or Step 2's tests). Runs `GridStrategyConfig()` (filter off) and
+`GridStrategyConfig(max_entry_efficiency_ratio=0.2)` back-to-back against the identical window —
+via the REAL Step-2-built pipeline path this time (the config field, read directly by
+`pipeline/grid_cycle.py`), not Step 1's parallel simulation hook.
+
+**Real results, test window, never touched before this run**:
+
+| | grid trades | grid win rate | grid expectancy | grid drawdown |
+|---|---|---|---|---|
+| filter off (baseline) | 45 | 55.6% | −0.311 R | 14.240 R |
+| candidate `max_er=0.2` | 33 | 51.5% | **−0.361 R** | 12.400 R |
+
+**Does not validate.** On the training window this candidate looked clearly better (−0.302 R →
+−0.209 R, a 0.093 R gain). Out-of-sample the improvement doesn't just fail to hold — it reverses
+into a result worse than doing nothing at all (−0.311 R → −0.361 R, a 0.050 R loss). Trade count
+also dropped this time (45 → 33, still above the 30-trade minimum but thin, unlike the training
+window where filtering *increased* trade count 119 → 141 — the exposure-cap-freeing dynamic runs
+in the opposite direction on this later, structurally different window). Runner's numbers are
+byte-for-bit identical in both rows (550 trades, same expectancy/drawdown both times), confirming
+the filter stayed correctly isolated to grid, as designed — this isn't a wiring bug, the candidate
+genuinely doesn't generalize.
+
+**This is the same overfitting signature grid's `step_mult=0.25` candidate showed in Phase 8 Step
+6** — a real, useful negative result, not a failed effort. `max_entry_efficiency_ratio=0.2`
+should NOT be adopted as a production default on this evidence.
+
+```
+pytest -q                        -> 428 passed (unchanged -- only a new read-only script added)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call beyond the one read-only `get_symbol_info` pull. Process cleanup
+confirmed clean.
+
+**Files changed this entry**:
+`scripts/run_demo_execution_backtest_regime_filter_test_window_validation.py` (new), this
+checkpoint doc.
+
+## Exact next smallest task
+
+**Step 3 is done, and its answer is no.** Steps 4–5 (production adoption, live verification) do
+not apply — their entry criteria was "Step 3 validates," which it didn't. This effort's original
+question is now answered: the `0.2` threshold found on the training window does not generalize to
+unseen data. Two honest paths forward, neither required:
+- Try a different candidate/design (e.g. sweep additional thresholds against a wider range, or a
+  different `efficiency_ratio_period`) — a fresh Step 1, not a continuation, since the current
+  candidate is now rejected, same discipline as Phase 8 re-sweeping grid's `step_mult` after its
+  first candidate was similarly rejected.
+- Treat this effort as complete with a "no validated filter found" verdict — a legitimate,
+  informative outcome. The opt-in filter mechanism (`GridStrategyConfig` fields +
+  `pipeline/grid_cycle.py` gate) stays in the codebase either way, tested and inert by default
+  (`max_entry_efficiency_ratio=None`) — reusable infrastructure for a future candidate, not dead
+  code to revert.
+
+**Continuation prompt for a new session**: "Read AGENTS.md and
+docs/GRID_REGIME_FILTER_CHECKPOINT.md (Steps 1–3 are done. Step 1 found a training-window
+candidate, max_entry_efficiency_ratio=0.2, validated as a genuine non-edge interior peak. Step 2
+built the opt-in production filter, default off. Step 3 tested the candidate against the held-out
+test window and it did NOT validate — expectancy reversed from an improvement to a degradation.
+No production default changed; the filter mechanism remains in the codebase, inert by default).
+Confirm git status is clean at the latest commit and no live process is running, then ask me what
+to do next — trying a different candidate/threshold range, or treating this effort as complete
+with a 'no validated filter found' verdict, are the open options, neither decided yet."
+
 ## Status
 
-**Not started.** Awaiting a decision on the open design points above (or explicit approval of the
-provisional choices) before Step 1's threshold sweep is run.
+**Step 1 done** (validated, non-edge training-window candidate: `max_entry_efficiency_ratio=0.2`).
+**Step 2 done** (opt-in production filter built and tested, default off, zero behavior change for
+any existing caller). **Step 3 done — the candidate did NOT validate out-of-sample.** No
+production default changed anywhere in this effort.

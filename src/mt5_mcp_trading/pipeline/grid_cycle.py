@@ -37,6 +37,16 @@ value recorded locally at submission time, never the broker's echoed-back 0) to 
 which live tickets actually belong to this magic. When omitted (default), behavior is
 unchanged from before this fix -- every mock/dry-run caller, where the magic=0 quirk doesn't
 exist, is unaffected.
+
+`GridStrategyConfig.max_entry_efficiency_ratio` (grid regime filter proposal,
+docs/GRID_REGIME_FILTER_CHECKPOINT.md, Step 2): when not None, skips this cycle's proposal/
+submission for BOTH sides -- before symbol_info/tick/account are even read, mirroring
+runner_cycle.py's own FLAT-signal skip ordering -- whenever features/regime.py's
+efficiency_ratio() over the just-fetched `bars` is >= the configured threshold (a trending
+market). Motivated by Phase 8 Step 7's finding that grid's negative expectancy is
+disproportionately driven by trending conditions. Defaults to None (filter off), so every
+existing caller is unaffected unless it explicitly opts in. Never touches existing open
+positions or pending orders -- same scope as every other guard in this module.
 """
 
 from __future__ import annotations
@@ -45,6 +55,7 @@ import dataclasses
 from typing import Optional
 
 from mt5_mcp_trading.domain.models import ExecutionResult
+from mt5_mcp_trading.features.regime import efficiency_ratio
 from mt5_mcp_trading.market_data.interfaces import MarketDataSource
 from mt5_mcp_trading.monitoring.logging_setup import get_logger
 from mt5_mcp_trading.mt5_adapter.interfaces import AccountReader, OrderExecutor
@@ -95,6 +106,16 @@ async def run_grid_cycle(
     state_store: Optional[StateStore] = None,
 ) -> list[ExecutionResult]:
     bars = await market_data.get_bars(symbol, timeframe, bars_count)
+
+    if grid_config.max_entry_efficiency_ratio is not None:
+        er = efficiency_ratio(bars, grid_config.efficiency_ratio_period)
+        if er >= grid_config.max_entry_efficiency_ratio:
+            _logger.info(
+                "[GRID] %s regime filter: efficiency_ratio=%.4f >= max=%.4f, trending, "
+                "skipping cycle", symbol, er, grid_config.max_entry_efficiency_ratio,
+            )
+            return []
+
     symbol_info = await market_data.get_symbol_info(symbol)
     tick = await market_data.get_tick(symbol)
 

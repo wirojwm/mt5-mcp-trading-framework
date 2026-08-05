@@ -69,6 +69,7 @@ from mt5_mcp_trading.domain.models import (
     SymbolInfo,
     Tick,
 )
+from mt5_mcp_trading.features.regime import efficiency_ratio
 from mt5_mcp_trading.pipeline.grid_cycle import run_grid_cycle
 from mt5_mcp_trading.pipeline.runner_cycle import run_runner_cycle
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps
@@ -262,6 +263,8 @@ async def run_backtest(
     symbol_info: SymbolInfo, grid_config: GridStrategyConfig, runner_config: RunnerStrategyConfig,
     money_config: MoneyConfig, caps: ExposureCaps, grid_magic: int, runner_magic: int,
     cycle_interval_bars: int = 1, spread_multiplier: float = 1.0,
+    grid_max_entry_efficiency_ratio: Optional[float] = None,
+    grid_efficiency_ratio_period: int = 14,
 ) -> BacktestLedger:
     """Mirrors scripts/run_demo_execution_pipeline_loop.py's own per-cycle shape (both
     strategies, sequentially) -- not a new orchestration pattern, the same established one.
@@ -286,7 +289,20 @@ async def run_backtest(
     sensitivity by uniformly widening the spread every cached bar's own historical `spread` field
     implies -- see half_spread_price()/this module's COST MODEL docstring section for why one
     shared formula, not two independent ones, is what makes this a fair, consistent stress test
-    across both strategies."""
+    across both strategies.
+
+    `grid_max_entry_efficiency_ratio`/`grid_efficiency_ratio_period` (grid regime filter proposal,
+    docs/GRID_REGIME_FILTER_CHECKPOINT.md, Step 1): when `grid_max_entry_efficiency_ratio` is not
+    None, each throttled cycle computes features/regime.py's efficiency_ratio() over the same
+    bars_count-sized visible window run_grid_cycle() would see, and skips calling run_grid_cycle()
+    entirely for that cycle when the ratio is >= the given threshold (trending market) -- run_
+    runner_cycle() and check_fills_and_exits() are never affected. Deliberately NOT a change to
+    GridStrategyConfig/pipeline/grid_cycle.py (the actual live pipeline) -- this lets Step 1's
+    training-window threshold sweep produce a real, dynamically-correct simulation (skipped
+    cycles genuinely free up exposure-cap slots for later cycles, unlike a naive post-hoc filter
+    of an already-closed trade list would) without building the production filter before a
+    threshold has been chosen and validated. Defaults to None, so every existing caller
+    (Steps 3-6's sweep/analysis scripts, every test) is completely unaffected."""
     if len(bars) < bars_count:
         raise ValueError(f"run_backtest needs at least {bars_count} bars to start, got {len(bars)}")
     if cycle_interval_bars < 1:
@@ -303,8 +319,14 @@ async def run_backtest(
         cursor.index = i
         executor.check_fills_and_exits(cursor.current_bar)  # every bar -- continuous, unthrottled
         if (i - start) % cycle_interval_bars == 0:  # new-order evaluation -- throttled
-            await run_grid_cycle(market_data, account, executor, symbol, timeframe, bars_count,
-                                  grid_config, money_config, caps, grid_magic)
+            skip_grid = False
+            if grid_max_entry_efficiency_ratio is not None:
+                visible = cursor.visible_bars(bars_count)
+                er = efficiency_ratio(visible, grid_efficiency_ratio_period)
+                skip_grid = er >= grid_max_entry_efficiency_ratio
+            if not skip_grid:
+                await run_grid_cycle(market_data, account, executor, symbol, timeframe, bars_count,
+                                      grid_config, money_config, caps, grid_magic)
             await run_runner_cycle(market_data, account, executor, symbol, timeframe, bars_count,
                                     runner_config, money_config, caps, runner_magic)
 

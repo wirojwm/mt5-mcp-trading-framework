@@ -605,15 +605,26 @@ not done here, to avoid designing ahead of what's actually been asked for.
   a concrete, evidence-backed idea, not adopted or built here. **Phase 8's originally-scoped
   work, through Step 7, is now complete.** Full detail in
   `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
-- **Grid regime filter (post-Phase-8): proposed, not started.** Not one of the numbered phases —
-  like "wire real adapters" before Phase 6 or "pipeline wiring" after Phase 7, a separate,
-  motivated-by-but-not-part-of the phase that surfaced it (Phase 8's Step 7 regime-analysis
-  finding). Full scoping/design proposal in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`: an opt-in
-  `GridStrategyConfig.max_entry_efficiency_ratio` field gating `pipeline/grid_cycle.py`'s new-order
-  submission (default `None` = off, zero behavior change for any existing caller), following the
-  same bars-derived-skip precedent `runner_cycle.py`'s FLAT-signal check already established. No
-  code written yet — awaiting a decision on the doc's open design points (or explicit approval of
-  its provisional choices) before Step 1's training-window threshold sweep.
+- **Grid regime filter (post-Phase-8): Steps 1–3 done — candidate rejected, a real negative
+  result.** Not one of the numbered phases — like "wire real adapters" before Phase 6 or
+  "pipeline wiring" after Phase 7, a separate effort motivated by Phase 8's Step 7 regime-analysis
+  finding. Full scoping/design in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`. **Step 1**: a training-
+  window threshold sweep (via two new opt-in parameters on `backtest/engine.py`'s `run_backtest()`,
+  simulating the filter's dynamic exposure-cap effect without building the production change
+  first) found and confirmed a genuine interior peak: `max_entry_efficiency_ratio=0.2`
+  (expectancy −0.302 R → −0.209 R, drawdown 37.120 R → 29.920 R, trade count 119 → 141). **Step
+  2**: built the actual opt-in filter — `GridStrategyConfig.max_entry_efficiency_ratio`/
+  `efficiency_ratio_period` (default off), gated in `pipeline/grid_cycle.py` right after the bars
+  fetch, mirroring `runner_cycle.py`'s FLAT-signal skip ordering exactly. +4 integration tests.
+  **Step 3**: validated the `0.2` candidate against the held-out test window (real pipeline path
+  this time, not the simulation hook) — **did NOT validate**. Expectancy reversed from an
+  improvement to a degradation (−0.311 R → −0.361 R baseline-vs-candidate on the test window,
+  vs. −0.302 R → −0.209 R on training), the same overfitting signature grid's `step_mult=0.25`
+  candidate showed in Phase 8 Step 6. Runner's numbers were byte-for-bit identical in both test
+  runs, confirming the filter stayed correctly isolated to grid. **No production default
+  changed anywhere in this effort** — `max_entry_efficiency_ratio` still defaults to `None`
+  everywhere; the opt-in mechanism stays in the codebase, tested and inert, reusable for a future
+  candidate. Full detail in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`'s "Exact next smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

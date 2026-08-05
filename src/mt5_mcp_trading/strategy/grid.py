@@ -32,7 +32,7 @@ not decided by this function and is out of scope for this migration step.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Literal, Optional, Sequence
 
 from mt5_mcp_trading.domain.models import GridLevels, MarketBar
 from mt5_mcp_trading.features.atr import atr as compute_atr
@@ -57,6 +57,19 @@ class GridStrategyConfig:
     # New, project-original design, deliberately independent of step_mult/tp's formula so this
     # can never make the existing, legacy-matched tp_price computation stale.
     sl_atr_mult: float = 2.0
+    # Grid regime filter proposal (docs/GRID_REGIME_FILTER_CHECKPOINT.md), Step 2. NO legacy
+    # precedent -- project-original, motivated by Phase 8 Step 7's finding that grid's negative
+    # expectancy is disproportionately driven by trending conditions
+    # (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md). Both fields are read by
+    # pipeline/grid_cycle.py, not by compute_grid_levels() below -- this module's own contract
+    # (grid always proposes both sides, regardless of directional belief -- see this module's
+    # docstring) is deliberately unchanged; the skip-this-cycle decision lives one layer up,
+    # mirroring runner_cycle.py's own FLAT-signal skip precedent. `max_entry_efficiency_ratio`
+    # defaults to `None` (filter OFF) so every existing caller is completely unaffected unless it
+    # explicitly opts in. `efficiency_ratio_period` matches `atr_period`'s own default -- no new
+    # magic number. See features/regime.py for the ratio itself (Kaufman's Efficiency Ratio).
+    max_entry_efficiency_ratio: Optional[float] = None
+    efficiency_ratio_period: int = 14
 
 
 def compute_grid_levels(bars: Sequence[MarketBar], point: float, config: GridStrategyConfig) -> GridLevels:
