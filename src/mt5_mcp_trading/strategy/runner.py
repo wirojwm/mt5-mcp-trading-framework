@@ -45,6 +45,15 @@ class RunnerStrategyConfig:
     sl_atr_mult: float = 1.5
     tp_atr_mult: float = 3.0  # 2:1 reward:risk
     min_stop_distance_points: float = 10.0  # matches GridStrategyConfig.min_step_points's floor
+    # NO legacy precedent either -- ema_crossover_core_multi.py's runner had no re-entry
+    # throttle at all, just like it had no SL/TP. New, project-original: run_runner_cycle() had
+    # no protection against re-entering the same direction repeatedly beyond the raw lot-based
+    # exposure cap, a real gap only surfaced by backtesting at realistic scale
+    # (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md, "Fix runner's re-entry throttle" -- a
+    # 10,000-cycle real run produced 9,881 trades and -0.159R expectancy, traced to this).
+    # Default 1: at most one open runner position per magic at a time, the simplest, most
+    # conservative choice -- open to tuning, like every other field here.
+    max_concurrent_positions: int = 1
 
 
 def _min_required_bars(config: RunnerStrategyConfig) -> int:

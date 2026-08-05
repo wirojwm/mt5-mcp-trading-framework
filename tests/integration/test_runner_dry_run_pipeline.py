@@ -117,6 +117,63 @@ def test_tight_exposure_cap_blocks_the_submission() -> None:
     assert executor.submitted == []
 
 
+# ---------- re-entry throttle (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md, "Fix runner's re-entry throttle") ----------
+
+def test_existing_open_position_blocks_a_new_submission_even_with_exposure_room() -> None:
+    """The exact regression this fix targets: before it, an already-open runner position never
+    stopped a new one from being submitted as long as the lot-based exposure cap had room --
+    confirmed live at scale (9,881 trades over one real 10,000-cycle backtest run, before this
+    fix). A generous exposure cap alone must no longer be enough to approve a second position."""
+    executor = DryRunExecutor()
+    existing_position = PositionState(ticket=900010, symbol=SYMBOL, side="BUY", volume=0.01,
+                                       price_open=100.0, profit=0.0, magic=MAGIC)
+    account = MockAccountReader(
+        account_state=AccountState(login=180375, server="ThinkMarkets-Demo", balance=10000.0,
+                                    equity=10000.0, margin_free=10000.0, trade_mode="DEMO"),
+        positions=[existing_position], orders=[],
+    )
+    # Deliberately generous -- proves the position-count guard is what blocks this, not exposure.
+    generous_caps = ExposureCaps(max_open_lots=10.0, budget_max_lots=10.0)
+
+    result = _run(_market_data(UPWARD_CLOSES), executor, caps=generous_caps, account=account)
+
+    assert result is None
+    assert executor.submitted == []
+
+
+def test_max_concurrent_positions_of_two_allows_a_second_submission() -> None:
+    executor = DryRunExecutor()
+    existing_position = PositionState(ticket=900011, symbol=SYMBOL, side="BUY", volume=0.01,
+                                       price_open=100.0, profit=0.0, magic=MAGIC)
+    account = MockAccountReader(
+        account_state=AccountState(login=180375, server="ThinkMarkets-Demo", balance=10000.0,
+                                    equity=10000.0, margin_free=10000.0, trade_mode="DEMO"),
+        positions=[existing_position], orders=[],
+    )
+
+    result = asyncio.run(run_runner_cycle(
+        market_data=_market_data(UPWARD_CLOSES), account=account, executor=executor,
+        symbol=SYMBOL, timeframe="M5", bars_count=len(UPWARD_CLOSES),
+        runner_config=RunnerStrategyConfig(max_concurrent_positions=2),
+        money_config=MoneyConfig(lot_size_mode="fixed", fixed_lot=0.02),
+        caps=ExposureCaps(max_open_lots=10.0, budget_max_lots=10.0), magic=MAGIC,
+    ))
+
+    assert result is not None
+    assert executor.submitted == [result.order_plan]
+
+
+def test_no_existing_positions_still_submits_normally() -> None:
+    """Confirms the default max_concurrent_positions=1 doesn't block the ordinary, no-prior-
+    position case -- the existing test_long_signal_reaches_the_dry_run_executor already covers
+    this implicitly, but this makes the "0 existing < 1 limit" boundary explicit."""
+    executor = DryRunExecutor()
+    result = _run(_market_data(UPWARD_CLOSES), executor)
+
+    assert result is not None
+    assert executor.submitted == [result.order_plan]
+
+
 # ---------- Phase 7: failure injection ----------
 # Unlike run_grid_cycle, run_runner_cycle makes at most one submit() call -- there is no
 # "partial results to preserve" scenario here, so a raise at any stage should simply propagate

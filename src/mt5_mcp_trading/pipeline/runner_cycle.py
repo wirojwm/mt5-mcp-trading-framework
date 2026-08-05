@@ -9,6 +9,15 @@ that guard is about pending orders sitting at a price, and runner produces price
 orders. account.get_orders() is still called, only to compute pending_lots for the exposure
 cap, not for duplicate detection.
 
+check_position_limit() (risk/symbol_guards.py) IS new here -- added to fix a real, previously-
+invisible gap (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md, "Fix runner's re-entry throttle"):
+without it, this function had no protection against re-entering the same direction repeatedly
+beyond the raw lot-based exposure cap, so every cycle where the signal stayed directional and
+any exposure "slot" was free, it opened another position. A 10,000-cycle backtest against real
+BTCUSD M1 history produced 9,881 trades and -0.159R expectancy before this fix, traced to
+exactly this. RunnerStrategyConfig.max_concurrent_positions (default 1) controls it -- open to
+tuning like every other field there.
+
 `state_store` (optional): see grid_cycle.py's module docstring for the full explanation --
 same magic=0 quirk, same fix. When supplied, positions/orders are read unfiltered and
 cross-referenced against LocalOrderRecord.magic instead of trusting the broker's client-side
@@ -26,6 +35,7 @@ from mt5_mcp_trading.mt5_adapter.interfaces import AccountReader, OrderExecutor
 from mt5_mcp_trading.order_planning.plan import build_order_plan
 from mt5_mcp_trading.risk.combine import combine
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps, check_exposure_cap
+from mt5_mcp_trading.risk.symbol_guards import check_position_limit
 from mt5_mcp_trading.sizing.money import MoneyConfig, decide_lot, to_sized_intent
 from mt5_mcp_trading.state.store import StateStore
 from mt5_mcp_trading.strategy.runner import (
@@ -79,7 +89,8 @@ async def run_runner_cycle(
     sized = to_sized_intent(intent, lot_decision)
 
     exposure_decision = check_exposure_cap(open_lots, pending_lots, sized.volume, caps)
-    combined = combine([exposure_decision])
+    position_limit_decision = check_position_limit(positions, runner_config.max_concurrent_positions)
+    combined = combine([exposure_decision, position_limit_decision])
 
     if not combined.approved:
         _logger.info("[RUNNER] %s %s rejected (%s): %s",

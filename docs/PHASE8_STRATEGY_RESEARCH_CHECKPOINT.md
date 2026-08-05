@@ -347,25 +347,81 @@ pytest tests/test_architecture.py -q -> 13 passed
 `tests/unit/test_backtest_engine.py` (new),
 `scripts/run_demo_execution_backtest_btcusd_m1.py` (new), this checkpoint doc.
 
+## Fix runner's re-entry throttle — production code change, decided and shipped
+
+User decided: fix the gap now, before Step 4/5, rather than tune parameters on top of it. This is
+the first production-code change of Phase 8 — everything before this was research/backtest-only.
+
+**Design**: at most `RunnerStrategyConfig.max_concurrent_positions` (new field, default `1`) open
+runner positions per magic at a time — the simplest, most conservative option considered (vs. a
+same-direction-only dedup or a time-based cooldown, both more complex and each still requiring
+their own tuning question Step 5 would have to answer anyway). Implemented as a new pure guard,
+`risk/symbol_guards.py`'s `check_position_limit(positions, max_concurrent)`, following the exact
+existing pattern (`check_duplicate_order`'s neighbor in the same module, combined via
+`combine([...])` alongside `check_exposure_cap`, same as every other guard in this codebase — "no
+guard here may ever be skippable by another guard passing," per `AGENTS.md`'s safety rules).
+Wired into `pipeline/runner_cycle.py` as one more entry in the existing `combine([...])` list —
+no new control flow, no special-casing.
+
+**Tests**: +4 unit tests for `check_position_limit()` itself (approved/rejected at/below/above the
+limit), +3 integration tests in `test_runner_dry_run_pipeline.py` — the exact regression this fix
+targets (an existing open position blocks a new submission even with a deliberately generous
+exposure cap, proving the position-count guard is what's blocking it, not exposure), a
+higher-limit case (`max_concurrent_positions=2` allows a second position), and an explicit
+"0 existing < default limit of 1" boundary check. Confirmed the pre-existing magic=0-quirk
+regression test (`test_state_store_recovers_exposure_visibility_despite_broker_magic_zero`) still
+passes unchanged — this fix doesn't interact with that bug's fix, since both guards are subject
+to the same magic-filter blindness/recovery mechanism identically.
+
+```
+pytest -q                        -> 404 passed (397 previously + 7 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Re-ran the real backtest to prove the fix actually helps, not just assume it** —
+`run_backtest()` reuses `run_runner_cycle()` completely unmodified, so the fix flowed through
+automatically on the next run, same real cached `BTCUSD` `M1` data, same `cycle_interval_bars=5`:
+
+| Strategy | Trades (before → after) | Win rate (before → after) | Expectancy (before → after) | Max drawdown (before → after) |
+|---|---|---|---|---|
+| grid (magic 71101) | 43 → 43 (unchanged, as expected — this fix never touches grid) | 55.8% → 55.8% | −0.308 R → −0.308 R | 13.72 R → 13.72 R |
+| runner (magic 72101) | 9,881 → **4,961** | 28.0% → 27.3% | −0.159 R → **−0.182 R** | 1,662.0 R → **950.0 R** |
+
+**Honest read of this, not oversold**: the fix did exactly what it was designed to do — trade
+count roughly halved (a far more plausible frequency) and max drawdown dropped 43% (1,662 R →
+950 R), a real, substantial risk-management improvement. It did **not** fix runner's underlying
+negative per-trade edge — expectancy is essentially unchanged (very slightly worse, within
+noise). That's expected and correct: a re-entry throttle bounds *how much* a losing edge can
+compound, it was never going to turn a negative-expectancy strategy positive. Fixing the
+per-trade edge itself is squarely Step 4 (cost modeling)/Step 5 (parameter tuning)'s job, still
+ahead. Grid's numbers are bit-for-bit identical before/after, confirming this change is exactly
+as scoped — it touches nothing outside `runner_cycle.py`/`RunnerStrategyConfig`.
+
+No order, no live/trading call this step — one real read-only `get_symbol_info` call as part of
+the backtest re-run, same as before. Process cleanup confirmed clean.
+
+**Files changed this entry**: `src/mt5_mcp_trading/risk/symbol_guards.py` (modified — new
+`check_position_limit()`), `src/mt5_mcp_trading/strategy/runner.py` (modified — new
+`max_concurrent_positions` field), `src/mt5_mcp_trading/pipeline/runner_cycle.py` (modified —
+wired in), `tests/unit/test_risk_symbol_guards.py` (modified, +4),
+`tests/integration/test_runner_dry_run_pipeline.py` (modified, +3), this checkpoint doc.
+
 ## Exact next smallest task
 
-**Steps 1, 2, and 3 are all done.** Step 4 (transaction-cost/stress modeling — a sensitivity
-table at 1x/2x/5x observed spread, using the now-working engine) is next in the originally
-scoped order. Given what Step 3 found, though, there's a real decision to make first, not
-technical work: does Step 5 (parameter tuning) proceed against runner exactly as currently
-designed (no re-entry throttle), or is fixing that gap itself proposed as a separate,
-explicitly-approved step before tuning parameters on top of it? Recommend raising this
-explicitly rather than silently picking one.
+**Steps 1–3 done; runner's re-entry throttle fixed and live-proven via the backtest engine.**
+Step 4 (transaction-cost/stress modeling — a sensitivity table at 1x/2x/5x observed spread) is
+next in the originally scoped order, followed by Step 5 (parameter tuning) — both strategies
+still show negative expectancy at current defaults, so there's real work ahead before any
+"validated edge" claim, but the risk-management gap this session found and fixed is now closed
+and proven, not just assumed fixed.
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 3 is now fully done — the backtest engine is
-built, tested, and was run against the real cached BTCUSD M1 history: both grid and runner show
-negative expectancy at current default parameters, and runner has a real, previously-invisible
-missing re-entry throttle found along the way), confirm git status is clean at the latest commit,
-then ask me what to do next — Step 4 (cost/stress modeling) is next in sequence, but whether to
-address runner's missing re-entry throttle before or alongside Step 5's tuning is an open
-decision worth raising explicitly first."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (runner's re-entry throttle fix is the most recent
+entry — RunnerStrategyConfig.max_concurrent_positions=1 by default, live-proven via the backtest
+engine to cut runner's trade count roughly in half and max drawdown by 43%, though expectancy is
+still negative and unchanged by this fix), confirm git status is clean at the latest commit, then
+ask me what to do next — Step 4 (cost/stress modeling) is next in sequence."

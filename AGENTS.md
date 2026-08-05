@@ -525,9 +525,21 @@ not done here, to avoid designing ahead of what's actually been asked for.
   43 trades, −0.308 R; runner: 9,881 trades, −0.159 R, 1,662 R max drawdown) — runner's volume and
   drawdown trace to a real, previously-invisible strategy gap `run_runner_cycle()`'s own docstring
   already admits: no re-entry throttle beyond the raw exposure cap. **First read, not a verdict**
-  — Step 4/5 haven't run yet, no production strategy code was touched. Next: Step 4 (cost/stress
-  modeling), but whether to fix runner's missing re-entry throttle before or alongside Step 5's
-  tuning is an open decision to raise explicitly, not silently pick.
+  — Step 4/5 hadn't run yet, no production strategy code touched at this point.
+  **Runner's re-entry throttle: fixed, this phase's first production code change.** User decided
+  to fix it now rather than tune on top of it. New `risk/symbol_guards.py` guard,
+  `check_position_limit()` (same pattern as `check_duplicate_order`, combined via `combine([...])`
+  alongside the exposure cap — no guard skippable by another passing), gated by a new
+  `RunnerStrategyConfig.max_concurrent_positions` field (default `1`: at most one open runner
+  position per magic at a time, the simplest option considered). +7 tests. **Live-proven, not just
+  assumed correct**: re-ran the same real backtest (which reuses `run_runner_cycle()` unmodified,
+  so the fix flowed through automatically) — runner's trade count roughly halved (9,881 → 4,961)
+  and max drawdown fell 43% (1,662 R → 950 R); expectancy is essentially unchanged (−0.159 R →
+  −0.182 R, within noise) — **exactly the expected, honest outcome**: a re-entry throttle bounds
+  how much a losing edge compounds, it doesn't fix the edge itself. Grid's numbers are bit-for-bit
+  identical before/after, confirming the fix touches nothing outside `runner_cycle.py`. Next: Step
+  4 (cost/stress modeling), then Step 5 (tuning) — both strategies still show negative expectancy,
+  real work remains before any "validated edge" claim.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
