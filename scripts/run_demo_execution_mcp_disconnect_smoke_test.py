@@ -53,6 +53,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -80,16 +81,20 @@ OVERALL_TIMEOUT_SECONDS = 60.0
 _logger = get_logger("mt5_mcp_trading.scripts.mcp_disconnect_smoke_test")
 
 
-def _find_processes(marker: str) -> dict[int, str]:
-    """Returns {pid: command_line} for every python.exe process whose command line contains
-    `marker`, via Get-CimInstance Win32_Process (the same technique already used and documented
-    in docs/PIPELINE_WIRING_CHECKPOINT.md, "Step 15", to diagnose the credential-exposure issue).
-    Command lines no longer contain credentials since that fix, so this is safe to enumerate."""
+def _find_processes(marker: str) -> dict[int, tuple[str, Optional[int]]]:
+    """Returns {pid: (command_line, parent_pid)} for every python.exe process whose command line
+    contains `marker`, via Get-CimInstance Win32_Process (the same technique already used and
+    documented in docs/PIPELINE_WIRING_CHECKPOINT.md, "Step 15", to diagnose the credential-
+    exposure issue). Command lines no longer contain credentials since that fix, so this is safe
+    to enumerate. ParentProcessId is included so a candidate extended-server process can be
+    confirmed as an actual CHILD of a specific wrapper PID, not just something that happens to
+    share the marker substring and started around the same time -- see the real ambiguous-diff
+    incident recorded in the checkpoint doc that motivated this."""
     escaped = marker.replace("'", "''")
     ps_script = (
         "$procs = Get-CimInstance Win32_Process | "
         "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*" + escaped + "*' } | "
-        "Select-Object ProcessId, CommandLine; "
+        "Select-Object ProcessId, ParentProcessId, CommandLine; "
         "ConvertTo-Json -InputObject @($procs) -Compress"
     )
     result = subprocess.run(
@@ -102,7 +107,13 @@ def _find_processes(marker: str) -> dict[int, str]:
     parsed = json.loads(result.stdout)
     if isinstance(parsed, dict):
         parsed = [parsed]
-    return {int(p["ProcessId"]): str(p.get("CommandLine") or "") for p in parsed}
+    return {
+        int(p["ProcessId"]): (
+            str(p.get("CommandLine") or ""),
+            int(p["ParentProcessId"]) if p.get("ParentProcessId") is not None else None,
+        )
+        for p in parsed
+    }
 
 
 def _tree_kill(pid: int) -> None:
@@ -115,8 +126,10 @@ def _hard_kill_single(pid: int) -> None:
     subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, text=True)
 
 
-def _diff_new_pids(before: dict[int, str], after: dict[int, str]) -> dict[int, str]:
-    return {pid: cmd for pid, cmd in after.items() if pid not in before}
+def _diff_new_pids(
+    before: dict[int, tuple[str, Optional[int]]], after: dict[int, tuple[str, Optional[int]]],
+) -> dict[int, tuple[str, Optional[int]]]:
+    return {pid: info for pid, info in after.items() if pid not in before}
 
 
 async def _run(results: dict[str, object]) -> None:
@@ -151,6 +164,15 @@ async def _run(results: dict[str, object]) -> None:
         results["new_wrapper_pids"] = list(new_wrapper.keys())
         results["new_server_pids"] = list(new_server.keys())
 
+        # Deliberately NOT recording anything into results["_new_*_pids_for_cleanup"] before this
+        # point: an ambiguous diff (not exactly 1 of either process) means we cannot tell "our
+        # own leaked process" apart from something unrelated (e.g. a concurrent connection from
+        # this project's own Claude Code integration, which uses this exact same wrapper script --
+        # see mcp_adapter/client.py's docstring). Auto-killing an unverified set via a safety-net
+        # `finally` block would defeat the whole purpose of aborting here instead of guessing.
+        # This is not hypothetical: the first real run of this script hit exactly this case (2 new
+        # wrapper + 2 new extended-server processes instead of 1 of each) and correctly aborted
+        # without killing anything -- see docs/PIPELINE_WIRING_CHECKPOINT.md.
         if len(new_wrapper) != 1:
             raise RuntimeError(
                 f"Expected exactly 1 new wrapper process, found {len(new_wrapper)}: "
@@ -158,7 +180,7 @@ async def _run(results: dict[str, object]) -> None:
                 f"happen if another McpClient connection (this project's or something else's) "
                 f"started/stopped concurrently; re-run once nothing else is connecting."
             )
-        wrapper_pid, wrapper_cmdline = next(iter(new_wrapper.items()))
+        wrapper_pid, (wrapper_cmdline, _wrapper_ppid) = next(iter(new_wrapper.items()))
         # Extra check beyond the diff itself: confirm the new process's command line also
         # contains the exact resolved Python executable path we asked demo_execution_session()
         # to launch with. Found empirically while building this script that a marker substring
@@ -172,6 +194,30 @@ async def _run(results: dict[str, object]) -> None:
                 f"expected Python executable path ({PYTHON}) -- refusing to kill an unverified "
                 f"process. Command line was: {wrapper_cmdline!r}"
             )
+        if len(new_server) != 1:
+            raise RuntimeError(
+                f"Wrapper process pid={wrapper_pid} confirmed, but expected exactly 1 new "
+                f"extended-server process, found {len(new_server)}: {list(new_server.keys())} "
+                f"-- aborting before killing anything. Cannot confirm which (if any) is the "
+                f"wrapper's own child."
+            )
+        server_pid, (_server_cmdline, server_ppid) = next(iter(new_server.items()))
+        if server_ppid != wrapper_pid:
+            raise RuntimeError(
+                f"New extended-server process pid={server_pid} has ParentProcessId={server_ppid}, "
+                f"not {wrapper_pid} (this run's confirmed wrapper) -- it is not this run's own "
+                f"child process. Refusing to kill an unverified process."
+            )
+
+        # Both processes are now confirmed as this run's own (exactly 1 of each, wrapper's
+        # command line matches the exact Python executable used, server is a direct child of the
+        # confirmed wrapper). Record them now, immediately -- not at the end of this function --
+        # so that main()'s `finally` safety net has real PIDs to check even if something below
+        # this point raises unexpectedly (a genuine gap found in this script's first real run:
+        # these were previously only recorded after Step 5 completed, so an earlier abort left
+        # the safety net with nothing to act on).
+        results["_new_wrapper_pids_for_cleanup"] = [wrapper_pid]
+        results["_new_server_pids_for_cleanup"] = [server_pid]
 
         # Step 3: race a second call against a tree-kill. Best-effort, not guaranteed -- a real
         # account read is typically sub-second, unlike Stage 1's fully controllable stub sleep.
@@ -196,16 +242,16 @@ async def _run(results: dict[str, object]) -> None:
 
         # Step 4: verify process cleanup. Give the OS a moment to finish reaping, then re-scan.
         await asyncio.sleep(POST_KILL_SETTLE_SECONDS)
-        still_present = {
-            **{pid: cmd for pid, cmd in _find_processes(WRAPPER_MARKER).items() if pid in new_wrapper},
-            **{pid: cmd for pid, cmd in _find_processes(SERVER_MARKER).items() if pid in new_server},
-        }
+        confirmed_pids = {wrapper_pid, server_pid}
+        still_present = confirmed_pids & (
+            set(_find_processes(WRAPPER_MARKER)) | set(_find_processes(SERVER_MARKER))
+        )
         if still_present:
             _logger.warning("Process(es) survived the tree-kill, force-killing individually: %s",
-                             list(still_present.keys()))
+                             list(still_present))
             for pid in still_present:
                 _hard_kill_single(pid)
-        results["orphans_found_and_force_killed"] = list(still_present.keys())
+        results["orphans_found_and_force_killed"] = list(still_present)
 
         # Step 5: the deterministic assertion. The connection is now known-dead -- a call made
         # against it must fail the same clean way Stage 1 found, not hang.
@@ -218,9 +264,6 @@ async def _run(results: dict[str, object]) -> None:
             results["post_kill_call_outcome"] = f"raised {type(exc).__module__}.{type(exc).__name__} after {elapsed:.2f}s (expected): {exc!r}"
             results["post_kill_call_is_exception_subclass"] = isinstance(exc, Exception)
             results["post_kill_call_is_exception_group"] = isinstance(exc, BaseExceptionGroup)
-
-        results["_new_wrapper_pids_for_cleanup"] = list(new_wrapper.keys())
-        results["_new_server_pids_for_cleanup"] = list(new_server.keys())
 
 
 async def main() -> None:
