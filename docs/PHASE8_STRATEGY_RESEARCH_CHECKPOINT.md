@@ -587,28 +587,90 @@ call already covered by prior approval for this script). Process cleanup confirm
 **Files changed this entry**: `scripts/run_demo_execution_backtest_tuning_sweep.py` (modified —
 `GRID_STEP_MULT_CANDIDATES` widened to include 0.15/0.2/0.25), this checkpoint doc.
 
+## Step 6 — walk-forward / out-of-sample validation: run, and honestly reported
+
+`scripts/run_demo_execution_backtest_test_window_validation.py` (new): one real, read-only
+`get_symbol_info` call, reused across both configs; everything else replays offline against the
+held-out 19,000-bar test window (`2026-07-22` → `2026-08-05`) only — `train_bars` is loaded via
+the same `split_bars(bars, train_fraction=0.8)` call Step 5 used, then explicitly `del`eted
+without ever being passed into `run_backtest()`, so it's structurally impossible for this script
+to leak training-window data into the result. Runs the current production defaults and Step 5's
+locked candidates back-to-back against the identical test window, in one report.
+
+**Real results, test window, never touched before this run**:
+
+| | current defaults | Step 5 candidates |
+|---|---|---|
+| grid trades | 45 | 49 |
+| grid win rate | 55.6% | 61.2% |
+| grid expectancy | −0.311 R | −0.296 R |
+| grid drawdown | 14.240 R | 14.650 R |
+| runner trades | 1,905 | 550 |
+| runner win rate | 25.3% | 30.0% |
+| runner expectancy | −0.241 R | −0.100 R |
+| runner drawdown | 462.995 R | 62.999 R |
+
+**Runner's candidate validates out-of-sample.** Training showed a 0.057 R expectancy gain
+(−0.122 R → −0.065 R) and a 79% drawdown cut (829 R → 172 R) from `sl_atr_mult=1.5→3.0`. On the
+held-out window the gain is just as real — actually larger in expectancy terms (−0.241 R →
+−0.100 R, a 0.141 R gain) and the drawdown cut is proportionally similar (463 R → 63 R, ~86%).
+Both trade counts (1,905 / 550) are far above the 30-trade minimum. This is a genuine,
+out-of-sample-confirmed risk-reduction finding — still net-negative overall (no positive edge
+claimed), but a real improvement, not a training-window artifact.
+
+**Grid's candidate does NOT validate — the disappointing-but-useful result Step 6 exists to
+catch.** Training showed a 0.077 R apparent edge for `step_mult=0.25` over the 0.4 default
+(−0.302 R → −0.225 R). Out-of-sample that gap collapses to 0.015 R (−0.311 R → −0.296 R) —
+statistically indistinguishable given 45–49-trade samples (above the 30-trade floor, but thin,
+short of the 50+ preferred for real confidence). A textbook overfitting signature: most of the
+apparent training-window edge was noise, not signal. Grid's negative expectancy (present at
+similar magnitude under both configs, both windows) looks like a persistent structural property
+of the strategy, not something this parameter sweep fixes.
+
+**Honest conclusion, no action taken automatically**: runner's `sl_atr_mult=3.0`/
+`tp_atr_mult=6.0` is justified by both training and test evidence; grid's `step_mult=0.25` is
+not — the current default and the candidate are indistinguishable on held-out data, so this
+sweep does not support changing grid's default. Neither strategy shows a positive edge on this
+window; both remain net-negative. **No production default (`GridStrategyConfig`/
+`RunnerStrategyConfig`) has been changed by anything in Phase 8 to date** — that remains a
+separate, explicitly-approved decision per `AGENTS.md`'s "Explicitly not in Phase 8" section,
+not made here.
+
+```
+pytest -q                        -> 413 passed (unchanged -- only a new read-only script added)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call beyond the one read-only `get_symbol_info` pull. Process cleanup
+confirmed clean.
+
+**Files changed this entry**: `scripts/run_demo_execution_backtest_test_window_validation.py`
+(new), this checkpoint doc.
+
 ## Exact next smallest task
 
-**Step 5 is now fully done**: both tables interpreted, grid's range widened and re-run, a
-candidate parameter set decided for each strategy (runner `sl_atr_mult=3.0`, grid
-`step_mult=0.25`). **No production default has been changed** — `GridStrategyConfig`/
-`RunnerStrategyConfig` still ship with their original defaults; only backtest sweep runs have used
-these candidates so far. **Step 6 (walk-forward/out-of-sample validation) has not started. No
-test-window data has been touched by anything in this phase to date.** Next smallest step: run the
-locked candidate set (and, for comparison, the current defaults) against the held-out 19,000-bar
-test window (`2026-07-22` → `2026-08-05`) and report both honestly — a disappointing result there
-is a valid, useful phase outcome per this step's own exit criteria, not a failed phase. Requires
-its own explicit go-ahead before any test-window code is written or run, same standing rule as
-every prior step.
+**Step 6 is now done. Phase 8's core research question is answered for this window**: neither
+grid nor runner has a validated positive edge; runner's SL/TP widening is a real, out-of-sample-
+confirmed risk-reduction improvement worth considering as a production change, grid's step-size
+candidate is not supported by held-out evidence and should not be changed on this sweep's basis.
+**No production code has been changed anywhere in Phase 8.** Next smallest step is a decision, not
+more research: whether to (a) adopt runner's `sl_atr_mult=3.0`/`tp_atr_mult=6.0` as the new
+`RunnerStrategyConfig` default — its own separate, explicitly-approved production change per
+`AGENTS.md`'s "Explicitly not in Phase 8" section, not automatic just because Step 6 validated it
+— (b) leave both strategies exactly as they are and treat Phase 8 as complete with a "no change
+justified" verdict for grid and an optional one for runner, or (c) pursue Step 7 (regime
+analysis, lowest priority, only if 5–6 show regime-dependence worth investigating — they don't
+obviously, per the results above). This needs an explicit choice, not an assumed default.
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 5 is DONE — candidate parameter set decided:
-runner sl_atr_mult=3.0/tp_atr_mult=6.0, grid step_mult=0.25, both training-window evidence only,
-no production default changed). Confirm git status is clean at the latest commit and no live
-process is running, then ask me what to do next — running the locked candidate set against the
-held-out test window is Step 6, and needs my explicit go-ahead before any test-window code is
-written or run."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 6 is DONE — runner's sl_atr_mult=3.0/
+tp_atr_mult=6.0 validated out-of-sample as a real risk-reduction improvement; grid's
+step_mult=0.25 did NOT validate out-of-sample, current default stands; no production default
+changed anywhere in Phase 8). Confirm git status is clean at the latest commit and no live
+process is running, then ask me what to do next — whether to adopt runner's validated candidate
+as the new production default is the next decision, and needs my explicit go-ahead before any
+production strategy code changes."

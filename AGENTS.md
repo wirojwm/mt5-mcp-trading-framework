@@ -559,7 +559,16 @@ not done here, to avoid designing ahead of what's actually been asked for.
   found grid's real interior peak at 0.25, not a continuing low-edge trend), and a candidate
   parameter set decided for Step 6: runner `sl_atr_mult=3.0`/`tp_atr_mult=6.0`, grid
   `step_mult=0.25`. **No production default changed** — both remain training-window candidates
-  only. Step 6/test window still untouched. Full detail in
+  only. **Step 6 (walk-forward/out-of-sample validation) now done**: ran both the current
+  defaults and the Step 5 candidates against the held-out test window for the first time.
+  Runner's `sl_atr_mult=3.0`/`tp_atr_mult=6.0` **validated out-of-sample** — the training-window
+  improvement held (actually grew) on unseen data, both in expectancy (−0.241 R → −0.100 R) and
+  drawdown (463 R → 63 R). Grid's `step_mult=0.25` **did not validate** — its apparent
+  training-window edge (0.077 R) collapsed to noise (0.015 R) out-of-sample, a textbook
+  overfitting signature; the current grid default stands. Neither strategy shows a positive edge
+  on this window. **No production default changed anywhere in Phase 8 to date.** Next decision:
+  whether to adopt runner's validated candidate as the new production default — a separate,
+  explicitly-approved step, not automatic. Full detail in
   `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
