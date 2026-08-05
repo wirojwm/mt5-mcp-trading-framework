@@ -466,9 +466,10 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
 Full session-by-session detail for the "wire real adapters" step (now fully complete) is in
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
 `docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`, Phase 7 in
-`docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`, and pipeline wiring in
-`docs/PIPELINE_WIRING_CHECKPOINT.md` — read whichever is relevant before continuing that work in
-a new session.
+`docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`, pipeline wiring in
+`docs/PIPELINE_WIRING_CHECKPOINT.md`, and Phase 8 in
+`docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md` — read whichever is relevant before continuing that
+work in a new session.
 
 ## Forward phases (named, not yet scoped)
 
@@ -476,17 +477,24 @@ Referenced informally across pipeline-wiring checkpoint entries (`docs/PIPELINE_
 "Remaining roadmap") but never formally defined here until now. Unlike phases 0–7 above (phases of
 *building* this codebase), these are phases of *running and tuning* the strategy once built — a
 different kind of work, each still requiring its own explicit scoping and approval before any code
-is written, per this project's normal workflow. None of the three below has a checkpoint doc yet,
-and writing detailed entry/exit criteria for any of them is itself a future, explicitly-approved
-task — not done here, to avoid designing ahead of what's actually been asked for.
+is written, per this project's normal workflow. Phase 9 and Live pilot have no checkpoint doc yet,
+and writing detailed entry/exit criteria for either is itself a future, explicitly-approved task —
+not done here, to avoid designing ahead of what's actually been asked for.
 
 - **Phase 8 (strategy research, edge validation, parameter tuning, regime analysis,
-  transaction-cost/stress testing, walk-forward/out-of-sample validation)**: not started, not
-  scoped. No tuning framework, walk-forward harness, regime classifier, or transaction-cost model
-  exists anywhere in this codebase. Phase 7's live/MCP-adjacent failure-testing gate is now
-  cleared — Stage 3 Parts 1–2 done and live-verified, Part 3 explicitly accepted as an open risk
-  (not completed) — so this is no longer blocked on that specific item, but still requires its own
-  explicit scoping/approval before any code is written, same as every phase in this project.
+  transaction-cost/stress testing, walk-forward/out-of-sample validation)**: **scoped, not
+  started** — full detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`. No tuning framework,
+  walk-forward harness, regime classifier, or transaction-cost model exists anywhere in this
+  codebase yet; no step has been built. Phase 7's live/MCP-adjacent failure-testing gate is
+  cleared (Stage 3 Parts 1–2 done and live-verified, Part 3 explicitly accepted as an open risk),
+  so Phase 8 is no longer blocked on that. **Decided while scoping**: `strategy/guard.py`'s
+  EMA exit-guard (`evaluate_guard()` — real, ported, unit-tested, but never wired into `pipeline/`
+  or any live script, confirmed by grep) is explicitly out of scope for this phase; Phase 8 tunes
+  and validates grid/runner exactly as they run today, with no exit-guard. Wiring the guard in is
+  a separate, not-yet-scoped effort, closer in kind to "pipeline wiring" than to tuning
+  already-deployed behavior. Requires its own explicit scoping/approval before any code is
+  written, same as every phase in this project — the checkpoint doc's "Exact next smallest task"
+  is picking a single edge-validation target metric, a conversation, no code.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
