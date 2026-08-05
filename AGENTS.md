@@ -183,16 +183,24 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     version couldn't (no subprocess or pipe exists in that test at all). Confirmed the timeout,
     not the stub's own sleep completing, is what ends the call, and that cleanup of a still-alive,
     mid-sleep child doesn't hang either.
-  - **Still open, not done by this step (Stage 3, live-adjacent, needs its own separate explicit
-    approval before any code or live call)**: a real disconnect has never been forced against the
-    actual demo-connected subprocess (only a throwaway stub) — notably, the real server isn't a
-    single process like the stub: `run_metatrader_mcp_stdio.py` spawns
-    `metatrader_mcp_extended_server.py` as a nested child via `subprocess.run()`, so a real test
-    must tree-kill and verify no orphaned MT5-connected grandchild is left running, a risk the
-    stub's flat process model never had to account for. The "ambiguous in-flight" case — a real
-    order reaches the broker but the response is lost to the same disconnect — also remains
-    entirely untested, since `McpOrderExecutor` only writes local state *after* its MCP call
-    returns, so this can only ever be resolved against a real broker, never a mock.
+  - **Stage 3 Part 2 written, NOT YET RUN**: `scripts/run_demo_execution_mcp_disconnect_smoke_test.py`
+    — the first script in this whole effort that touches the real demo-connected MCP server. Goes
+    through the real `demo_execution_session()`, makes only a read-only `get_account_info` call
+    (no `executor` reference anywhere in the file), identifies its own newly-spawned wrapper
+    process by diffing a process snapshot taken before/after connecting (never by a raw
+    command-line substring match alone — confirmed necessary, not just cautious: while building
+    this, a substring match falsely matched an unrelated shell process whose own `-c` inline
+    script text happened to contain the marker string), tree-kills it
+    (`taskkill /F /T /PID`, since the real server is a nested wrapper→extended-server child
+    process unlike the stub's flat one), and re-verifies both PIDs are actually gone afterward
+    with a fallback direct kill if not. **Not yet approved to run.**
+  - **Still open, not done by this step (Stage 3 Parts 2's live run, and Part 3, live-adjacent,
+    each needs its own separate explicit approval before running)**: a real disconnect has never
+    actually been forced against the real demo-connected subprocess yet (the script above is
+    written but not executed). The "ambiguous in-flight" case — a real order reaches the broker
+    but the response is lost to the same disconnect (Stage 3 Part 3) — remains entirely untested,
+    since `McpOrderExecutor` only writes local state *after* its MCP call returns, so this can
+    only ever be resolved against a real broker, never a mock.
   See "Forward phases" below — do not start Phase 8 until Stage 3 above is explicitly completed or
   accepted as an open risk.
 - **Pipeline wiring (post-Phase 7): in progress, first live cycle done and cleaned up.** Not

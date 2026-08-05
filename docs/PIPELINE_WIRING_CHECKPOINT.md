@@ -1761,27 +1761,98 @@ stub as Stage 1). No production code changed.
 **Files changed this addendum**: `tests/integration/test_mcp_client_disconnect.py` (modified,
 +1 test), `AGENTS.md`, this checkpoint doc.
 
+## Step 32 addendum 2 — Stage 3 Part 2 scoped and written, deliberately NOT run
+
+Same session. User approved scoping Stage 3 Part 2 (real subprocess/process-tree disconnect,
+read-only call only), then approved building the script but explicitly held back running it —
+two separate approvals, matching this project's own established practice of writing vs. running a
+real script being two distinct decision points.
+
+**Design decisions made while scoping, before writing anything**:
+- Goes through the real `demo_execution_session()` (not a bespoke `McpClient` hookup) — the
+  actual composition root every live script uses, including `require_demo_account_kind()`'s hard
+  gate. `trading_enabled=True` is unavoidable (a property of `mode=DEMO_EXECUTION`, not an
+  independent flag — `config/settings.py`) but poses no incremental risk: no `TRADING`-classified
+  tool is ever called, `executor`/`state_store` from the session tuple are unpacked and
+  immediately discarded (`del executor, state_store`), and `ToolRegistry` still gates any
+  trading-tool call regardless.
+- The real server is two nested processes, not one: `run_metatrader_mcp_stdio.py` (what
+  `McpClient` actually spawns) launches `metatrader_mcp_extended_server.py` as a child via
+  `subprocess.run()` with *inherited*, not proxied, stdio. Killing only the outer wrapper is not
+  guaranteed to sever the pipe or take the grandchild with it — found while re-reading the
+  wrapper script during scoping, not assumed. Design: tree-kill (`taskkill /F /T /PID`) as the
+  primary mechanism, followed by an explicit re-scan confirming both PIDs are gone, with a direct
+  fallback kill of either individually if the tree-kill somehow missed one.
+- Belongs in `scripts/`, not `tests/`: Stage 1/2 are `pytest` tests specifically because they're
+  side-effect-free — a routine `pytest -q` (run constantly throughout this whole session as a
+  safety check) must never silently dial into the real demo account. Confirmed `pyproject.toml`'s
+  `testpaths = ["tests"]` already excludes `scripts/` from collection, so this can't regress that
+  guarantee even by accident.
+
+**Built**: `scripts/run_demo_execution_mcp_disconnect_smoke_test.py`. Five steps: (1) one baseline
+`get_account_info` call, to prove the real connection genuinely works before anything is broken;
+(2) identify the script's own newly-spawned wrapper process by diffing a `Get-CimInstance
+Win32_Process` snapshot taken immediately before/after connecting (never a raw command-line
+substring match alone -- see the concrete finding below); (3) race a second call against a
+tree-kill (best-effort, not guaranteed -- a real account read is typically sub-second, unlike
+Stage 1's fully controllable stub sleep; if the call completes anyway, that's informational, not
+a failure); (4) re-verify process cleanup, force-killing individually if either PID somehow
+survived the tree-kill; (5) the one deterministic assertion -- a call made against the
+now-confirmed-dead connection must fail the same clean way Stage 1 found (`McpError`, fast, a
+plain `Exception`, not `BaseExceptionGroup`), not hang. A `finally` block in `main()` re-kills
+anything still matching this run's own recorded PIDs regardless of how the script exits, as a
+last safety net.
+
+**Concrete finding while building, not just a theoretical concern**: tested the process-finding
+helper (`_find_processes()`) in isolation (read-only `Get-CimInstance` query, no MT5, no kill) and
+found it falsely matched the *test shell itself* -- the inline `python -c "..."` command used to
+run the test happened to contain the literal string `"run_metatrader_mcp_stdio.py"` inside its own
+source text (because that string was being passed as an argument to the function under test),
+which a raw substring match against `CommandLine` matched. This directly validates the
+before/after diffing design (the false positive would already have been in the "before" snapshot,
+so it would never appear as "new") rather than proving it unnecessary. Added one further
+strengthening after finding this: the diffed wrapper process's command line must also contain the
+exact resolved Python executable path (`str(PYTHON)`) used to launch it, a second independent
+fact under this script's own control, reducing the residual risk of a coincidental new unrelated
+process matching by substring alone.
+
+**Verified, read-only, no live call**: the script compiles (`py_compile`), imports cleanly via
+the same `importlib` technique Stage 2 used (module-level code is only constant/function
+definitions -- confirmed nothing runs at import time), and `_find_processes()` itself was
+exercised standalone (Win32_Process queries only, no kill, no MT5) to confirm the PowerShell/JSON
+parsing actually works, not just that it looks right. `pytest -q` still 356 passed (this script
+lives in `scripts/`, outside `testpaths`, so it was never collected).
+
+**Deliberately not run.** Writing it made no live call; running it is a separate action, same
+standing rule as every other real script in this project's history, and needs its own explicit
+go-ahead.
+
+**Files changed this addendum**: `scripts/run_demo_execution_mcp_disconnect_smoke_test.py` (new,
+not yet run), `AGENTS.md`, this checkpoint doc.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. Account is fully clean, nothing outstanding.
 
-1. Stage 3's remaining pieces — **Part 2** (real subprocess/process-tree disconnect against the
-   actual demo-connected wrapper, read-only call only, needs real demo credentials, zero order
-   risk) and **Part 3** (the "ambiguous in-flight order" case, needs a real order, highest risk,
-   recommended to decide separately rather than bundle in) — are scoped (see the Step 32 addendum
-   above) but neither is started. Both are live-adjacent and need their own explicit go-ahead,
-   ideally timed for a moment with zero standing account exposure (true right now). Part 1 (the
-   30s timeout path) is done, mock/stub-only, no live call.
-2. Otherwise, per the roadmap review, Phase 8 (strategy research/tuning) remains explicitly not
+1. **Part 2's script is written but deliberately not run**:
+   `scripts/run_demo_execution_mcp_disconnect_smoke_test.py` is ready — real subprocess/
+   process-tree disconnect against the actual demo-connected wrapper, read-only call only, needs
+   real demo credentials, zero order risk. Running it is the natural next step if continuing this
+   thread, and needs its own explicit go-ahead, ideally timed for a moment with zero standing
+   account exposure (true right now).
+2. **Part 3** (the "ambiguous in-flight order" case, needs a real order, highest risk,
+   recommended to decide separately rather than bundle in) remains scoped only, not started.
+3. Otherwise, per the roadmap review, Phase 8 (strategy research/tuning) remains explicitly not
    started, pending either Stage 3's remaining parts or an explicit decision to accept the
    remaining gaps as an open risk and proceed anyway.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (the Step 32 addendum is the most recent entry), confirm git
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 32 addendum 2 is the most recent entry), confirm git
 status is clean at the latest commit, confirm no live process is running, confirm the demo
 account is clean (no positions, no pending orders), confirm live testing is still paused, then
 ask me what to do next — do not run anything live without my explicit go-ahead first. Stage 3
-Part 1 (real 30s timeout, mock/stub-only) is done; Part 2 (real subprocess/process-tree
-disconnect, read-only call, needs demo credentials) and Part 3 (ambiguous in-flight order, needs
-a real order) are scoped but not started."
+Part 1 (real 30s timeout, mock/stub-only) is done; Part 2's script
+(scripts/run_demo_execution_mcp_disconnect_smoke_test.py, real subprocess/process-tree
+disconnect, read-only call, needs demo credentials) is written but NOT YET RUN; Part 3
+(ambiguous in-flight order, needs a real order) is scoped but not started."
