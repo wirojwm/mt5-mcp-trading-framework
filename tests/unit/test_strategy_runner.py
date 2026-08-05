@@ -88,7 +88,7 @@ def test_compute_stop_distances_uses_atr_when_available() -> None:
 
     assert sl_distance > 0
     assert tp_distance > 0
-    assert tp_distance > sl_distance  # tp_atr_mult (3.0) > sl_atr_mult (1.5) by default
+    assert tp_distance > sl_distance  # tp_atr_mult (6.0) > sl_atr_mult (3.0) by default
     assert tp_distance == pytest.approx(sl_distance * (config.tp_atr_mult / config.sl_atr_mult))
 
 

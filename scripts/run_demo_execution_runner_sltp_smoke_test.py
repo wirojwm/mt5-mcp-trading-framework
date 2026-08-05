@@ -120,8 +120,8 @@ async def main() -> None:
               f"volume_min={volume} ===")
 
         money_config = MoneyConfig(lot_size_mode="fixed", fixed_lot=volume)
-        runner_config = RunnerStrategyConfig()  # defaults: atr_period=14, sl_atr_mult=1.5,
-        # tp_atr_mult=3.0, min_stop_distance_points=10.0 -- the fixed code under test
+        runner_config = RunnerStrategyConfig()  # defaults: atr_period=14, sl_atr_mult=3.0,
+        # tp_atr_mult=6.0, min_stop_distance_points=10.0 -- the fixed code under test
 
         print(f"\n=== run_runner_cycle({SYMBOL!r}, magic={SMOKE_TEST_MAGIC}) against the real "
               f"McpOrderExecutor -- ONE cycle, no retry ===")

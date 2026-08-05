@@ -647,30 +647,65 @@ confirmed clean.
 **Files changed this entry**: `scripts/run_demo_execution_backtest_test_window_validation.py`
 (new), this checkpoint doc.
 
+## Runner's validated candidate adopted as the new production default
+
+User decided: adopt `sl_atr_mult=3.0`/`tp_atr_mult=6.0` now. This is Phase 8's second
+production-code change (the first was the re-entry throttle, above) and its first parameter
+value adopted directly from the tuning/validation work — grid's `step_mult` stays at its
+existing default (0.4), since Step 6 found no out-of-sample support for changing it.
+
+**Changed**: `RunnerStrategyConfig`'s field defaults in `src/mt5_mcp_trading/strategy/runner.py`
+— `sl_atr_mult`: `1.5` → `3.0`, `tp_atr_mult`: `3.0` → `6.0` (2:1 reward:risk ratio unchanged).
+Docstring comment updated to record the Step 5/6 evidence chain rather than calling these
+"open to tuning" placeholders. Two stale comments referencing the old literal values (a test
+comment, a smoke-test-script comment) updated to match — neither asserted the old numbers, so no
+test logic changed, only comment text.
+
+```
+pytest -q                        -> 413 passed (unchanged -- only defaults + comments changed)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call — this is a pure config-default change to source code, not a live
+script run. Every real call this project makes that constructs `RunnerStrategyConfig()` with no
+override (the real pipeline scripts, the loop, every smoke test) now uses the new default
+automatically; nothing has been run live against it yet.
+
+**Files changed this entry**: `src/mt5_mcp_trading/strategy/runner.py` (modified — new
+`sl_atr_mult`/`tp_atr_mult` defaults),
+`tests/unit/test_strategy_runner.py` (modified — one stale comment),
+`scripts/run_demo_execution_runner_sltp_smoke_test.py` (modified — one stale comment), this
+checkpoint doc.
+
 ## Exact next smallest task
 
-**Step 6 is now done. Phase 8's core research question is answered for this window**: neither
-grid nor runner has a validated positive edge; runner's SL/TP widening is a real, out-of-sample-
-confirmed risk-reduction improvement worth considering as a production change, grid's step-size
-candidate is not supported by held-out evidence and should not be changed on this sweep's basis.
-**No production code has been changed anywhere in Phase 8.** Next smallest step is a decision, not
-more research: whether to (a) adopt runner's `sl_atr_mult=3.0`/`tp_atr_mult=6.0` as the new
-`RunnerStrategyConfig` default — its own separate, explicitly-approved production change per
-`AGENTS.md`'s "Explicitly not in Phase 8" section, not automatic just because Step 6 validated it
-— (b) leave both strategies exactly as they are and treat Phase 8 as complete with a "no change
-justified" verdict for grid and an optional one for runner, or (c) pursue Step 7 (regime
-analysis, lowest priority, only if 5–6 show regime-dependence worth investigating — they don't
-obviously, per the results above). This needs an explicit choice, not an assumed default.
+**Runner's validated candidate is now the production default** (`sl_atr_mult=3.0`,
+`tp_atr_mult=6.0`). Grid's default is unchanged (`step_mult=0.4`) — Step 6 found no out-of-sample
+support for its candidate. Neither strategy shows a validated positive edge; runner's change is a
+real, evidence-backed risk reduction, not a claim of profitability. **This production default
+change has not been exercised live yet** — every real pipeline script that constructs
+`RunnerStrategyConfig()` with no override will pick it up automatically the next time it runs
+(dry-run, demo-execution, or the loop), but nothing has actually run against it in a live/demo
+context since the change. Remaining open items, any of which needs its own explicit go-ahead:
+- Live-verify the new default in the real pipeline (e.g. a single `STRATEGY="RUNNER"` demo cycle,
+  or a dry-run pipeline pass first) — proving the new SL/TP distances behave correctly end-to-end
+  against real `McpOrderExecutor`/broker constraints, not just in the offline backtest engine.
+- Step 7 (regime analysis) — lowest priority, only worth pursuing if a later look at these
+  results shows regime-dependence worth investigating; nothing so far obviously suggests it.
+- Otherwise, Phase 8 can be considered complete for its original scope (edge validation +
+  parameter tuning + walk-forward validation, all done) once the live-verification step above is
+  either done or explicitly deferred.
 
-**Live testing remains paused for anything order-related — this entire phase is research-only
-and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
+**Live testing remains paused for anything order-related — this entire phase has been
+research/read-only by design; adopting the new default was a source-code change only, and any
+further real MCP call (including a live verification run) still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 6 is DONE — runner's sl_atr_mult=3.0/
-tp_atr_mult=6.0 validated out-of-sample as a real risk-reduction improvement; grid's
-step_mult=0.25 did NOT validate out-of-sample, current default stands; no production default
-changed anywhere in Phase 8). Confirm git status is clean at the latest commit and no live
-process is running, then ask me what to do next — whether to adopt runner's validated candidate
-as the new production default is the next decision, and needs my explicit go-ahead before any
-production strategy code changes."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 6 is DONE and its validated candidate is now
+the production default — RunnerStrategyConfig.sl_atr_mult=3.0/tp_atr_mult=6.0 in
+src/mt5_mcp_trading/strategy/runner.py; grid's step_mult stays at 0.4, its candidate didn't
+validate out-of-sample). Confirm git status is clean at the latest commit and no live process is
+running, then ask me what to do next — the new runner default hasn't been exercised live yet, so
+live-verifying it (or explicitly deferring that) is the next open item, and needs my explicit
+go-ahead before any real MCP call."

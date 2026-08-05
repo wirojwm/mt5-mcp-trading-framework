@@ -566,10 +566,13 @@ not done here, to avoid designing ahead of what's actually been asked for.
   drawdown (463 R → 63 R). Grid's `step_mult=0.25` **did not validate** — its apparent
   training-window edge (0.077 R) collapsed to noise (0.015 R) out-of-sample, a textbook
   overfitting signature; the current grid default stands. Neither strategy shows a positive edge
-  on this window. **No production default changed anywhere in Phase 8 to date.** Next decision:
-  whether to adopt runner's validated candidate as the new production default — a separate,
-  explicitly-approved step, not automatic. Full detail in
-  `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
+  on this window. **Runner's validated candidate has now been adopted as the production
+  default**: `RunnerStrategyConfig.sl_atr_mult=1.5→3.0`, `tp_atr_mult=3.0→6.0` (2:1 ratio
+  unchanged) in `src/mt5_mcp_trading/strategy/runner.py`, the third production-code change of
+  Phase 8 (after the re-entry throttle and the earlier magic-filter fix already covered above).
+  Grid's default is untouched. Source-code change only — no live/demo run has exercised the new
+  default yet; live-verifying it (or explicitly deferring that) is Phase 8's next open item. Full
+  detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

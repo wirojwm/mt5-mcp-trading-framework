@@ -39,11 +39,16 @@ class RunnerStrategyConfig:
     # SL/TP fields below have NO legacy precedent -- ema_crossover_core_multi.py's runner never
     # attached a stop-loss/take-profit to its MARKET orders at all (see this module's docstring).
     # New, project-original design, needed only because the real McpOrderExecutor mandates
-    # non-zero SL/TP for MARKET orders (see compute_stop_distances()). Defaults chosen for a
-    # reasonable trend-following stop, not derived from any legacy value -- open to tuning.
+    # non-zero SL/TP for MARKET orders (see compute_stop_distances()). Defaults were initially an
+    # untuned placeholder (sl_atr_mult=1.5), later replaced by Phase 8's tuning result: a
+    # one-factor-at-a-time sweep (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md, Step 5) found
+    # sl_atr_mult=3.0 a genuine interior peak on the training window, then Step 6 confirmed the
+    # improvement out-of-sample on a held-out test window never used for tuning (expectancy
+    # -0.241R -> -0.100R, max drawdown 463R -> 63R) -- a real, evidence-backed change, not a
+    # guess. Still net-negative overall; this reduces the loss, it does not claim a positive edge.
     atr_period: int = 14  # matches GridStrategyConfig.atr_period's default
-    sl_atr_mult: float = 1.5
-    tp_atr_mult: float = 3.0  # 2:1 reward:risk
+    sl_atr_mult: float = 3.0
+    tp_atr_mult: float = 6.0  # 2:1 reward:risk, unchanged
     min_stop_distance_points: float = 10.0  # matches GridStrategyConfig.min_step_points's floor
     # NO legacy precedent either -- ema_crossover_core_multi.py's runner had no re-entry
     # throttle at all, just like it had no SL/TP. New, project-original: run_runner_cycle() had
