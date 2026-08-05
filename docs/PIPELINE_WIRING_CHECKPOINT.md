@@ -1687,21 +1687,21 @@ raises `AssertionError` if ever touched) is never invoked once the first cycle f
 answer "is the documented fatal-on-disconnect behavior actually true" with a verified yes, for the
 mock/stub-reachable slice of that question, not new functionality.
 
-**Explicitly still open — Stage 3, live-adjacent, not started, needs its own separate approval**:
+**Explicitly still open at the end of Stage 1/2**:
 1. No real disconnect has been forced against the actual demo-connected subprocess (only a
    throwaway stub with no MT5 involved) — Stage 1/2 prove `McpClient`'s and `_run_one_cycle()`'s
    *mechanics* are sound, not that a real production disconnect looks identical (plausible, since
    nothing here is metatrader-mcp-server-specific, but not yet observed).
-2. The 30s `McpCallTimeoutError` path has never fired for real — only unit-tested against a fake
-   session (`tests/unit/test_mcp_client.py`, pre-existing) and, in Stage 1, superseded by a much
-   faster `McpError` before the timeout could ever matter. A genuinely stuck real call (vs. a
-   cleanly-detected closed pipe) remains unexercised.
+2. The 30s `McpCallTimeoutError` path had never fired for real — only unit-tested against a fake
+   session (`tests/unit/test_mcp_client.py`, pre-existing) and, in Stage 1's disconnect test,
+   superseded by a much faster `McpError` before the timeout could ever matter. **Closed by Part
+   1, below, same session.**
 3. The "ambiguous in-flight" case is still entirely untested and can only ever be resolved live:
    `McpOrderExecutor.submit()` calls `state_store.record_submission()` only *after* its MCP call
    returns (`mcp_order_executor.py:233-262` LIMIT, `:287-315` MARKET) — so a call that raises
    before returning is never recorded locally, meaning a real disconnect at the exact moment the
    broker accepts an order but the response is lost would leave a genuinely unknown ticket with no
-   local trace at all. No mock can manufacture this; it requires a real broker.
+   local trace at all. No mock can manufacture this; it requires a real broker. Still open.
 
 ```
 pytest -q                        -> 355 passed (348 previously + 7 new)
@@ -1715,23 +1715,73 @@ production code changed (no fix was needed).
 `tests/integration/test_mcp_client_disconnect.py` (new),
 `tests/integration/test_pipeline_loop_disconnect.py` (new), `AGENTS.md`, this checkpoint doc.
 
+## Step 32 addendum — Stage 3 scoped, Part 1 built (still mock/stub-only, no live call)
+
+Same session. Before scoping Stage 3, re-read `scripts/run_metatrader_mcp_stdio.py` and found a
+real difference from Stage 1's stub worth flagging before any live-adjacent design: the real MCP
+server is not a single process. The wrapper (`run_metatrader_mcp_stdio.py`, what `McpClient`
+actually spawns) launches `metatrader_mcp_extended_server.py` as a *nested* child via
+`subprocess.run()`, not `exec`. Stage 1's stub was a single flat process, so killing it the way
+Stage 1 did would, against the real server, risk orphaning the MT5-connected grandchild — left
+running invisibly, holding a real connection, not reaped by anything. Any live-adjacent Stage 3
+test has to tree-kill (`taskkill /F /T /PID`, not a plain `os.kill`) and verify nothing is left
+behind, or it would create exactly the kind of untracked live state this whole project works to
+avoid.
+
+Scoped Stage 3 into three parts of very different risk (not one): **Part 1** (real 30s timeout
+firing — turns out this needs no live component at all, just the existing stub sleeping longer
+than the timeout instead of being killed); **Part 2** (real subprocess/process-tree disconnect,
+read-only call only — needs real demo credentials to launch the real wrapper, zero order risk);
+**Part 3** (the "ambiguous in-flight order" case — needs a real order, highest risk, recommended
+to defer/decide separately rather than bundle into a single approval). User approved building
+Part 1 only.
+
+**Part 1 — `tests/integration/test_mcp_client_disconnect.py`, +1 test**: reused Stage 1's stub
+unchanged, added `test_a_real_slow_call_raises_mcp_call_timeout_error_via_a_real_pipe`. The stub
+process is told to `sleep_forever(seconds=5.0)` and is **never killed** — the client is
+constructed with a short `call_timeout_seconds=1.0` so the test stays fast while still exercising
+`McpClient`'s real `asyncio.wait_for()` against a real subprocess/pipe (not the unit test's fake
+in-memory session, which has no pipe at all). **Result: PASSED.** `McpCallTimeoutError` raised
+with the correct `tool_name`/`timeout_seconds`, well before the stub's own 5s sleep would have
+completed on its own (confirms the timeout — not the tool finishing — is what ended the call), and
+cleanup of the still-alive, mid-sleep child (`__aexit__`) completed without hanging — a scenario
+none of Stage 1's other tests exercised, since every one of those killed the process outright.
+
+This closes item 2 of the "still open" list above. Items 1 and 3 remain open — Part 2 and Part 3
+of Stage 3, both live-adjacent, neither started, both need their own separate explicit approval.
+
+```
+pytest -q                        -> 356 passed (355 previously + 1 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No live/MCP/MT5 call was made. No credentials or `.env` were read (Part 1 stayed on the same
+stub as Stage 1). No production code changed.
+
+**Files changed this addendum**: `tests/integration/test_mcp_client_disconnect.py` (modified,
++1 test), `AGENTS.md`, this checkpoint doc.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. Account is fully clean, nothing outstanding.
 
-1. Stage 3 of the disconnect-testing effort (forcing a real disconnect against the actual
-   demo-connected subprocess, exercising a real `McpCallTimeoutError`, and observing the
-   ambiguous-in-flight case) is the natural next step if continuing this thread — live-adjacent,
-   needs its own explicit go-ahead, ideally timed for a moment with zero standing account exposure
-   (true right now).
+1. Stage 3's remaining pieces — **Part 2** (real subprocess/process-tree disconnect against the
+   actual demo-connected wrapper, read-only call only, needs real demo credentials, zero order
+   risk) and **Part 3** (the "ambiguous in-flight order" case, needs a real order, highest risk,
+   recommended to decide separately rather than bundle in) — are scoped (see the Step 32 addendum
+   above) but neither is started. Both are live-adjacent and need their own explicit go-ahead,
+   ideally timed for a moment with zero standing account exposure (true right now). Part 1 (the
+   30s timeout path) is done, mock/stub-only, no live call.
 2. Otherwise, per the roadmap review, Phase 8 (strategy research/tuning) remains explicitly not
-   started, pending either Stage 3 or an explicit decision to accept its remaining gaps as an open
-   risk and proceed anyway.
+   started, pending either Stage 3's remaining parts or an explicit decision to accept the
+   remaining gaps as an open risk and proceed anyway.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 32 is the most recent entry), confirm git status is
-clean at the latest commit, confirm no live process is running, confirm the demo account is clean
-(no positions, no pending orders), confirm live testing is still paused, then ask me what to do
-next — do not run anything live without my explicit go-ahead first. Stage 3 of the MCP
-disconnect/timeout test (real subprocess/MT5-adjacent) is scoped and ready but not started."
+docs/PIPELINE_WIRING_CHECKPOINT.md (the Step 32 addendum is the most recent entry), confirm git
+status is clean at the latest commit, confirm no live process is running, confirm the demo
+account is clean (no positions, no pending orders), confirm live testing is still paused, then
+ask me what to do next — do not run anything live without my explicit go-ahead first. Stage 3
+Part 1 (real 30s timeout, mock/stub-only) is done; Part 2 (real subprocess/process-tree
+disconnect, read-only call, needs demo credentials) and Part 3 (ambiguous in-flight order, needs
+a real order) are scoped but not started."

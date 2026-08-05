@@ -176,14 +176,23 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   - **No code fix was needed** — the existing `except Exception` handling already covered the real
     disconnect shape correctly; this closes the "is this actually true or just untested" question,
     not a bug.
+  - **Timeout path also now closed, still mock/stub-only**: `test_a_real_slow_call_raises_mcp_call_timeout_error_via_a_real_pipe`
+    (same file) proves `McpClient`'s real `asyncio.wait_for()` wrapping fires `McpCallTimeoutError`
+    against a real subprocess/pipe (the stub cooperatively sleeping longer than the configured
+    timeout, never killed) — closing the gap `tests/unit/test_mcp_client.py`'s fake-session
+    version couldn't (no subprocess or pipe exists in that test at all). Confirmed the timeout,
+    not the stub's own sleep completing, is what ends the call, and that cleanup of a still-alive,
+    mid-sleep child doesn't hang either.
   - **Still open, not done by this step (Stage 3, live-adjacent, needs its own separate explicit
     approval before any code or live call)**: a real disconnect has never been forced against the
-    actual demo-connected subprocess (only a throwaway stub); the 30s `McpCallTimeoutError` path
-    has never fired for real (only unit-tested against a fake session, `tests/unit/test_mcp_client.py`);
-    and the "ambiguous in-flight" case — a real order reaches the broker but the response is lost
-    to the same disconnect — remains entirely untested, since `McpOrderExecutor` only writes local
-    state *after* its MCP call returns, so this can only ever be resolved against a real broker,
-    never a mock.
+    actual demo-connected subprocess (only a throwaway stub) — notably, the real server isn't a
+    single process like the stub: `run_metatrader_mcp_stdio.py` spawns
+    `metatrader_mcp_extended_server.py` as a nested child via `subprocess.run()`, so a real test
+    must tree-kill and verify no orphaned MT5-connected grandchild is left running, a risk the
+    stub's flat process model never had to account for. The "ambiguous in-flight" case — a real
+    order reaches the broker but the response is lost to the same disconnect — also remains
+    entirely untested, since `McpOrderExecutor` only writes local state *after* its MCP call
+    returns, so this can only ever be resolved against a real broker, never a mock.
   See "Forward phases" below — do not start Phase 8 until Stage 3 above is explicitly completed or
   accepted as an open risk.
 - **Pipeline wiring (post-Phase 7): in progress, first live cycle done and cleaned up.** Not

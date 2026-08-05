@@ -19,6 +19,14 @@ timeout firing, and not a raw asyncio.CancelledError/BaseExceptionGroup escaping
 `except Exception` (a real risk with anyio task-group-based transports, seriously considered
 before running this, and worth locking in with an explicit assertion rather than trusting it
 holds forever as the mcp SDK version changes).
+
+Also covers the other half of "disconnect/timeout" that doesn't need a real MT5-connected
+subprocess at all (see docs/PIPELINE_WIRING_CHECKPOINT.md, "Step 32", "Part 1"): a call that
+never returns without the process dying still needs McpClient.call_tool()'s own
+asyncio.wait_for(timeout=...) to fire for real, against a real OS pipe -- not just against the
+fake in-memory session object tests/unit/test_mcp_client.py uses. The stub's sleep_forever(
+seconds=...) tool exists for exactly this: a real subprocess that's still alive and cooperative,
+just slow.
 """
 
 from __future__ import annotations
@@ -32,7 +40,7 @@ from pathlib import Path
 
 import pytest
 
-from mt5_mcp_trading.mcp_adapter.client import DEFAULT_CALL_TIMEOUT_SECONDS, McpClient
+from mt5_mcp_trading.mcp_adapter.client import DEFAULT_CALL_TIMEOUT_SECONDS, McpCallTimeoutError, McpClient
 from mt5_mcp_trading.mcp_adapter.tool_registry import ToolClass, ToolRegistry
 
 STUB_SERVER = Path(__file__).resolve().parent / "_stub_mcp_server.py"
@@ -40,6 +48,13 @@ STUB_SERVER = Path(__file__).resolve().parent / "_stub_mcp_server.py"
 # Generous vs. the sub-second failure actually observed -- this bounds the test's own worst
 # case, not a claim about how long a real disconnect should take to surface.
 DISCONNECT_DETECTION_BOUND_SECONDS = 10.0
+
+# Short, not DEFAULT_CALL_TIMEOUT_SECONDS (30s) -- the point of this test is that the real
+# asyncio.wait_for wrapping actually fires against a real pipe, not that it specifically takes
+# 30 real seconds to do it. The stub is told to sleep longer than this so the timeout, not tool
+# completion, is what ends the call.
+REAL_TIMEOUT_TEST_SECONDS = 1.0
+STUB_SLEEP_SECONDS = 5.0
 
 
 def _kill_hard(pid: int) -> None:
@@ -53,12 +68,14 @@ def _kill_hard(pid: int) -> None:
         os.kill(pid, signal.SIGKILL)
 
 
-def _stub_client(pidfile: Path) -> McpClient:
+def _stub_client(
+    pidfile: Path, call_timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
+) -> McpClient:
     registry = ToolRegistry(trading_enabled=False)
     registry.classify("sleep_forever", ToolClass.READ_ONLY)
     return McpClient(
         command=sys.executable, args=[str(STUB_SERVER), "--pidfile", str(pidfile)],
-        tool_registry=registry, call_timeout_seconds=DEFAULT_CALL_TIMEOUT_SECONDS,
+        tool_registry=registry, call_timeout_seconds=call_timeout_seconds,
     )
 
 
@@ -152,5 +169,43 @@ def test_a_second_call_after_disconnect_also_fails_fast_not_hangs(tmp_path: Path
             assert not isinstance(exc_info.value, BaseExceptionGroup)
         finally:
             await client.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+def test_a_real_slow_call_raises_mcp_call_timeout_error_via_a_real_pipe(tmp_path: Path) -> None:
+    """Part 1 (docs/PIPELINE_WIRING_CHECKPOINT.md, "Step 32"): the process is never killed here
+    -- it stays alive and cooperative, just slower than call_timeout_seconds. Proves
+    McpClient's real asyncio.wait_for() wrapping actually fires against a real subprocess/pipe,
+    closing the gap tests/unit/test_mcp_client.py's fake-session version couldn't: that no
+    subprocess or pipe exists in that test at all, only a hand-built object standing in for
+    ClientSession."""
+    async def scenario() -> None:
+        pidfile = tmp_path / "stub.pid"
+        client = _stub_client(pidfile, call_timeout_seconds=REAL_TIMEOUT_TEST_SECONDS)
+        await client.__aenter__()
+        try:
+            t0 = time.monotonic()
+            with pytest.raises(McpCallTimeoutError) as exc_info:
+                await client.call_tool("sleep_forever", {"seconds": STUB_SLEEP_SECONDS})
+            elapsed = time.monotonic() - t0
+
+            assert exc_info.value.tool_name == "sleep_forever"
+            assert exc_info.value.timeout_seconds == REAL_TIMEOUT_TEST_SECONDS
+            # Bounded near REAL_TIMEOUT_TEST_SECONDS, not STUB_SLEEP_SECONDS -- confirms the
+            # wait_for wrapper is what ended the call, not the stub's own sleep completing.
+            assert elapsed < STUB_SLEEP_SECONDS, (
+                f"took {elapsed:.2f}s -- looks like the stub's sleep finished on its own rather "
+                f"than the client-side timeout firing first"
+            )
+        finally:
+            # The subprocess is still alive and mid-sleep here (unlike every other test in this
+            # file) -- exercises cleanup of a live-but-abandoned child, not a dead one.
+            t1 = time.monotonic()
+            await asyncio.wait_for(client.__aexit__(None, None, None), timeout=10.0)
+            cleanup_elapsed = time.monotonic() - t1
+            assert cleanup_elapsed < 10.0, (
+                f"__aexit__ took {cleanup_elapsed:.2f}s -- cleanup of a live, mid-sleep child hung"
+            )
 
     asyncio.run(scenario())
