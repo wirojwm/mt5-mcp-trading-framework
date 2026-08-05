@@ -33,8 +33,15 @@ SAFETY -- read before running:
   demo_execution_session() is entered against one taken immediately after -- never by matching
   command-line substrings alone against whatever happens to be running. This guards against
   mistaking an unrelated, pre-existing MCP-server process (e.g. one Claude Code or another tool
-  already has open) for the one this script itself spawned. If the diff doesn't produce exactly
-  one new wrapper process, this script aborts before killing anything.
+  already has open) for the one this script itself spawned. The diff must form exactly ONE
+  connected process tree (a single root with no parent inside the new-process set, everything
+  else in the set reachable from it) or this script aborts before killing anything -- NOT exactly
+  one PID per marker, because this machine's venv launcher (.venv/Scripts/python.exe, a ~235KB
+  CPython venv stub per pyvenv.cfg's home=miniconda3) spawns the base interpreter as a genuine
+  child OS process rather than exec'ing in place, so a single logical wrapper+extended-server
+  connection legitimately shows up as up to 4 real PIDs, confirmed directly (not guessed) after
+  this script's first two real runs both hit that shape. A genuinely unrelated second connection
+  would show up as a SECOND, disconnected root instead, which still correctly aborts.
 - A final `finally` block re-scans for and force-kills anything still matching this run's own
   PIDs, regardless of how the script exits (success, timeout, or an unexpected exception) -- a
   safety net against leaking an orphaned process even if something above doesn't behave as
@@ -132,9 +139,23 @@ def _diff_new_pids(
     return {pid: info for pid, info in after.items() if pid not in before}
 
 
+def _format_procs(procs: dict[int, tuple[str, Optional[int]]]) -> str:
+    """Full diagnostic detail (pid, ppid, complete command line -- never truncated) for logging
+    and for embedding directly in an abort's exception message, so a single glance at either the
+    log stream or the traceback shows exactly what was found, not just PIDs."""
+    if not procs:
+        return " (none)"
+    lines = [f"  pid={pid} ppid={ppid} cmdline={cmdline!r}" for pid, (cmdline, ppid) in procs.items()]
+    return "\n" + "\n".join(lines)
+
+
 async def _run(results: dict[str, object]) -> None:
     baseline_wrapper = _find_processes(WRAPPER_MARKER)
     baseline_server = _find_processes(SERVER_MARKER)
+    _logger.info("Baseline wrapper process(es) (pre-existing, excluded from the diff):%s",
+                 _format_procs(baseline_wrapper))
+    _logger.info("Baseline extended-server process(es) (pre-existing, excluded from the diff):%s",
+                 _format_procs(baseline_server))
 
     settings = dataclasses.replace(load_settings(), mode=ExecutionMode.DEMO_EXECUTION)
     _logger.info("mode=%s, trading_enabled=%s, mt5_account_kind=%r",
@@ -159,75 +180,91 @@ async def _run(results: dict[str, object]) -> None:
         after_server = _find_processes(SERVER_MARKER)
         new_wrapper = _diff_new_pids(baseline_wrapper, after_wrapper)
         new_server = _diff_new_pids(baseline_server, after_server)
-        _logger.info("New wrapper process(es): %s", list(new_wrapper.keys()))
-        _logger.info("New extended-server process(es): %s", list(new_server.keys()))
+        # Full detail, unconditionally, every run -- not just on the ambiguous-diff path below.
+        # Added after the first two real runs both hit that path and only PIDs were logged,
+        # leaving no way to tell what the "extra" process actually was without a follow-up step.
+        _logger.info("New wrapper process(es):%s", _format_procs(new_wrapper))
+        _logger.info("New extended-server process(es):%s", _format_procs(new_server))
         results["new_wrapper_pids"] = list(new_wrapper.keys())
         results["new_server_pids"] = list(new_server.keys())
 
-        # Deliberately NOT recording anything into results["_new_*_pids_for_cleanup"] before this
-        # point: an ambiguous diff (not exactly 1 of either process) means we cannot tell "our
-        # own leaked process" apart from something unrelated (e.g. a concurrent connection from
-        # this project's own Claude Code integration, which uses this exact same wrapper script --
-        # see mcp_adapter/client.py's docstring). Auto-killing an unverified set via a safety-net
-        # `finally` block would defeat the whole purpose of aborting here instead of guessing.
-        # This is not hypothetical: the first real run of this script hit exactly this case (2 new
-        # wrapper + 2 new extended-server processes instead of 1 of each) and correctly aborted
-        # without killing anything -- see docs/PIPELINE_WIRING_CHECKPOINT.md.
-        if len(new_wrapper) != 1:
+        # This machine's venv launcher is a real, confirmed structural quirk, not a coincidence:
+        # .venv/Scripts/python.exe is a ~235KB CPython venv stub (pyvenv.cfg: home=miniconda3)
+        # that spawns the base miniconda interpreter as a genuine CHILD OS process rather than
+        # exec'ing in place -- confirmed directly (file size + pyvenv.cfg contents), not guessed,
+        # after the first two real runs of this script both found exactly 2 processes matching
+        # each marker instead of 1. The full command-line diagnostic added for exactly this
+        # showed the "extra" process at each level is the SAME script/args, parented by the
+        # "expected" one -- e.g. wrapper stub (pid A, .venv python) -> real wrapper (pid B,
+        # miniconda python, ppid=A) -> extended-server stub (pid C, ppid=B) -> real extended-
+        # server (pid D, ppid=C). Not two independent connections; one logical spawn chain,
+        # doubled at every level by the venv redirect. So instead of requiring exactly 1 PID per
+        # marker, this validates the whole new-process set forms exactly ONE connected tree (one
+        # root with no parent inside the set, everything else in the set reachable from it) --
+        # true regardless of how many re-exec layers this specific machine's interpreter
+        # introduces, but still refuses to guess if there are genuinely two unrelated trees (e.g.
+        # an actual concurrent connection from elsewhere, which is what the original exactly-1
+        # check was trying, incorrectly, to detect this same way).
+        new_procs = {**new_wrapper, **new_server}
+        roots = [pid for pid, (_cmd, ppid) in new_procs.items() if ppid not in new_procs]
+        if len(roots) != 1:
             raise RuntimeError(
-                f"Expected exactly 1 new wrapper process, found {len(new_wrapper)}: "
-                f"{list(new_wrapper.keys())} -- aborting before killing anything. This can "
-                f"happen if another McpClient connection (this project's or something else's) "
-                f"started/stopped concurrently; re-run once nothing else is connecting."
+                f"Expected exactly 1 root process among all new wrapper/extended-server "
+                f"processes, found {len(roots)}: {roots} -- aborting before killing anything. "
+                f"This means the new processes do not form a single connected spawn tree (e.g. a "
+                f"genuine second, unrelated McpClient connection started concurrently), not just "
+                f"this machine's known venv-stub double-process quirk. "
+                f"Full detail:{_format_procs(new_procs)}"
             )
-        wrapper_pid, (wrapper_cmdline, _wrapper_ppid) = next(iter(new_wrapper.items()))
-        # Extra check beyond the diff itself: confirm the new process's command line also
-        # contains the exact resolved Python executable path we asked demo_execution_session()
-        # to launch with. Found empirically while building this script that a marker substring
-        # alone is not a safe identifier on its own -- an unrelated process whose command line
-        # merely CONTAINS "run_metatrader_mcp_stdio.py" as text (e.g. another script quoting that
-        # filename) matched during testing. The diff already rules out anything pre-existing;
-        # this rules out an unrelated brand-new process that happens to share the substring too.
-        if str(PYTHON) not in wrapper_cmdline:
+        root_pid = roots[0]
+        if root_pid not in new_wrapper:
             raise RuntimeError(
-                f"New wrapper process pid={wrapper_pid} command line does not contain the "
-                f"expected Python executable path ({PYTHON}) -- refusing to kill an unverified "
-                f"process. Command line was: {wrapper_cmdline!r}"
+                f"The single root process (pid={root_pid}) is not a wrapper-marker match -- "
+                f"expected the root of the spawn tree to be run_metatrader_mcp_stdio.py. "
+                f"Aborting before killing anything. Full detail:{_format_procs(new_procs)}"
             )
-        if len(new_server) != 1:
+        root_cmdline = new_procs[root_pid][0]
+        # Extra check beyond the diff itself: confirm the root's command line also contains the
+        # exact resolved Python executable path we asked demo_execution_session() to launch with.
+        # Found empirically while building this script that a marker substring alone is not a
+        # safe identifier on its own -- an unrelated process whose command line merely CONTAINS
+        # "run_metatrader_mcp_stdio.py" as text (e.g. another script quoting that filename)
+        # matched during testing. The diff already rules out anything pre-existing; this rules
+        # out an unrelated brand-new root process that happens to share the substring too.
+        if str(PYTHON) not in root_cmdline:
             raise RuntimeError(
-                f"Wrapper process pid={wrapper_pid} confirmed, but expected exactly 1 new "
-                f"extended-server process, found {len(new_server)}: {list(new_server.keys())} "
-                f"-- aborting before killing anything. Cannot confirm which (if any) is the "
-                f"wrapper's own child."
+                f"Root wrapper process pid={root_pid} command line does not contain the expected "
+                f"Python executable path ({PYTHON}) -- refusing to kill an unverified process. "
+                f"Command line was: {root_cmdline!r}"
             )
-        server_pid, (_server_cmdline, server_ppid) = next(iter(new_server.items()))
-        if server_ppid != wrapper_pid:
+        if not new_server:
             raise RuntimeError(
-                f"New extended-server process pid={server_pid} has ParentProcessId={server_ppid}, "
-                f"not {wrapper_pid} (this run's confirmed wrapper) -- it is not this run's own "
-                f"child process. Refusing to kill an unverified process."
+                f"Root wrapper process pid={root_pid} confirmed, but no new extended-server "
+                f"process was found at all -- aborting before killing anything. "
+                f"Full detail:{_format_procs(new_procs)}"
             )
 
-        # Both processes are now confirmed as this run's own (exactly 1 of each, wrapper's
-        # command line matches the exact Python executable used, server is a direct child of the
-        # confirmed wrapper). Record them now, immediately -- not at the end of this function --
-        # so that main()'s `finally` safety net has real PIDs to check even if something below
-        # this point raises unexpectedly (a genuine gap found in this script's first real run:
-        # these were previously only recorded after Step 5 completed, so an earlier abort left
-        # the safety net with nothing to act on).
-        results["_new_wrapper_pids_for_cleanup"] = [wrapper_pid]
-        results["_new_server_pids_for_cleanup"] = [server_pid]
+        # The whole tree is now confirmed as this run's own (single root, root is a verified
+        # wrapper process, at least one extended-server descendant exists). Record every PID in
+        # the tree now, immediately -- not at the end of this function -- so that main()'s
+        # `finally` safety net has real PIDs to check even if something below this point raises
+        # unexpectedly (a genuine gap found in this script's first real run: these were
+        # previously only recorded after Step 5 completed, so an earlier abort left the safety
+        # net with nothing to act on).
+        all_tree_pids = list(new_procs.keys())
+        results["_new_tree_pids_for_cleanup"] = all_tree_pids
 
         # Step 3: race a second call against a tree-kill. Best-effort, not guaranteed -- a real
         # account read is typically sub-second, unlike Stage 1's fully controllable stub sleep.
         # If it completes anyway, that's informational (real calls are fast), not a failure; the
-        # deterministic assertion is Step 5, after the kill is confirmed complete.
+        # deterministic assertion is Step 5, after the kill is confirmed complete. Killing the
+        # single root with /T recursively takes down the whole descendant chain regardless of how
+        # many venv-stub re-exec layers exist beneath it.
         task = asyncio.create_task(account.get_account_state())
         await asyncio.sleep(RACE_KILL_DELAY_SECONDS)
         raced_before_kill_done = task.done()
         t0 = time.monotonic()
-        _tree_kill(wrapper_pid)
+        _tree_kill(root_pid)
         if raced_before_kill_done:
             results["raced_call_outcome"] = "completed before the kill could reach it (timing)"
         else:
@@ -242,7 +279,7 @@ async def _run(results: dict[str, object]) -> None:
 
         # Step 4: verify process cleanup. Give the OS a moment to finish reaping, then re-scan.
         await asyncio.sleep(POST_KILL_SETTLE_SECONDS)
-        confirmed_pids = {wrapper_pid, server_pid}
+        confirmed_pids = set(all_tree_pids)
         still_present = confirmed_pids & (
             set(_find_processes(WRAPPER_MARKER)) | set(_find_processes(SERVER_MARKER))
         )
@@ -286,10 +323,11 @@ async def main() -> None:
         # Final safety net regardless of how the above exited: force-kill anything still
         # matching this run's own PIDs. Re-diffs against a fresh baseline scan isn't possible
         # here (we no longer have a pre-connect snapshot in scope), so this uses the PIDs
-        # `_run` recorded before returning/raising, if any were recorded.
-        leftover_wrapper = results.get("_new_wrapper_pids_for_cleanup", [])
-        leftover_server = results.get("_new_server_pids_for_cleanup", [])
-        for pid in (*leftover_wrapper, *leftover_server):  # type: ignore[misc]
+        # `_run` recorded before returning/raising, if any were recorded -- the whole confirmed
+        # process tree (root wrapper + every descendant, however many venv-stub re-exec layers
+        # this machine happens to introduce), not just a single wrapper/server pair.
+        leftover_tree = results.get("_new_tree_pids_for_cleanup", [])
+        for pid in leftover_tree:  # type: ignore[misc]
             still = {**_find_processes(WRAPPER_MARKER), **_find_processes(SERVER_MARKER)}
             if pid in still:
                 _logger.warning("Final safety-net kill of leftover pid=%d", pid)

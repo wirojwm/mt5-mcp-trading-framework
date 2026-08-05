@@ -1823,36 +1823,116 @@ exercised standalone (Win32_Process queries only, no kill, no MT5) to confirm th
 parsing actually works, not just that it looks right. `pytest -q` still 356 passed (this script
 lives in `scripts/`, outside `testpaths`, so it was never collected).
 
-**Deliberately not run.** Writing it made no live call; running it is a separate action, same
-standing rule as every other real script in this project's history, and needs its own explicit
-go-ahead.
+**Deliberately not run yet at the end of this addendum.** Writing it made no live call; running it
+is a separate action, same standing rule as every other real script in this project's history, and
+needed its own explicit go-ahead. **Run in the next addendum, below.**
 
 **Files changed this addendum**: `scripts/run_demo_execution_mcp_disconnect_smoke_test.py` (new,
 not yet run), `AGENTS.md`, this checkpoint doc.
+
+## Step 32 addendum 3 — Stage 3 Part 2 live-verified: real disconnect confirmed, venv-stub root cause found and fixed
+
+Same session. User approved running the script. Pre-flight: working tree clean except the new
+script, no stray processes, no stop-file.
+
+**Run 1: aborted safely.** Baseline `get_account_info` succeeded (`balance=9982.39`, `trade_mode`
+field-inversion quirk present as always documented). The diff found **2 new wrapper processes and
+2 new extended-server processes** instead of 1 of each — the script's own safety check correctly
+refused to guess and aborted before touching anything, exactly as designed. Read-only re-check
+immediately after: all 4 processes had already exited on their own; nothing to clean up. Considered
+possible causes (a concurrent connection from this project's own Claude Code integration, per
+`mcp_adapter/client.py`'s own docstring noting it uses the same wrapper) but found no supporting
+evidence in this project's or the user's global Claude config.
+
+**Run 2 (after user asked to run again without changes): identical outcome.** Same 2-and-2 shape.
+Two identical results in a row pointed at something systematic, not a one-off race, so user asked
+for full command-line diagnostics before a third blind retry.
+
+**Diagnostic logging added** (`_format_procs()`, logged unconditionally for baseline/diff every
+run, embedded directly in abort exception messages, not just PIDs) — **Run 3 revealed the real
+cause immediately**: the two "new wrapper" PIDs were not independent — one's `ParentProcessId` was
+the other. Full chain: wrapper stub (`.venv\Scripts\python.exe run_metatrader_mcp_stdio.py`) →
+its child, the real wrapper (`miniconda3\python.exe run_metatrader_mcp_stdio.py`, identical
+args) → extended-server stub (`.venv\Scripts\python.exe metatrader_mcp_extended_server.py`) →
+its child, the real extended server (`miniconda3\python.exe`, identical args). **Root-caused, not
+guessed**: `.venv/Scripts/python.exe` is a ~235KB CPython venv launcher stub (confirmed via file
+size, and `.venv/pyvenv.cfg`: `home = C:\Users\PC\miniconda3`, `executable =
+C:\Users\PC\miniconda3\python.exe`) that spawns the base interpreter as a genuine child OS process
+rather than exec'ing in place — a structural property of this machine's Python install, happening
+identically at every level of the spawn chain (both the wrapper and the extended server), not a
+second connection from anywhere.
+
+**Fixed**: replaced the "exactly 1 new PID per marker" validation with a single-connected-tree
+validation — collect all new wrapper + extended-server PIDs together, find the process(es) whose
+`ParentProcessId` is NOT itself in that combined set (the root(s)), require exactly 1 root, require
+that root to be a wrapper-marker match whose command line contains the exact Python executable
+path used, require at least one extended-server descendant exists. A genuinely unrelated second
+connection would still produce a second, disconnected root and still correctly abort — this only
+stops treating the *same machine's own venv-stub doubling* as ambiguous. Tree-kill now always
+targets the single root (`taskkill /F /T` already recurses through however many re-exec layers
+exist beneath it); cleanup verification and the `finally` safety net both now track the whole
+confirmed tree (`results["_new_tree_pids_for_cleanup"]`, replacing the old two-key wrapper/server
+split, which no longer maps cleanly onto a variable-depth tree).
+
+**Run 4 (after the fix): PASSED, full success.**
+- Baseline call OK.
+- Tree correctly identified: 4 PIDs (`268 → 4256 → 412 → 7880`), single root confirmed, root's
+  command line matched, one extended-server descendant confirmed.
+- Root tree-killed (`taskkill /F /T /PID 268`).
+- Cleanup re-scan: **0 orphans** — all 4 PIDs confirmed gone, re-verified again independently
+  read-only immediately after the script exited.
+- Step 3's mid-flight race did **not** land this run (`raced_call_outcome: "completed before the
+  kill could reach it (timing)"`) — the documented best-effort limitation (a real account read is
+  typically sub-second, unlike Stage 1's fully controllable stub sleep), informational, not a
+  failure.
+- **Step 5's deterministic assertion succeeded**: a call made against the now-confirmed-dead
+  connection raised `anyio.ClosedResourceError` in 0.00s — confirmed via
+  `post_kill_call_is_exception_subclass: True` / `post_kill_call_is_exception_group: False` — a
+  plain `Exception` subtype, not `BaseExceptionGroup`/`CancelledError`, not hanging. This is a
+  *different concrete exception class* than Stage 1's stub finding
+  (`mcp.shared.exceptions.McpError`) — worth recording precisely rather than assuming they'd
+  match: both are equally safe by the property that actually matters (clean `Exception` subtype,
+  fast, never escaping as `BaseException`), and nothing anywhere in this codebase's failure
+  handling checks for a specific exception class, only `except Exception` — so this doesn't change
+  any existing behavior, it just replaces an assumption with a direct observation.
+
+No order, no symbol, no `executor` call was made at any point across all four runs — fully
+read-only throughout, exactly as designed. `pytest -q` unaffected (356 passed; this script is
+outside `testpaths`).
+
+```
+pytest -q                        -> 356 passed (unchanged -- script lives outside testpaths)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**This closes Stage 3 Part 2.** Only Stage 3 Part 3 (the "ambiguous in-flight order" case) remains
+open in the whole MCP disconnect/timeout testing effort, and it needs a real order to test —
+recommended, same as originally scoped, to decide separately rather than bundle into a single
+approval.
+
+**Files changed this addendum**: `scripts/run_demo_execution_mcp_disconnect_smoke_test.py`
+(modified — tree-based validation, diagnostic logging), `AGENTS.md`, this checkpoint doc.
 
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. Account is fully clean, nothing outstanding.
 
-1. **Part 2's script is written but deliberately not run**:
-   `scripts/run_demo_execution_mcp_disconnect_smoke_test.py` is ready — real subprocess/
-   process-tree disconnect against the actual demo-connected wrapper, read-only call only, needs
-   real demo credentials, zero order risk. Running it is the natural next step if continuing this
-   thread, and needs its own explicit go-ahead, ideally timed for a moment with zero standing
-   account exposure (true right now).
-2. **Part 3** (the "ambiguous in-flight order" case, needs a real order, highest risk,
-   recommended to decide separately rather than bundle in) remains scoped only, not started.
-3. Otherwise, per the roadmap review, Phase 8 (strategy research/tuning) remains explicitly not
-   started, pending either Stage 3's remaining parts or an explicit decision to accept the
-   remaining gaps as an open risk and proceed anyway.
+1. **Stage 3 Parts 1 and 2 are both done and live-verified** (Part 1: real 30s timeout, mock/stub-
+   only; Part 2: real disconnect against the actual demo-connected subprocess, process-tree
+   cleanup confirmed clean). Only **Part 3** remains — the "ambiguous in-flight order" case, which
+   needs a real order and is the highest-risk piece of this whole effort; recommended to decide
+   separately, with a deliberately minimal-risk design (e.g. a far-from-market, unfillable LIMIT
+   order) if ever pursued, rather than treated as a default next step.
+2. Otherwise, per the roadmap review, Phase 8 (strategy research/tuning) remains explicitly not
+   started, pending either Stage 3 Part 3 or an explicit decision to accept the remaining gap as an
+   open risk and proceed anyway.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 32 addendum 2 is the most recent entry), confirm git
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 32 addendum 3 is the most recent entry), confirm git
 status is clean at the latest commit, confirm no live process is running, confirm the demo
 account is clean (no positions, no pending orders), confirm live testing is still paused, then
 ask me what to do next — do not run anything live without my explicit go-ahead first. Stage 3
-Part 1 (real 30s timeout, mock/stub-only) is done; Part 2's script
-(scripts/run_demo_execution_mcp_disconnect_smoke_test.py, real subprocess/process-tree
-disconnect, read-only call, needs demo credentials) is written but NOT YET RUN; Part 3
-(ambiguous in-flight order, needs a real order) is scoped but not started."
+Parts 1 and 2 (real 30s timeout; real subprocess/process-tree disconnect) are both done and
+live-verified. Only Part 3 (ambiguous in-flight order, needs a real order) remains, scoped but not
+started."

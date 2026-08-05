@@ -183,26 +183,43 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     version couldn't (no subprocess or pipe exists in that test at all). Confirmed the timeout,
     not the stub's own sleep completing, is what ends the call, and that cleanup of a still-alive,
     mid-sleep child doesn't hang either.
-  - **Stage 3 Part 2 written, NOT YET RUN**: `scripts/run_demo_execution_mcp_disconnect_smoke_test.py`
+  - **Stage 3 Part 2: written, then live-verified — a real disconnect against the actual
+    demo-connected subprocess, for real.** `scripts/run_demo_execution_mcp_disconnect_smoke_test.py`
     — the first script in this whole effort that touches the real demo-connected MCP server. Goes
     through the real `demo_execution_session()`, makes only a read-only `get_account_info` call
-    (no `executor` reference anywhere in the file), identifies its own newly-spawned wrapper
-    process by diffing a process snapshot taken before/after connecting (never by a raw
-    command-line substring match alone — confirmed necessary, not just cautious: while building
-    this, a substring match falsely matched an unrelated shell process whose own `-c` inline
-    script text happened to contain the marker string), tree-kills it
-    (`taskkill /F /T /PID`, since the real server is a nested wrapper→extended-server child
-    process unlike the stub's flat one), and re-verifies both PIDs are actually gone afterward
-    with a fallback direct kill if not. **Not yet approved to run.**
-  - **Still open, not done by this step (Stage 3 Parts 2's live run, and Part 3, live-adjacent,
-    each needs its own separate explicit approval before running)**: a real disconnect has never
-    actually been forced against the real demo-connected subprocess yet (the script above is
-    written but not executed). The "ambiguous in-flight" case — a real order reaches the broker
-    but the response is lost to the same disconnect (Stage 3 Part 3) — remains entirely untested,
-    since `McpOrderExecutor` only writes local state *after* its MCP call returns, so this can
-    only ever be resolved against a real broker, never a mock.
-  See "Forward phases" below — do not start Phase 8 until Stage 3 above is explicitly completed or
-  accepted as an open risk.
+    (no `executor` reference anywhere in the file). First two live runs both aborted safely on an
+    "ambiguous diff" (2 new wrapper + 2 new extended-server processes instead of 1 of each) —
+    correct behavior at the time, but root-caused (not guessed) after adding full command-line
+    diagnostic logging: this machine's `.venv/Scripts/python.exe` is a ~235KB CPython venv
+    launcher stub (`pyvenv.cfg`: `home=miniconda3`) that spawns the base interpreter as a genuine
+    *child OS process* rather than exec'ing in place, at every level of the chain (wrapper AND
+    extended-server both) — one logical connection legitimately produces up to 4 real PIDs in a
+    single parent→child→grandchild→great-grandchild chain, not two independent connections.
+    **Fixed**: validation now requires the new-process diff to form exactly one connected process
+    tree (single root, everything else a confirmed descendant, root's command line matching the
+    exact Python executable used) rather than exactly 1 PID per marker — still correctly aborts if
+    a genuinely unrelated second connection ever produces a second, disconnected root.
+    **Live-verified end-to-end on the next run**: the full 4-process tree was correctly identified
+    and tree-killed via its single root, **0 orphans** on re-scan, and a call made against the
+    now-confirmed-dead connection raised `anyio.ClosedResourceError` in 0.00s — a plain `Exception`
+    subtype, not `BaseExceptionGroup`/`CancelledError`, not hanging. Note: the real server's
+    concrete exception class (`anyio.ClosedResourceError`) differs from Stage 1's stub finding
+    (`mcp.shared.exceptions.McpError`) — both are equally safe (clean `Exception` subtypes, fast,
+    never escaping as `BaseException`), but nothing in this codebase should ever assume a specific
+    exception *class*; only `except Exception` is used anywhere, and that remains correct. The
+    Step 3 mid-flight race (killing while a call is actively in-transit, not just after) didn't
+    land on this run — the raced call happened to finish first, the documented best-effort/timing
+    limitation of testing against real (fast) network calls rather than the stub's fully
+    controllable sleep; the result above comes from the deterministic post-kill assertion instead,
+    which still directly answers the real question. No order, no symbol, no `executor` call was
+    ever made — fully read-only throughout, confirmed by the script's own design.
+  - **Still open, not done by this step (Stage 3 Part 3, live-adjacent, needs its own separate
+    explicit approval)**: the "ambiguous in-flight" case — a real order reaches the broker but the
+    response is lost to the same disconnect — remains entirely untested, since `McpOrderExecutor`
+    only writes local state *after* its MCP call returns, so this can only ever be resolved against
+    a real broker, never a mock.
+  See "Forward phases" below — do not start Phase 8 until Stage 3 Part 3 above is explicitly
+  completed or accepted as an open risk.
 - **Pipeline wiring (post-Phase 7): in progress, first live cycle done and cleaned up.** Not
   one of the numbered phases — like "wire real adapters" before Phase 6, a separate,
   explicitly-approved effort, called out in both the Phase 6 and Phase 7 checkpoint docs as
