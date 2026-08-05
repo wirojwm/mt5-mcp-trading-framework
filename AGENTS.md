@@ -467,9 +467,11 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`. Phase 6 itself is tracked separately in
 `docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`, Phase 7 in
 `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`, pipeline wiring in
-`docs/PIPELINE_WIRING_CHECKPOINT.md`, and Phase 8 in
-`docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md` — read whichever is relevant before continuing that
-work in a new session.
+`docs/PIPELINE_WIRING_CHECKPOINT.md`, Phase 8 in
+`docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, and the grid regime filter (a new, separately-
+scoped effort motivated by Phase 8's Step 7 finding, **proposed but not started**) in
+`docs/GRID_REGIME_FILTER_CHECKPOINT.md` — read whichever is relevant before continuing that work
+in a new session.
 
 ## Forward phases (named, not yet scoped)
 
@@ -603,6 +605,15 @@ not done here, to avoid designing ahead of what's actually been asked for.
   a concrete, evidence-backed idea, not adopted or built here. **Phase 8's originally-scoped
   work, through Step 7, is now complete.** Full detail in
   `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
+- **Grid regime filter (post-Phase-8): proposed, not started.** Not one of the numbered phases —
+  like "wire real adapters" before Phase 6 or "pipeline wiring" after Phase 7, a separate,
+  motivated-by-but-not-part-of the phase that surfaced it (Phase 8's Step 7 regime-analysis
+  finding). Full scoping/design proposal in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`: an opt-in
+  `GridStrategyConfig.max_entry_efficiency_ratio` field gating `pipeline/grid_cycle.py`'s new-order
+  submission (default `None` = off, zero behavior change for any existing caller), following the
+  same bars-derived-skip precedent `runner_cycle.py`'s FLAT-signal check already established. No
+  code written yet — awaiting a decision on the doc's open design points (or explicit approval of
+  its provisional choices) before Step 1's training-window threshold sweep.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
