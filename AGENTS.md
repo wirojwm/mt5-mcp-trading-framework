@@ -503,8 +503,17 @@ not done here, to avoid designing ahead of what's actually been asked for.
   `H4`/`D1` results); `M1`–`H1` all returned exactly the requested 50,000-bar ceiling, meaning
   more exists than measured — not yet a problem, since even the confirmed depth (35+ days of
   `M1`, 6+ years of `H1`) comfortably supports Step 1's 30-trade-per-strategy minimum with room
-  to spare. Next: Step 2's remaining deliverable, a real local cache/loader (not yet built), still
-  needing its own explicit go-ahead for any further live call.
+  to spare. **Step 2 now fully done**: new `backtest/` package (`market_data_cache.py` —
+  `cache_path()`/`save_bars()`/`load_bars()`/`merge_bars()`, pure file I/O, no adapter imports,
+  10 unit tests) stores one CSV per symbol+timeframe under `var/market_data/` (git-ignored, stdlib
+  `csv`, no new dependency — `pyproject.toml` has zero hard runtime deps). Live-seeded via
+  `scripts/run_demo_execution_historical_data_cache_seed.py` (read-only, no `executor` reference):
+  `var/market_data/BTCUSD_M1.csv` now holds 50,000 real `M1` bars
+  (`2026-07-01T01:59` → `2026-08-05T06:48`), confirmed on disk. `M1` chosen as the only cached
+  timeframe for now, matching what grid/runner actually trade live. Next: Step 3 (cost-model
+  research + the pure backtest/replay engine itself — the phase's largest technical component,
+  needs its own scoping pass first given look-ahead bias is the biggest correctness risk in the
+  whole phase).
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

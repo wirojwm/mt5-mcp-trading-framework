@@ -177,14 +177,80 @@ deciding a storage format (e.g. one file per symbol/timeframe under `var/market_
 exactly which timeframe(s) Step 3's backtest engine will target first (likely `M1` or `M5`,
 matching what grid/runner actually trade on live).
 
+## Step 2, remaining deliverable — local cache/loader built and seeded: Step 2 is now DONE
+
+**Storage format decided**: one CSV file per symbol+timeframe (`backtest/market_data_cache.py`'s
+`cache_path()` → `var/market_data/<SYMBOL>_<TIMEFRAME>.csv`), header row
+`time,open,high,low,close,tick_volume,spread` — `symbol`/`timeframe` aren't stored per-row, only
+implied by the filename, matching `state/store.py`'s per-ticket-file precedent of keeping file
+identity in the path. Chose stdlib `csv` over pandas/parquet: `pyproject.toml` has zero hard
+runtime dependencies (`dependencies = []`), and `state/store.py` already established this
+project's own precedent of plain-stdlib local persistence — no new dependency needed for
+something this simple.
+
+**Package**: new `src/mt5_mcp_trading/backtest/` — `market_data_cache.py`
+(`cache_path()`/`save_bars()`/`load_bars()`/`merge_bars()`), pure file I/O only, zero
+`mt5_adapter`/`mcp_adapter`/`execution` imports anywhere (voluntary, matching the live pipeline's
+own pure-core discipline, even though `tests/test_architecture.py`'s `PURE_PACKAGES` list is
+specifically about the documented live pipeline and wasn't extended to include `backtest` — a
+deliberate choice, not an oversight, since this package sits outside that pipeline entirely).
+`save_bars()` raises on an empty list or mixed symbol/timeframe within one call — a real
+correctness guard, not padding: a caller accidentally combining two symbols into one file is
+exactly the kind of bug this catches for free. `merge_bars()` dedups by timestamp (new bar wins
+on a re-fetch) so re-running the seed script later only adds what's actually new, never
+duplicates or silently loses previously-cached bars. **10 new unit tests**
+(`tests/unit/test_backtest_market_data_cache.py`): cold-start empty-cache behavior, exact
+round-trip, sort-on-write, both validation-error paths, merge dedup/sort, and the realistic
+incremental-extension flow (seed once, then merge a second overlapping fetch) end to end.
+
+**Timeframe decided**: `M1` only, for now — matches `TIMEFRAME="M1"`, the only timeframe any real
+pipeline script in this project actually trades on live (both grid and runner, confirmed by
+reading `scripts/run_demo_execution_pipeline_cycle.py`/`pipeline_loop.py`). Other timeframes can
+be added later if Step 7 (regime analysis) ever needs them — not needed to proceed.
+
+**Seeded for real**: `scripts/run_demo_execution_historical_data_cache_seed.py` (new, read-only —
+only calls `get_candles_latest` via `McpMarketDataSource.get_bars()`, no `executor` reference
+anywhere in the file, same pattern as every other real-connection script this project has built).
+Run once, live: fetched 50,000 `BTCUSD` `M1` bars (`2026-07-01T01:59` → `2026-08-05T06:48`,
+matching the probe's earlier finding), merged against an empty starting cache, wrote
+`var/market_data/BTCUSD_M1.csv` — confirmed on disk: 50,001 lines (header + 50,000 rows), 3.5 MB,
+spot-checked first/last rows match the script's own reported range exactly. `var/` is
+git-ignored, so this cache is a local, machine-specific artifact, never committed.
+
+No order, no symbol trading call — fully read-only. Process cleanup confirmed clean afterward
+(no stray processes, read-only-verified).
+
+```
+pytest -q                        -> 366 passed (356 previously + 10 new)
+pytest tests/test_architecture.py -q -> 13 passed (unaffected -- backtest/ isn't in PURE_PACKAGES)
+```
+
+**Step 2 is now fully done**: discovery action (real history depth confirmed) and the remaining
+deliverable (a real, tested, live-seeded local cache) are both complete.
+
+**Files changed this entry**: `src/mt5_mcp_trading/backtest/__init__.py` (new),
+`src/mt5_mcp_trading/backtest/market_data_cache.py` (new),
+`tests/unit/test_backtest_market_data_cache.py` (new),
+`scripts/run_demo_execution_historical_data_cache_seed.py` (new), this checkpoint doc.
+`var/market_data/BTCUSD_M1.csv` was also created but is git-ignored, never committed.
+
+## Exact next smallest task
+
+**Steps 1 and 2 are both done.** Step 3 is next: cost-model research (is commission/swap
+available via any MCP tool, or is spread-only the honest ceiling — question 4, still open) and
+the pure backtest/replay engine itself, reusing existing `strategy`/`risk`/`order_planning` code
+untouched. This is the single largest technical component of the whole phase — needs its own
+careful design pass before any code, specifically around look-ahead-bias prevention (the
+"Key risk" column already flags this), and should be scoped in conversation before building.
+
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (the historical-data-probe entry is the most recent
-— Step 1 done, Step 2's discovery action done: confirmed BTCUSD history back to 2015-01-01,
-M1 has at least 35 days readily available, more almost certainly exists but wasn't the
-bottleneck), confirm git status is clean at the latest commit, then ask me what to do next —
-Step 2's remaining piece (a real local cache/loader, storage format decision) is the smallest
-next step."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 2 is now fully done — real BTCUSD M1 history
+cached locally at var/market_data/BTCUSD_M1.csv, 50,000 bars, via
+backtest/market_data_cache.py), confirm git status is clean at the latest commit, then ask me
+what to do next — Step 3 (cost-model research + the backtest/replay engine itself) is next and
+needs its own scoping pass before any code, given look-ahead bias is the single biggest
+correctness risk in the whole phase."
