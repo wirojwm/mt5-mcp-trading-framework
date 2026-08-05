@@ -151,16 +151,41 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   `close_position()` via `_current_posture()` — this was true of the old format too and is
   **not** fixed by this change; flagged as a remaining risk only if ticket volume ever grows
   very large under sustained use. Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
-- **Phase 7: done for its two scoped slices, but not full failure-mode coverage — do not treat
-  "done" as "complete."** grid_cycle failure handling and the state-store-at-scale sweep + the
-  O(N²) fix are complete; user chose to close out the phase here rather than continue with
-  live/MCP-adjacent failure testing or the `all_open()` per-action cost noted above.
-  **Never done, still open**: no test or live run has ever forced an MCP disconnect, made a call
-  actually hit `McpClient.call_tool()`'s 30s timeout, or exercised a process-restart-then-reconcile
-  cycle — the pipeline-wiring loop runs below only ever observed a connection *not* dropping, which
-  proves nothing about the documented "a dropped connection is fatal, no reconnect logic" behavior.
-  See "Forward phases" below — do not start Phase 8 until this is explicitly completed or accepted
-  as an open risk.
+- **Phase 7: two scoped slices done, MCP disconnect/timeout now partially closed (mock/stub-only)
+  — still not full failure-mode coverage, do not treat "done" as "complete."** grid_cycle failure
+  handling and the state-store-at-scale sweep + the O(N²) fix are complete. The live/MCP-adjacent
+  failure-testing gap flagged below is now partially closed, in two stages, both stub/mock-only —
+  no MT5, no credentials, no `.env`, no live/trading call in either:
+  - **Stage 1** (`tests/integration/test_mcp_client_disconnect.py`): spawns a throwaway stub stdio
+    MCP server (`tests/integration/_stub_mcp_server.py`, no MT5 import) and force-kills it mid-call
+    for real. Empirical finding, not assumed: `McpClient`'s real behavior on a dropped pipe is
+    `mcp.shared.exceptions.McpError("Connection closed")` in well under a second — a clean
+    `Exception` subtype, not the 30s `McpCallTimeoutError` path, and not an escaping
+    `asyncio.CancelledError`/`BaseExceptionGroup` (a real risk with anyio-based transports,
+    seriously considered and directly checked, not assumed safe). A second call on the same dead
+    session, and `McpClient.__aexit__` cleanup after the kill, both also fail/complete fast, not
+    hang.
+  - **Stage 2** (`tests/integration/test_pipeline_loop_disconnect.py`): loads
+    `scripts/run_demo_execution_pipeline_loop.py`'s `_run_one_cycle()` directly via `importlib`
+    (never calls that script's `main()` — no `.env`/credentials touched) and injects that exact
+    real exception type via mock market data/account + `DryRunExecutor`. Proves the existing
+    blanket `except Exception` already catches it correctly, `_run_one_cycle()` returns `ok=False`
+    (never raises past its own boundary), the same stop check `main()` uses prevents a later
+    cycle's executor from ever being touched, and `StateStore` is left completely unchanged (no
+    corrupted or partial record) — matching `McpOrderExecutor`'s own call-then-record ordering.
+  - **No code fix was needed** — the existing `except Exception` handling already covered the real
+    disconnect shape correctly; this closes the "is this actually true or just untested" question,
+    not a bug.
+  - **Still open, not done by this step (Stage 3, live-adjacent, needs its own separate explicit
+    approval before any code or live call)**: a real disconnect has never been forced against the
+    actual demo-connected subprocess (only a throwaway stub); the 30s `McpCallTimeoutError` path
+    has never fired for real (only unit-tested against a fake session, `tests/unit/test_mcp_client.py`);
+    and the "ambiguous in-flight" case — a real order reaches the broker but the response is lost
+    to the same disconnect — remains entirely untested, since `McpOrderExecutor` only writes local
+    state *after* its MCP call returns, so this can only ever be resolved against a real broker,
+    never a mock.
+  See "Forward phases" below — do not start Phase 8 until Stage 3 above is explicitly completed or
+  accepted as an open risk.
 - **Pipeline wiring (post-Phase 7): in progress, first live cycle done and cleaned up.** Not
   one of the numbered phases — like "wire real adapters" before Phase 6, a separate,
   explicitly-approved effort, called out in both the Phase 6 and Phase 7 checkpoint docs as

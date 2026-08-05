@@ -1640,13 +1640,98 @@ Recommended order, smallest/lowest-risk first:
 No single one of these is prescribed — this is a menu for tomorrow's first explicit decision, not
 a plan already put in motion.
 
+## Step 32 — MCP disconnect/timeout testing, Stage 1 + Stage 2 (mock/stub-only, no live call)
+
+New session, roadmap-review-driven. Before any of this, confirmed fresh: latest commit `df8db05`
+(Step 31), working tree clean, no live process, no stop-file, 348 tests passing. A full roadmap
+review (Phase 0-9 + live-pilot) found Phase 7's live/MCP-adjacent failure testing — flagged as
+never done since Step 14/Phase 7's own checkpoint — was the correct smallest task to close before
+considering Phase 8, since every phase-8 candidate sits on top of an execution/reconciliation
+layer whose real disconnect behavior had only ever been *inferred* (six loop runs that happened
+not to drop), never *forced and observed*. User approved scoping it in three stages (see AGENTS.md
+"Forward phases") and then explicitly approved building Stage 1 + Stage 2 only, with five required
+behaviors to prove and Stage 3 (real subprocess/MT5) held for separate approval.
+
+**Stage 1 — `tests/integration/test_mcp_client_disconnect.py` + `tests/integration/_stub_mcp_server.py`
+(new)**: a throwaway stub stdio MCP server (`FastMCP`, one `sleep_forever` tool, no MT5/dotenv/
+credential import anywhere) is spawned via the real `McpClient` exactly as production does, then
+hard-killed (`os.kill`, which TerminateProcess()s unconditionally on Windows) while a call is
+genuinely in flight. Before writing any assertion, ran an exploratory throwaway script (not
+committed) to observe real behavior first rather than guess it — found `McpClient.call_tool()`
+raises `mcp.shared.exceptions.McpError('Connection closed')` in ~0.02s, confirmed via
+`McpError.__mro__` to be a plain `Exception` subclass, not a `BaseExceptionGroup`/
+`asyncio.CancelledError` (a real, specifically-considered risk with anyio task-group-based
+transports — a disconnect propagating as a bare cancellation would silently defeat every
+`except Exception` in this codebase). Three tests, all passing: the disconnect surfaces well
+under the 30s `McpCallTimeoutError` bound and as a plain catchable `Exception`, `McpClient.__aexit__`
+cleanup after the kill doesn't hang, and a second `call_tool()` on the same now-dead session also
+fails fast rather than hanging.
+
+**Stage 2 — `tests/integration/test_pipeline_loop_disconnect.py` (new)**: loads
+`scripts/run_demo_execution_pipeline_loop.py` via `importlib.util.spec_from_file_location()` so
+its `_run_one_cycle()` can be called directly without ever executing that script's `main()` (where
+`load_dotenv()`/`load_settings()`/`demo_execution_session()` live — confirmed by reading the
+script that everything credential/connection-adjacent is inside `main()`'s `if __name__ ==
+"__main__":` guard, never triggered by `exec_module()`). Injects the exact real exception found in
+Stage 1 (`McpError(ErrorData(code=0, message="Connection closed"))`, not a generic stand-in) via a
+`_DisconnectingExecutor` wrapping `DryRunExecutor`, against mock market data/account. Four tests,
+all passing: a grid-side disconnect and a runner-side disconnect both make `_run_one_cycle()`
+return `False` rather than raise past its own boundary; a pre-existing `StateStore` record survives
+a failed cycle completely unchanged (no corruption, no partial/leaked record for the failed
+attempt); and driving `main()`'s own exact two-line stop check (`if not ok: break`) against two
+real sequential `_run_one_cycle()` calls proves a second cycle's executor (a `_PoisonExecutor` that
+raises `AssertionError` if ever touched) is never invoked once the first cycle fails.
+
+**Finding: no code fix was needed.** The existing blanket `except Exception` in
+`_run_one_cycle()` already handles the real disconnect exception shape correctly — Stage 1/2
+answer "is the documented fatal-on-disconnect behavior actually true" with a verified yes, for the
+mock/stub-reachable slice of that question, not new functionality.
+
+**Explicitly still open — Stage 3, live-adjacent, not started, needs its own separate approval**:
+1. No real disconnect has been forced against the actual demo-connected subprocess (only a
+   throwaway stub with no MT5 involved) — Stage 1/2 prove `McpClient`'s and `_run_one_cycle()`'s
+   *mechanics* are sound, not that a real production disconnect looks identical (plausible, since
+   nothing here is metatrader-mcp-server-specific, but not yet observed).
+2. The 30s `McpCallTimeoutError` path has never fired for real — only unit-tested against a fake
+   session (`tests/unit/test_mcp_client.py`, pre-existing) and, in Stage 1, superseded by a much
+   faster `McpError` before the timeout could ever matter. A genuinely stuck real call (vs. a
+   cleanly-detected closed pipe) remains unexercised.
+3. The "ambiguous in-flight" case is still entirely untested and can only ever be resolved live:
+   `McpOrderExecutor.submit()` calls `state_store.record_submission()` only *after* its MCP call
+   returns (`mcp_order_executor.py:233-262` LIMIT, `:287-315` MARKET) — so a call that raises
+   before returning is never recorded locally, meaning a real disconnect at the exact moment the
+   broker accepts an order but the response is lost would leave a genuinely unknown ticket with no
+   local trace at all. No mock can manufacture this; it requires a real broker.
+
+```
+pytest -q                        -> 355 passed (348 previously + 7 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No live/MCP/MT5 call was made anywhere in this step. No credentials or `.env` were read. No
+production code changed (no fix was needed).
+
+**Files changed this step**: `tests/integration/_stub_mcp_server.py` (new),
+`tests/integration/test_mcp_client_disconnect.py` (new),
+`tests/integration/test_pipeline_loop_disconnect.py` (new), `AGENTS.md`, this checkpoint doc.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. Account is fully clean, nothing outstanding.
 
+1. Stage 3 of the disconnect-testing effort (forcing a real disconnect against the actual
+   demo-connected subprocess, exercising a real `McpCallTimeoutError`, and observing the
+   ambiguous-in-flight case) is the natural next step if continuing this thread — live-adjacent,
+   needs its own explicit go-ahead, ideally timed for a moment with zero standing account exposure
+   (true right now).
+2. Otherwise, per the roadmap review, Phase 8 (strategy research/tuning) remains explicitly not
+   started, pending either Stage 3 or an explicit decision to accept its remaining gaps as an open
+   risk and proceed anyway.
+
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 31 is the most recent entry), confirm git status is
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 32 is the most recent entry), confirm git status is
 clean at the latest commit, confirm no live process is running, confirm the demo account is clean
 (no positions, no pending orders), confirm live testing is still paused, then ask me what to do
-next — do not run anything live without my explicit go-ahead first."
+next — do not run anything live without my explicit go-ahead first. Stage 3 of the MCP
+disconnect/timeout test (real subprocess/MT5-adjacent) is scoped and ready but not started."
