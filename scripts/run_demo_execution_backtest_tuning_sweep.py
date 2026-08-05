@@ -73,6 +73,11 @@ RUNNER_SL_ATR_MULT_CANDIDATES = (1.5, 2.0, 2.5, 3.0, 4.0)  # current default is 
 # Widening below 0.3 to check whether that edge is a real, continuing trend or a reversal, before
 # trusting 0.3 as a candidate -- same caution already applied to runner's 3.0/4.0 reversal.
 GRID_STEP_MULT_CANDIDATES = (0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8)  # current default is 0.4
+# step_mult's own sweep didn't validate out-of-sample (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md,
+# Step 6) -- grid's negative expectancy isn't a cost problem (Step 4) or a step-spacing problem
+# (Step 5/6). sl_atr_mult (grid's stop distance, independent of step_mult/tp's formula -- see
+# strategy/grid.py's own docstring) is the next untested lever.
+GRID_SL_ATR_MULT_CANDIDATES = (1.0, 1.5, 2.0, 2.5, 3.0, 4.0)  # current default is 2.0
 
 _logger = get_logger("mt5_mcp_trading.scripts.backtest_tuning_sweep")
 
@@ -150,6 +155,21 @@ async def main() -> None:
         )
         trades = [t for t in ledger.closed_trades if t.magic == GRID_MAGIC]
         print(_row(f"step={step_mult}", trades))
+
+    print("\n--- grid: sl_atr_mult sweep (step_mult held at its current default, 0.4) ---")
+    for sl_mult in GRID_SL_ATR_MULT_CANDIDATES:
+        _logger.info("grid sweep: sl_atr_mult=%s ...", sl_mult)
+        grid_config = GridStrategyConfig(sl_atr_mult=sl_mult)
+        ledger = await run_backtest(
+            bars=train_bars, symbol=SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
+            symbol_info=symbol_info, grid_config=grid_config, runner_config=RunnerStrategyConfig(),
+            money_config=MoneyConfig(lot_size_mode="fixed", fixed_lot=0.01),
+            caps=ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06),
+            grid_magic=GRID_MAGIC, runner_magic=RUNNER_MAGIC,
+            cycle_interval_bars=CYCLE_INTERVAL_BARS,
+        )
+        trades = [t for t in ledger.closed_trades if t.magic == GRID_MAGIC]
+        print(_row(f"sl={sl_mult}", trades))
 
     print("\n=====================================================================\n")
 

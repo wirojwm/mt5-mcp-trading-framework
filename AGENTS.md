@@ -578,7 +578,16 @@ not done here, to avoid designing ahead of what's actually been asked for.
   complete (edge validation, cost sensitivity, tuning, walk-forward validation, production
   adoption, and live verification all done). Live/order-submitting testing returns to paused
   status — that smoke test was a single, narrowly-scoped exception, not a general resumption.
-  Full detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
+  **Grid's negative expectancy remains open**: a follow-up `sl_atr_mult` sweep (training window)
+  looked like the cleanest signal of the whole phase — strictly monotonic across every tested
+  value — but was found, by direct check against the numbers, to be an R-unit measurement
+  artifact (grid's `tp_price` is independent of `sl_atr_mult`, so widening the stop only inflates
+  the R denominator; expectancy can only approach 0 from below this way, never genuinely turn
+  positive, and the shrinking R-drawdown number masks real dollar risk per trade actually
+  *growing*). Not adopted. Three single-parameter hypotheses (cost, step-spacing, decoupled SL
+  distance) are now checked and rejected for grid; no fix found yet, not a "no fix exists"
+  verdict. Full detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest
+  task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

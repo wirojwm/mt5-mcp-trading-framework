@@ -710,31 +710,92 @@ pytest -q -> 413 passed (unchanged -- no code touched this entry, live verificat
 
 **Files changed this entry**: none (no code change — a live run and this checkpoint doc only).
 
+## Grid `sl_atr_mult` sweep — a clean-looking trend that turned out to be a measurement artifact
+
+Follow-up investigation into grid's still-unaddressed negative expectancy (Step 4 ruled out
+cost, Step 5/6 ruled out `step_mult` as a fix). `sl_atr_mult` — grid's stop-loss distance,
+computed independently of `step_mult`/`tp_price` by design (see `strategy/grid.py`'s own
+docstring) — was the next untested lever. Added a third sweep block to
+`scripts/run_demo_execution_backtest_tuning_sweep.py` (`GRID_SL_ATR_MULT_CANDIDATES`), training
+window only, `step_mult` held at its confirmed default (0.4), same one-real-call methodology as
+every prior sweep in this step.
+
+**Real results, training window**:
+
+| sl_atr_mult | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| 1.0 | 119 | 40.3% | −0.403 R | 50.358 R |
+| 1.5 | 119 | 52.1% | −0.312 R | 38.759 R |
+| 2.0 (current default) | 119 | 56.3% | −0.302 R | 37.120 R |
+| 2.5 | 123 | 62.6% | −0.254 R | 32.560 R |
+| 3.0 | 117 | 65.8% | −0.237 R | 28.320 R |
+| 4.0 | 115 | 76.5% | −0.143 R | 17.760 R |
+
+Every metric improves strictly monotonically across the whole tested range, with no reversal —
+superficially the cleanest-looking signal of the entire phase, better than either of runner's or
+grid's earlier bounded interior peaks.
+
+**Investigated before trusting it, and it doesn't hold up — this is a measurement artifact, not
+a genuine edge improvement.** `tp_price` is computed from `step_mult` alone, independent of
+`sl_atr_mult`. Since R-multiple is defined as P&L ÷ `|entry−sl|`, growing `sl_atr_mult` while
+`tp_price` stays fixed inflates the R unit itself: a winning trade's R-multiple should equal
+`tp_distance / sl_distance` if this is purely mechanical. Checked directly against every row —
+it matches almost exactly at each point (e.g. `sl=4.0`: predicted ratio `0.48/4.0=0.12`, actual
+average win R ≈`0.120`; `sl=1.0`: predicted `0.48`, actual ≈`0.481`; same tight match at every
+other candidate). Win rate rises because a farther-away stop is simply less likely to be touched
+before the fixed TP — not because grid's entries or exits got any better at predicting direction.
+**Consequence**: under this formula, expectancy can only ever approach 0 from below as
+`sl_atr_mult → ∞`; it is structurally incapable of crossing into positive territory this way, no
+matter how far the sweep is extended. There is also a real practical trap in the drawdown column:
+it shrinks (37R → 18R) because R itself is inflating, not because real dollar risk per trade is
+shrinking — the actual stop distance in price terms is roughly *4x wider* at `sl_atr_mult=4.0`
+than at the default, meaning real risk-per-trade is larger, not smaller, exactly the opposite of
+what the R-normalized number suggests at a glance.
+
+**Decided: `sl_atr_mult=4.0` (or any point on this sweep) is NOT adopted as a candidate.** No
+production default changed. If grid's SL/TP shape is worth exploring further, it needs a sweep
+that scales `sl_atr_mult` and `tp_mult` together at a fixed reward:risk ratio (the same design
+runner's own sweep already used) so the comparison is between genuinely different risk profiles,
+not an R-unit artifact. Combined with Step 4 (not a cost problem) and Step 5/6 (not a
+step-spacing problem), this makes three single-parameter hypotheses now checked and rejected —
+increasingly consistent with grid's negative expectancy being a structural entry-timing property
+rather than something a single SL/TP/spacing parameter fixes.
+
+```
+pytest -q                        -> 413 passed (unchanged -- only a sweep-script candidate tuple added)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call beyond the sweep's one read-only `get_symbol_info` pull. Process
+cleanup confirmed clean.
+
+**Files changed this entry**: `scripts/run_demo_execution_backtest_tuning_sweep.py` (modified —
+new `GRID_SL_ATR_MULT_CANDIDATES` sweep block), this checkpoint doc.
+
 ## Exact next smallest task
 
-**Phase 8 is functionally complete for its original scope**: edge validation (Step 1-3), cost/
-stress sensitivity (Step 4), parameter tuning (Step 5), walk-forward out-of-sample validation
-(Step 6), production adoption of the validated candidate, and now live verification of that
-default — all done. Remaining items are optional, not blocking:
-- **Step 7 (regime analysis)** — lowest priority, explicitly optional per the original scoping
-  table; nothing in the Step 5/6 results obviously suggests regime-dependence worth chasing.
-- Whether/when to run the new default in a *real* (non-magic-79999, non-self-cleaning) strategy
-  cycle — e.g. `scripts/run_demo_execution_pipeline_cycle.py` with `STRATEGY="RUNNER"` — is a
-  separate, later decision; the smoke test above already proves the code path end-to-end, a real
-  cycle would just be resuming ordinary live pipeline operation, its own explicit go-ahead.
-- Grid's negative expectancy remains unaddressed — this phase's evidence says it isn't primarily
-  a cost problem (Step 4) and isn't fixed by `step_mult` alone (Step 5/6); if grid tuning is
-  revisited, it would need a different parameter (e.g. `atr_period`, `sl_atr_mult`,
-  `min_step_points`) or a different hypothesis, not a continuation of this sweep.
-
-**Live/order-submitting testing returns to paused status** — this entry's smoke test was a single,
-narrowly-scoped, explicitly-approved exception, not a general resumption. Any further real MCP
-call needs its own fresh go-ahead, same standing rule as every prior step in this project.
+**Phase 8's originally-scoped work is complete**: edge validation (Step 1-3), cost/stress
+sensitivity (Step 4), parameter tuning (Step 5), walk-forward out-of-sample validation (Step 6),
+production adoption and live verification of runner's validated candidate — all done. **Grid's
+negative expectancy remains open and unresolved** — three single-parameter hypotheses checked and
+rejected (cost, step-spacing, decoupled SL distance), not yet a "no fix exists" verdict, just no
+fix found yet by this approach. Live testing remains paused (the smoke-test entry above was a
+single, explicitly-approved exception, not a resumption). Next decision, not yet made:
+- A coupled `sl_atr_mult`/`tp_mult` ratio sweep for grid (the fixed-ratio design that avoids the
+  R-unit artifact just found) — the natural next single-lever attempt.
+- Step 7 (regime analysis) — check whether grid's negative expectancy is regime-dependent rather
+  than a parameter problem at all; no regime classifier exists in this codebase yet, real new
+  infrastructure, not a quick sweep.
+- Stop investigating grid for now and treat "no validated fix, structural negative expectancy" as
+  this phase's honest, final verdict for grid — a legitimate phase outcome, not a failure to find
+  one.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Phase 8 is functionally complete: runner's
-sl_atr_mult=3.0/tp_atr_mult=6.0 is the production default, validated both out-of-sample and live
-on the demo account — ticket 171702598, account left clean; grid's step_mult stays at 0.4, its
-candidate didn't validate. Only optional items remain: Step 7 regime analysis, and whether/when
-to resume ordinary live pipeline operation with the new default). Confirm git status is clean at
-the latest commit and no live process is running, then ask me what to do next."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Phase 8's core scope is complete; runner's
+sl_atr_mult=3.0/tp_atr_mult=6.0 is live-verified as the production default. Grid's negative
+expectancy is still open — cost, step_mult, and a decoupled sl_atr_mult sweep have all been
+checked and rejected as fixes; the sl_atr_mult sweep looked promising but was found to be an
+R-unit measurement artifact, not a real edge, see that entry for the exact reasoning). Confirm
+git status is clean at the latest commit and no live process is running, then ask me what to do
+next — a coupled sl/tp ratio sweep for grid, Step 7 regime analysis, or stopping the grid
+investigation here are the open options, none decided yet."
