@@ -462,26 +462,99 @@ confirmed clean.
 `spread_multiplier`, shared `half_spread_price()` helper), `tests/unit/test_backtest_engine.py`
 (modified, +3), `scripts/run_demo_execution_backtest_stress_test.py` (new), this checkpoint doc.
 
+## Step 5 (in progress) — cache expanded, train/test split built, sweep run against training window only; STOPPED before winner selection (midday break)
+
+Scoped in conversation first (see prior entry). Session paused for a midday break before this
+step's own "pick a winner" decision — deliberately left undone, see "Exact next smallest task"
+below.
+
+**Cache expanded, live**: `scripts/run_demo_execution_historical_data_cache_seed.py`'s
+`FETCH_COUNT` was the *probe script's* request ceiling (50,000), not this terminal's real depth.
+Bisected live (500,000 and 150,000 and 100,000 all returned 0 bars outright — some other
+tool/response-size limit, not a graceful depth degradation; 95,000 succeeded) to
+`FETCH_COUNT=95,000` without over-searching for the exact byte-level ceiling (not needed).
+`var/market_data/BTCUSD_M1.csv` now holds 95,000 real bars, `2026-05-30` → `2026-08-05` (~67
+days, nearly double the original 35-day window), confirmed on disk.
+
+**Train/test split built**: `backtest/market_data_cache.py`'s new `split_bars(bars,
+train_fraction=0.8)` — splits by time/index position (bars are always time-sorted), never by
+trade count or any criterion that could leak information across the boundary. Raises on empty
+input or an out-of-range fraction; both sides always non-empty even at extreme fractions. +6
+unit tests (80/20 split size, strict time ordering, exact coverage with an awkward bar count,
+non-empty at extreme fractions, both error paths).
+
+**Sweep script built and run, training window only**:
+`scripts/run_demo_execution_backtest_tuning_sweep.py` — one real `get_symbol_info` call reused
+across the whole sweep, everything else offline. One-factor-at-a-time (grid and runner's
+exposure guards are per-magic independent, confirmed by reading both cycle functions, so this
+isolation is valid, not an approximation). Train: 76,000 bars (`2026-05-30` → `2026-07-22`).
+Test: 19,000 bars (`2026-07-22` → `2026-08-05`), **held out, not read by this script at all**.
+
+**Real results, training window only**:
+
+| runner `sl_atr_mult` (`tp_atr_mult`=2x) | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| 1.5 (current default) | 6,820 | 29.3% | −0.122 R | 828.995 R |
+| 2.0 | 4,393 | 30.0% | −0.101 R | 445.998 R |
+| 2.5 | 3,014 | 30.2% | −0.095 R | 291.999 R |
+| **3.0** | 1,989 | 31.2% | **−0.065 R** | **172.000 R** |
+| 4.0 | 1,173 | 29.2% | −0.123 R | 157.997 R |
+
+| grid `step_mult` | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| 0.3 | 135 | 65.2% | −0.231 R | 32.060 R |
+| 0.4 (current default) | 119 | 56.3% | −0.302 R | 37.120 R |
+| 0.5 | 121 | 57.0% | −0.259 R | 32.800 R |
+| 0.6 | 117 | 55.6% | −0.244 R | 29.321 R |
+| **0.8** | 113 | 51.3% | **−0.240 R** | 28.120 R |
+
+**Not yet interpreted or acted on — deliberately stopped here.** Both sweeps show a monotonic-
+looking trend toward less-negative expectancy at the tested extremes (runner: `sl_atr_mult=3.0`
+best in this table, though `4.0` reverses the trend, worth checking whether the true optimum
+sits between 3.0–4.0; grid: `step_mult=0.8`, the edge of the tested range, meaning an even wider
+step hasn't been ruled out). **No winner has been picked. No production default has been
+changed.** Both remain exactly as Step 4 left them. Whether this looks like a genuine plateau
+(trustworthy) or an edge-of-range artifact (needs a wider candidate range before trusting it) is
+this step's own next decision, not made yet.
+
+No order, no live/trading call beyond the one read-only `get_symbol_info` pull (cache expansion)
+and the sweep's own one read-only `get_symbol_info` pull. Process cleanup confirmed clean.
+
+```
+pytest -q                        -> 413 passed (407 previously + 6 new, split_bars)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_historical_data_cache_seed.py`
+(modified — `FETCH_COUNT` bumped to 95,000, empty-fetch handled gracefully instead of crashing),
+`src/mt5_mcp_trading/backtest/market_data_cache.py` (modified — new `split_bars()`),
+`tests/unit/test_backtest_market_data_cache.py` (modified, +6),
+`scripts/run_demo_execution_backtest_tuning_sweep.py` (new), this checkpoint doc.
+`var/market_data/BTCUSD_M1.csv` also grew (95,000 bars now) but is git-ignored, never committed.
+
 ## Exact next smallest task
 
-**Steps 1–4 done; runner's re-entry throttle fixed and live-proven.** Step 5 (parameter tuning)
-is next and last in the originally scoped sequence before Step 6 (walk-forward/out-of-sample
-validation). Step 4 gives Step 5 real prioritization evidence, not a blind sweep: grid's negative
-expectancy isn't primarily cost-driven (look at entry timing/the step-TP-SL formula first);
-runner's is severely cost-sensitive and likely has too-tight a stop relative to real execution
-costs (`sl_atr_mult` is the first parameter worth examining). Recommend scoping Step 5's actual
-sweep methodology in conversation before building, same as every prior step — in particular, the
-train/test split discipline flagged as Step 5's own key risk (overfitting to this one cached
-window) needs a concrete design, not just a reminder that it matters.
+**Stopped mid-Step-5, deliberately, for a midday break — not a stopping point chosen by
+necessity.** The sweep tables above are real and complete for the candidates tested, but nobody
+has looked at them and decided anything yet. Next smallest step, this afternoon: interpret the
+two tables (plateau vs. edge-of-range check first, per the "not yet interpreted" note above),
+decide whether either candidate set needs a wider range before trusting it, and only then decide
+whether to lock in a candidate parameter set for Step 6 to validate against the held-out test
+window. **Step 6 has not started. No test-window data has been touched by anything this
+session.** Phase 8 should not be considered complete or "an edge validated" under any
+circumstance until Step 6 confirms a locked candidate against that untouched window — the
+sweep table alone is training-window evidence only, exactly the overfitting risk this whole step
+was designed to guard against, not resolved by it alone.
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 4 is the most recent entry — cost/stress
-sensitivity run against real data at 1x/2x/5x spread: grid is only mildly cost-sensitive, runner
-is severely cost-sensitive with a likely-too-tight stop distance), confirm git status is clean at
-the latest commit, then ask me what to do next — Step 5 (parameter tuning) is next, but needs its
-own scoping pass first, particularly the train/test split design to avoid overfitting to the one
-cached historical window."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 5 is the most recent entry, IN PROGRESS,
+stopped deliberately before winner selection for a midday break — training-window sweep results
+exist for runner's sl_atr_mult and grid's step_mult, nobody has interpreted them yet, no
+production default changed, Step 6/test-window untouched), confirm git status is clean at
+the latest commit and no live process is running, then ask me what to do next — interpreting the
+sweep tables and deciding on a candidate parameter set is the next smallest step; do not touch
+the held-out test window or start Step 6 without my explicit go-ahead."

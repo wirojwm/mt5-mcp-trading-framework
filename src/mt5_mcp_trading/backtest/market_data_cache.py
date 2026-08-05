@@ -91,3 +91,22 @@ def merge_bars(existing: Sequence[MarketBar], new: Sequence[MarketBar]) -> list[
     by_time: dict[datetime, MarketBar] = {b.time: b for b in existing}
     by_time.update({b.time: b for b in new})
     return sorted(by_time.values(), key=lambda b: b.time)
+
+
+def split_bars(
+    bars: Sequence[MarketBar], train_fraction: float = 0.8,
+) -> tuple[list[MarketBar], list[MarketBar]]:
+    """Splits into a training prefix and a held-out test suffix, by TIME (index position -- bars
+    are always time-sorted, per this module's own load/merge guarantees), never by trade count
+    or any other criterion that could let information leak across the boundary. Phase 8 Step 5's
+    train/test split (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md): parameter tuning must only
+    ever see the training portion; the test portion is reserved for Step 6 (walk-forward/
+    out-of-sample validation), untouched until then."""
+    if not bars:
+        raise ValueError("split_bars() requires at least one bar")
+    if not 0.0 < train_fraction < 1.0:
+        raise ValueError(f"train_fraction must be strictly between 0 and 1, got {train_fraction}")
+    ordered = list(bars)
+    split_index = round(len(ordered) * train_fraction)
+    split_index = max(1, min(len(ordered) - 1, split_index))  # both sides always non-empty
+    return ordered[:split_index], ordered[split_index:]

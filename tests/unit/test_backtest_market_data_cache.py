@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from mt5_mcp_trading.backtest.market_data_cache import cache_path, load_bars, merge_bars, save_bars
+from mt5_mcp_trading.backtest.market_data_cache import (
+    cache_path,
+    load_bars,
+    merge_bars,
+    save_bars,
+    split_bars,
+)
 from mt5_mcp_trading.domain.models import MarketBar
 
 SYMBOL = "BTCUSD"
@@ -100,3 +106,48 @@ def test_merge_then_save_then_load_extends_an_existing_cache(tmp_path: Path) -> 
 
     loaded = load_bars(path, SYMBOL, TIMEFRAME)
     assert [b.time for b in loaded] == [BASE, BASE + timedelta(minutes=1), BASE + timedelta(minutes=2)]
+
+
+# ---------- split_bars (Phase 8 Step 5 train/test split) ----------
+
+def test_split_bars_default_fraction_splits_80_20() -> None:
+    bars = [_bar(i, 100.0 + i) for i in range(100)]
+    train, test = split_bars(bars)
+    assert len(train) == 80
+    assert len(test) == 20
+
+
+def test_split_bars_train_is_strictly_earlier_than_test() -> None:
+    bars = [_bar(i, 100.0 + i) for i in range(100)]
+    train, test = split_bars(bars, train_fraction=0.8)
+    assert train[-1].time < test[0].time
+    assert train == bars[:80]
+    assert test == bars[80:]
+
+
+def test_split_bars_covers_every_bar_exactly_once() -> None:
+    bars = [_bar(i, 100.0 + i) for i in range(37)]  # an awkward, non-round count
+    train, test = split_bars(bars, train_fraction=0.8)
+    assert train + test == bars
+
+
+def test_split_bars_both_sides_nonempty_even_at_extreme_fractions() -> None:
+    bars = [_bar(i, 100.0 + i) for i in range(10)]
+    train, test = split_bars(bars, train_fraction=0.99)
+    assert len(train) >= 1
+    assert len(test) >= 1
+
+
+def test_split_bars_raises_on_empty_bars() -> None:
+    with pytest.raises(ValueError):
+        split_bars([])
+
+
+def test_split_bars_raises_on_out_of_range_fraction() -> None:
+    bars = [_bar(0, 100.0)]
+    with pytest.raises(ValueError):
+        split_bars(bars, train_fraction=0.0)
+    with pytest.raises(ValueError):
+        split_bars(bars, train_fraction=1.0)
+    with pytest.raises(ValueError):
+        split_bars(bars, train_fraction=1.5)

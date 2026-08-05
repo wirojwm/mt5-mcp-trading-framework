@@ -546,8 +546,18 @@ not done here, to avoid designing ahead of what's actually been asked for.
   **runner is severely, monotonically cost-sensitive** (expectancy −0.182 R → −0.852 R, win rate
   27.3% → 4.9%, from 1x to 5x spread), implicating its `sl_atr_mult=1.5` default as too tight
   relative to realistic execution costs — real, actionable prioritization evidence for Step 5, not
-  a blind sweep. Next: Step 5 (tuning), which needs its own scoping pass first, particularly a
-  concrete train/test split design to avoid overfitting to this one cached window.
+  a blind sweep. **Step 5: IN PROGRESS, stopped deliberately for a midday break before winner
+  selection — no production default changed.** Cache expanded live (95,000 `M1` bars now, ~67
+  days — the original 50,000 was the probe script's request ceiling, not the real depth).
+  `backtest/market_data_cache.split_bars()` (new, +6 tests) splits by time into a 76,000-bar
+  train window and a 19,000-bar held-out test window, never touched this step.
+  `scripts/run_demo_execution_backtest_tuning_sweep.py` (new) ran a one-factor-at-a-time sweep
+  against the training window only — runner's `sl_atr_mult` (candidates 1.5–4.0) and grid's
+  `step_mult` (candidates 0.3–0.8), full results table in the checkpoint doc. Both sweeps show a
+  trend toward less-negative expectancy at the edge of the tested range (runner best at 3.0 of
+  5, though 4.0 reverses it; grid best at 0.8, the edge itself) — **not yet interpreted, no
+  winner picked, Step 6/test window untouched.** Full detail and the exact resume point in
+  `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
