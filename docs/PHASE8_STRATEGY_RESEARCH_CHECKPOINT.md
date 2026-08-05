@@ -677,35 +677,64 @@ automatically; nothing has been run live against it yet.
 `scripts/run_demo_execution_runner_sltp_smoke_test.py` (modified — one stale comment), this
 checkpoint doc.
 
+## New runner default live-verified on the demo account
+
+User approved resuming live/order-submitting testing (paused since the pipeline-wiring effort)
+specifically for this narrow, well-scoped check. Ran the existing, self-cleaning
+`scripts/run_demo_execution_runner_sltp_smoke_test.py` unmodified (already updated in the prior
+entry to expect the new defaults in its own comment) — the same script originally used to verify
+the pre-Phase-8 runner SL/TP fix, `SMOKE_TEST_MAGIC=79999`, one `run_runner_cycle()` call against
+the real `McpOrderExecutor`, independent live re-verification, then cleanup on full success only.
+
+**Live result**: SELL, ticket `171702598`, BTCUSD, 0.01 lot, retcode `10009` both submit and
+close, `verified=True` both times. Requested `sl=64032.12`/`tp=63918.16` around
+`price=63994.13` (executed `63994.02`) — correctly ordered for a SELL (`tp < price < sl`) and at
+the new 2:1 ratio (37.99 vs 75.97 points from entry, i.e. `tp_atr_mult`/`sl_atr_mult` = 2.0,
+exactly as configured). Independent post-open live re-read confirmed the position's actual
+`sl`/`tp` matched the requested values exactly, not just `ExecutionResult.verified`. Closed
+immediately after per the script's own design (one attempt, no retry); a final live re-read
+confirmed the ticket absent. **Account left clean — 0 BTCUSD positions.** No stray process
+afterward (confirmed via `Get-Process`). The known, already-documented `require_demo_account`
+informational-check bug (account_type inversion) fired again during this run, purely
+informational — the real, env-sourced `require_demo_account_kind()` hard gate correctly read
+`mt5_account_kind='DEMO'` and allowed the run, exactly as designed; not a new issue, not
+investigated further.
+
+**This closes Phase 8's last open item.** The new production default
+(`RunnerStrategyConfig.sl_atr_mult=3.0`/`tp_atr_mult=6.0`) is now proven correct end-to-end
+against the real broker, not just the offline backtest engine.
+
+```
+pytest -q -> 413 passed (unchanged -- no code touched this entry, live verification only)
+```
+
+**Files changed this entry**: none (no code change — a live run and this checkpoint doc only).
+
 ## Exact next smallest task
 
-**Runner's validated candidate is now the production default** (`sl_atr_mult=3.0`,
-`tp_atr_mult=6.0`). Grid's default is unchanged (`step_mult=0.4`) — Step 6 found no out-of-sample
-support for its candidate. Neither strategy shows a validated positive edge; runner's change is a
-real, evidence-backed risk reduction, not a claim of profitability. **This production default
-change has not been exercised live yet** — every real pipeline script that constructs
-`RunnerStrategyConfig()` with no override will pick it up automatically the next time it runs
-(dry-run, demo-execution, or the loop), but nothing has actually run against it in a live/demo
-context since the change. Remaining open items, any of which needs its own explicit go-ahead:
-- Live-verify the new default in the real pipeline (e.g. a single `STRATEGY="RUNNER"` demo cycle,
-  or a dry-run pipeline pass first) — proving the new SL/TP distances behave correctly end-to-end
-  against real `McpOrderExecutor`/broker constraints, not just in the offline backtest engine.
-- Step 7 (regime analysis) — lowest priority, only worth pursuing if a later look at these
-  results shows regime-dependence worth investigating; nothing so far obviously suggests it.
-- Otherwise, Phase 8 can be considered complete for its original scope (edge validation +
-  parameter tuning + walk-forward validation, all done) once the live-verification step above is
-  either done or explicitly deferred.
+**Phase 8 is functionally complete for its original scope**: edge validation (Step 1-3), cost/
+stress sensitivity (Step 4), parameter tuning (Step 5), walk-forward out-of-sample validation
+(Step 6), production adoption of the validated candidate, and now live verification of that
+default — all done. Remaining items are optional, not blocking:
+- **Step 7 (regime analysis)** — lowest priority, explicitly optional per the original scoping
+  table; nothing in the Step 5/6 results obviously suggests regime-dependence worth chasing.
+- Whether/when to run the new default in a *real* (non-magic-79999, non-self-cleaning) strategy
+  cycle — e.g. `scripts/run_demo_execution_pipeline_cycle.py` with `STRATEGY="RUNNER"` — is a
+  separate, later decision; the smoke test above already proves the code path end-to-end, a real
+  cycle would just be resuming ordinary live pipeline operation, its own explicit go-ahead.
+- Grid's negative expectancy remains unaddressed — this phase's evidence says it isn't primarily
+  a cost problem (Step 4) and isn't fixed by `step_mult` alone (Step 5/6); if grid tuning is
+  revisited, it would need a different parameter (e.g. `atr_period`, `sl_atr_mult`,
+  `min_step_points`) or a different hypothesis, not a continuation of this sweep.
 
-**Live testing remains paused for anything order-related — this entire phase has been
-research/read-only by design; adopting the new default was a source-code change only, and any
-further real MCP call (including a live verification run) still needs its own explicit go-ahead,
-same standing rule as every prior step in this project.**
+**Live/order-submitting testing returns to paused status** — this entry's smoke test was a single,
+narrowly-scoped, explicitly-approved exception, not a general resumption. Any further real MCP
+call needs its own fresh go-ahead, same standing rule as every prior step in this project.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 6 is DONE and its validated candidate is now
-the production default — RunnerStrategyConfig.sl_atr_mult=3.0/tp_atr_mult=6.0 in
-src/mt5_mcp_trading/strategy/runner.py; grid's step_mult stays at 0.4, its candidate didn't
-validate out-of-sample). Confirm git status is clean at the latest commit and no live process is
-running, then ask me what to do next — the new runner default hasn't been exercised live yet, so
-live-verifying it (or explicitly deferring that) is the next open item, and needs my explicit
-go-ahead before any real MCP call."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Phase 8 is functionally complete: runner's
+sl_atr_mult=3.0/tp_atr_mult=6.0 is the production default, validated both out-of-sample and live
+on the demo account — ticket 171702598, account left clean; grid's step_mult stays at 0.4, its
+candidate didn't validate. Only optional items remain: Step 7 regime analysis, and whether/when
+to resume ordinary live pipeline operation with the new default). Confirm git status is clean at
+the latest commit and no live process is running, then ask me what to do next."

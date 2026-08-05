@@ -570,9 +570,15 @@ not done here, to avoid designing ahead of what's actually been asked for.
   default**: `RunnerStrategyConfig.sl_atr_mult=1.5→3.0`, `tp_atr_mult=3.0→6.0` (2:1 ratio
   unchanged) in `src/mt5_mcp_trading/strategy/runner.py`, the third production-code change of
   Phase 8 (after the re-entry throttle and the earlier magic-filter fix already covered above).
-  Grid's default is untouched. Source-code change only — no live/demo run has exercised the new
-  default yet; live-verifying it (or explicitly deferring that) is Phase 8's next open item. Full
-  detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
+  Grid's default is untouched. **Live-verified**: a single, explicitly-approved, self-cleaning
+  smoke-test run (`scripts/run_demo_execution_runner_sltp_smoke_test.py`, magic=79999) opened a
+  real SELL position (ticket `171702598`, retcode 10009) with the new SL/TP correctly ordered and
+  at the new 2:1 ratio, independently re-verified live, then closed (retcode 10009, verified
+  absent) — account left clean. This closes Phase 8's last open item; the phase is functionally
+  complete (edge validation, cost sensitivity, tuning, walk-forward validation, production
+  adoption, and live verification all done). Live/order-submitting testing returns to paused
+  status — that smoke test was a single, narrowly-scoped exception, not a general resumption.
+  Full detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
