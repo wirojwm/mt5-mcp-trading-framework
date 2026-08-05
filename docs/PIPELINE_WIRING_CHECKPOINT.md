@@ -1913,26 +1913,72 @@ approval.
 **Files changed this addendum**: `scripts/run_demo_execution_mcp_disconnect_smoke_test.py`
 (modified — tree-based validation, diagnostic logging), `AGENTS.md`, this checkpoint doc.
 
+## Step 32 addendum 4 — Stage 3 Part 3 decided: accepted as an open risk, not pursued now
+
+Same session. User explicitly decided not to build or run Stage 3 Part 3 (the "ambiguous
+in-flight order" case) rather than leave it merely unstarted — a decision, not a deferral by
+omission, same shape as Step 23's `all_open()`-cost decision and Step 24's stale-`StateStore`-
+records decision earlier in this project. Read-only — no code or live state changed.
+
+**Reasoning**:
+1. It is the one piece of the whole MCP disconnect/timeout effort that requires a real order to
+   test at all — every other disconnect scenario (mid-call kill, timeout firing, process-tree
+   cleanup) was provably closable read-only, and was (Stage 1, Stage 2, Stage 3 Parts 1–2, this
+   session).
+2. Timing a kill to land on the exact in-flight window of a live order call is not reliably
+   controllable — Stage 3 Part 2 itself already demonstrated this: even a read-only call's
+   best-effort race (Step 3) didn't land on its one live run, and an order call's own round-trip
+   is no more controllable than a read's.
+3. Nothing currently in scope depends on it. No sustained or unattended live operation has been
+   proposed (every live run to date has been a bounded, human-approved session), and the
+   *consequences* of an ambiguous in-flight order — a stale or unknown local record — are already
+   handled correctly by existing reconciliation, traced and proven across roughly 20 real cleanup
+   episodes this project has run (Steps 9, 15, 17, 20, 24–31, and this session's own Stage 3 Part 2
+   cleanup verification): every one of those consumers already treats "local state and live broker
+   state disagree" as something to re-verify live before acting, never trust blindly. Part 3 would
+   confirm that discipline holds for one more specific trigger, not add a new capability.
+
+**Revisit when**: extended or less-supervised live operation (Phase 9's forward test, or beyond)
+is actually proposed — at that point, informed by real usage patterns from that decision rather
+than manufactured now, and with a deliberately minimal-risk design (e.g. a far-from-market,
+unfillable LIMIT order) if pursued.
+
+**Stage 3 is now fully resolved**: Parts 1–2 done and live-verified, Part 3 explicitly accepted as
+an open risk. Phase 7's live/MCP-adjacent failure-testing gap (open since Phase 7 itself, flagged
+repeatedly through this whole pipeline-wiring effort) is closed for the scope this project has
+chosen to close it at — Phase 8 is no longer blocked on it.
+
+```
+pytest -q                        -> 356 passed (unchanged -- no code changed this addendum)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this addendum**: `AGENTS.md`, this checkpoint doc only — no production code, no
+scripts, no live call.
+
 ## Exact next smallest task
 
 **Live testing remains paused — do not resume without explicit approval**, same standing rule as
 every step before this one. Account is fully clean, nothing outstanding.
 
-1. **Stage 3 Parts 1 and 2 are both done and live-verified** (Part 1: real 30s timeout, mock/stub-
-   only; Part 2: real disconnect against the actual demo-connected subprocess, process-tree
-   cleanup confirmed clean). Only **Part 3** remains — the "ambiguous in-flight order" case, which
-   needs a real order and is the highest-risk piece of this whole effort; recommended to decide
-   separately, with a deliberately minimal-risk design (e.g. a far-from-market, unfillable LIMIT
-   order) if ever pursued, rather than treated as a default next step.
-2. Otherwise, per the roadmap review, Phase 8 (strategy research/tuning) remains explicitly not
-   started, pending either Stage 3 Part 3 or an explicit decision to accept the remaining gap as an
-   open risk and proceed anyway.
+1. **The entire MCP disconnect/timeout testing effort is now resolved.** Stage 3 Parts 1–2 done
+   and live-verified; Part 3 explicitly accepted as an open risk (see reasoning above), not left
+   merely unstarted. Nothing further planned here unless extended/unattended live operation is
+   proposed later.
+2. **Phase 8 (strategy research/tuning) is no longer blocked** by the Phase 7 live/MCP-adjacent
+   failure-testing gap, but remains entirely unscoped — no tuning framework, walk-forward harness,
+   regime classifier, or transaction-cost model exists anywhere in this codebase yet, and scoping
+   Phase 8 is itself a future, explicitly-approved task (see AGENTS.md, "Forward phases").
+3. Live pilot readiness is unaffected by this session's work and remains far off: no daily-loss-
+   limit/kill-switch exists anywhere in this codebase (`risk/__init__.py`'s own documented
+   admission), Phase 9's readiness criteria are undefined, and none of that was touched this
+   session.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PIPELINE_WIRING_CHECKPOINT.md (Step 32 addendum 3 is the most recent entry), confirm git
+docs/PIPELINE_WIRING_CHECKPOINT.md (Step 32 addendum 4 is the most recent entry), confirm git
 status is clean at the latest commit, confirm no live process is running, confirm the demo
 account is clean (no positions, no pending orders), confirm live testing is still paused, then
-ask me what to do next — do not run anything live without my explicit go-ahead first. Stage 3
-Parts 1 and 2 (real 30s timeout; real subprocess/process-tree disconnect) are both done and
-live-verified. Only Part 3 (ambiguous in-flight order, needs a real order) remains, scoped but not
-started."
+ask me what to do next — do not run anything live without my explicit go-ahead first. The MCP
+disconnect/timeout testing effort (Stage 3) is fully resolved (Parts 1–2 live-verified, Part 3
+explicitly accepted as an open risk). Phase 8 is unblocked but still entirely unscoped — do not
+begin it without explicit scoping and approval first."

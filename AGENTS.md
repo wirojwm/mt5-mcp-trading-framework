@@ -213,13 +213,24 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
     controllable sleep; the result above comes from the deterministic post-kill assertion instead,
     which still directly answers the real question. No order, no symbol, no `executor` call was
     ever made — fully read-only throughout, confirmed by the script's own design.
-  - **Still open, not done by this step (Stage 3 Part 3, live-adjacent, needs its own separate
-    explicit approval)**: the "ambiguous in-flight" case — a real order reaches the broker but the
-    response is lost to the same disconnect — remains entirely untested, since `McpOrderExecutor`
-    only writes local state *after* its MCP call returns, so this can only ever be resolved against
-    a real broker, never a mock.
-  See "Forward phases" below — do not start Phase 8 until Stage 3 Part 3 above is explicitly
-  completed or accepted as an open risk.
+  - **Stage 3 Part 3: decided — accepted as an open risk, not pursued now.** The "ambiguous
+    in-flight" case — a real order reaches the broker but the response is lost to the same
+    disconnect — remains entirely untested, since `McpOrderExecutor` only writes local state
+    *after* its MCP call returns, so this can only ever be resolved against a real broker, never a
+    mock. User explicitly chose not to build/run this now rather than leave it merely unstarted:
+    it's the one piece of this whole effort that needs a real order to test at all (every other
+    disconnect scenario was provably closable read-only, and was), timing a kill to land on the
+    exact in-flight window of a live order call isn't reliably controllable, and nothing currently
+    in scope depends on it — no sustained/unattended live operation has been proposed, and
+    existing reconciliation (proven correct and traced, not assumed, across ~20 real cleanup
+    episodes this project has already run) already handles every *other* stale/unknown-state
+    scenario correctly. Revisit if/when extended or less-supervised live operation is actually
+    proposed, informed by real usage patterns at that point rather than manufactured now — same
+    reasoning shape as the `all_open()` cost decision (Step 23) and the stale-`StateStore`-records
+    decision (Step 24) earlier in this same effort.
+  Stage 3 is now fully resolved (Parts 1–2 done and live-verified, Part 3 explicitly accepted open)
+  — Phase 7's live/MCP-adjacent failure-testing gap is closed for the scope this project has
+  chosen to close it at. See "Forward phases" below for Phase 8's remaining preconditions.
 - **Pipeline wiring (post-Phase 7): in progress, first live cycle done and cleaned up.** Not
   one of the numbered phases — like "wire real adapters" before Phase 6, a separate,
   explicitly-approved effort, called out in both the Phase 6 and Phase 7 checkpoint docs as
@@ -472,8 +483,10 @@ task — not done here, to avoid designing ahead of what's actually been asked f
 - **Phase 8 (strategy research, edge validation, parameter tuning, regime analysis,
   transaction-cost/stress testing, walk-forward/out-of-sample validation)**: not started, not
   scoped. No tuning framework, walk-forward harness, regime classifier, or transaction-cost model
-  exists anywhere in this codebase. Do not start until Phase 7's still-open live/MCP-adjacent
-  failure testing (see above) is either completed or explicitly accepted as an open risk.
+  exists anywhere in this codebase. Phase 7's live/MCP-adjacent failure-testing gate is now
+  cleared — Stage 3 Parts 1–2 done and live-verified, Part 3 explicitly accepted as an open risk
+  (not completed) — so this is no longer blocked on that specific item, but still requires its own
+  explicit scoping/approval before any code is written, same as every phase in this project.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
