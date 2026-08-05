@@ -537,9 +537,17 @@ not done here, to avoid designing ahead of what's actually been asked for.
   and max drawdown fell 43% (1,662 R → 950 R); expectancy is essentially unchanged (−0.159 R →
   −0.182 R, within noise) — **exactly the expected, honest outcome**: a re-entry throttle bounds
   how much a losing edge compounds, it doesn't fix the edge itself. Grid's numbers are bit-for-bit
-  identical before/after, confirming the fix touches nothing outside `runner_cycle.py`. Next: Step
-  4 (cost/stress modeling), then Step 5 (tuning) — both strategies still show negative expectancy,
-  real work remains before any "validated edge" claim.
+  identical before/after, confirming the fix touches nothing outside `runner_cycle.py`.
+  **Step 4 now fully done**: one shared `half_spread_price()` helper (replacing two duplicated
+  formulas) scaled by a new `spread_multiplier` param on `run_backtest()`, run live at 1x/2x/5x
+  against the real cached data via one real `get_symbol_info` call reused across all three
+  levels. Real, interpretable finding: **grid is only mildly cost-sensitive** (expectancy stays
+  −0.31 to −0.37 R across all three levels — its negative edge isn't primarily a cost problem);
+  **runner is severely, monotonically cost-sensitive** (expectancy −0.182 R → −0.852 R, win rate
+  27.3% → 4.9%, from 1x to 5x spread), implicating its `sl_atr_mult=1.5` default as too tight
+  relative to realistic execution costs — real, actionable prioritization evidence for Step 5, not
+  a blind sweep. Next: Step 5 (tuning), which needs its own scoping pass first, particularly a
+  concrete train/test split design to avoid overfitting to this one cached window.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

@@ -39,7 +39,13 @@ COST MODEL: spread only, using each bar's own real historical `spread` field (al
 in the cached data from Phase 8 Step 2) -- see the checkpoint doc's Step 3 entry for why
 commission/swap were researched and excluded (get_deals exposes them only for this account's
 real historical deals, not as a per-bar backtest input; this account's broker profile is
-consistent with spread-only retail CFD pricing).
+consistent with spread-only retail CFD pricing). `spread_multiplier` (Step 4,
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md) scales the bar's own spread uniformly, applied via
+one shared `half_spread_price()` helper both BacktestMarketDataSource (tick bid/ask, which
+shapes where grid's LIMIT price gets normalized to) and BacktestOrderExecutor (runner's direct
+MARKET-fill cost) call -- one multiplier, one formula, so a stress-tested "spread got wider"
+scenario affects both strategies the same consistent way a real widened spread actually would,
+rather than inventing separate cost models for each.
 
 $ BALANCE/EQUITY: BacktestAccountReader reports a NOMINAL balance (starting_balance + sum of
 notional_pnl), not a calibrated dollar figure -- see ledger.py's module docstring. Nothing in
@@ -96,17 +102,26 @@ class ReplayCursor:
         return len(self._bars)
 
 
+def half_spread_price(bar: MarketBar, symbol_info: SymbolInfo, spread_multiplier: float = 1.0) -> float:
+    """The one formula every spread-cost computation in this module goes through -- see this
+    module's docstring's COST MODEL section for why a single shared helper matters (a stress
+    test must widen the exact same number everywhere, not risk two independent copies drifting
+    apart)."""
+    return (bar.spread * spread_multiplier * symbol_info.point) / 2
+
+
 class BacktestMarketDataSource:
-    def __init__(self, cursor: ReplayCursor, symbol_info: SymbolInfo) -> None:
+    def __init__(self, cursor: ReplayCursor, symbol_info: SymbolInfo, spread_multiplier: float = 1.0) -> None:
         self._cursor = cursor
         self._symbol_info = symbol_info
+        self._spread_multiplier = spread_multiplier
 
     async def get_bars(self, symbol: str, timeframe: str, count: int) -> list[MarketBar]:
         return self._cursor.visible_bars(count)
 
     async def get_tick(self, symbol: str) -> Tick:
         bar = self._cursor.current_bar
-        half_spread = (bar.spread * self._symbol_info.point) / 2
+        half_spread = half_spread_price(bar, self._symbol_info, self._spread_multiplier)
         return Tick(symbol=symbol, bid=bar.close - half_spread, ask=bar.close + half_spread, time=bar.time)
 
     async def get_symbol_info(self, symbol: str) -> SymbolInfo:
@@ -146,13 +161,17 @@ class BacktestAccountReader:
 
 
 class BacktestOrderExecutor:
-    def __init__(self, cursor: ReplayCursor, ledger: BacktestLedger, symbol_info: SymbolInfo) -> None:
+    def __init__(
+        self, cursor: ReplayCursor, ledger: BacktestLedger, symbol_info: SymbolInfo,
+        spread_multiplier: float = 1.0,
+    ) -> None:
         self._cursor = cursor
         self._ledger = ledger
         self._symbol_info = symbol_info
+        self._spread_multiplier = spread_multiplier
 
     def _half_spread(self) -> float:
-        return (self._cursor.current_bar.spread * self._symbol_info.point) / 2
+        return half_spread_price(self._cursor.current_bar, self._symbol_info, self._spread_multiplier)
 
     async def submit(self, order_plan: OrderPlan) -> ExecutionResult:
         bar = self._cursor.current_bar
@@ -242,7 +261,7 @@ async def run_backtest(
     bars: Sequence[MarketBar], symbol: str, timeframe: str, bars_count: int,
     symbol_info: SymbolInfo, grid_config: GridStrategyConfig, runner_config: RunnerStrategyConfig,
     money_config: MoneyConfig, caps: ExposureCaps, grid_magic: int, runner_magic: int,
-    cycle_interval_bars: int = 1,
+    cycle_interval_bars: int = 1, spread_multiplier: float = 1.0,
 ) -> BacktestLedger:
     """Mirrors scripts/run_demo_execution_pipeline_loop.py's own per-cycle shape (both
     strategies, sequentially) -- not a new orchestration pattern, the same established one.
@@ -261,7 +280,13 @@ async def run_backtest(
     runner trades over 50,000 bars, an obviously implausible rate (more than one trade every 2
     bars) -- traced to this exact cadence mismatch (evaluating 5x more often than any real
     deployment ever has), not a genuine edge finding. Callers reproducing real deployment
-    behavior should pass cycle_interval_bars=5 for M1 data (300s / 60s per bar)."""
+    behavior should pass cycle_interval_bars=5 for M1 data (300s / 60s per bar).
+
+    `spread_multiplier` (Step 4, docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md): stress-tests cost
+    sensitivity by uniformly widening the spread every cached bar's own historical `spread` field
+    implies -- see half_spread_price()/this module's COST MODEL docstring section for why one
+    shared formula, not two independent ones, is what makes this a fair, consistent stress test
+    across both strategies."""
     if len(bars) < bars_count:
         raise ValueError(f"run_backtest needs at least {bars_count} bars to start, got {len(bars)}")
     if cycle_interval_bars < 1:
@@ -269,9 +294,9 @@ async def run_backtest(
 
     cursor = ReplayCursor(bars)
     ledger = BacktestLedger()
-    market_data = BacktestMarketDataSource(cursor, symbol_info)
+    market_data = BacktestMarketDataSource(cursor, symbol_info, spread_multiplier)
     account = BacktestAccountReader(ledger)
-    executor = BacktestOrderExecutor(cursor, ledger, symbol_info)
+    executor = BacktestOrderExecutor(cursor, ledger, symbol_info, spread_multiplier)
 
     start = bars_count - 1
     for i in range(start, len(bars)):

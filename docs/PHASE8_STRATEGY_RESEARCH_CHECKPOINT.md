@@ -406,22 +406,82 @@ the backtest re-run, same as before. Process cleanup confirmed clean.
 wired in), `tests/unit/test_risk_symbol_guards.py` (modified, +4),
 `tests/integration/test_runner_dry_run_pipeline.py` (modified, +3), this checkpoint doc.
 
+## Step 4 — cost/stress sensitivity: built, tested, run against real data at 1x/2x/5x spread
+
+Scoped in conversation first. Rather than model grid's (indirect, via LIMIT-price normalization)
+and runner's (direct, per MARKET fill) spread exposure separately, one shared formula
+(`half_spread_price(bar, symbol_info, spread_multiplier)`, replacing two independently-duplicated
+copies of the same calculation) is scaled by a single `spread_multiplier` and used everywhere
+spread cost enters the engine — a real widened-spread environment would affect the quoted tick
+and the actual fill cost identically, since they're the same underlying number.
+
+**Built**: `spread_multiplier: float = 1.0` added to `run_backtest()`, threaded into both
+`BacktestMarketDataSource` and `BacktestOrderExecutor` (default unchanged, so every existing test
+and Step 3's own numbers are unaffected). +3 tests: the shared helper scales linearly
+(1x/2x/5x hand-verified), `get_tick()` honors the multiplier, and a MARKET fill's cost doubles
+exactly when the multiplier doubles.
+
+```
+pytest -q                        -> 407 passed (404 previously + 3 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Real run**: `scripts/run_demo_execution_backtest_stress_test.py` (new) — one real read-only
+`get_symbol_info` call, reused across all three stress levels; each level replays the same real
+cached `BTCUSD` `M1` data entirely offline. Real results (`cycle_interval_bars=5`, runner's
+re-entry throttle already fixed and in effect):
+
+| spread | grid trades | grid expectancy | grid drawdown | runner trades | runner win rate | runner expectancy | runner drawdown |
+|---|---|---|---|---|---|---|---|
+| 1x | 43 | −0.308 R | 13.72 R | 4,961 | 27.3% | **−0.182 R** | 950.0 R |
+| 2x | 41 | −0.365 R | 15.20 R | 5,669 | 19.2% | **−0.424 R** | 2,420.0 R |
+| 5x | 35 | −0.327 R | 11.44 R | 7,888 | 4.9% | **−0.852 R** | 6,718.0 R |
+
+**A clear, interpretable finding, not just numbers**: **grid is only mildly cost-sensitive** —
+expectancy stays in a narrow negative band (−0.31 to −0.37 R) regardless of spread level, and
+trade count/drawdown don't move dramatically. This makes sense given *how* spread enters grid's
+economics: it mainly affects whether `normalize_limit_price()`'s minimum-distance constraint
+pushes a proposed price out of range entirely (occasionally blocking a submission, hence the
+mild 43→41→35 trade-count decline), not a cost applied to every fill — LIMIT orders fill exactly
+at their own specified price. **Grid's negative expectancy is therefore NOT primarily a cost
+problem** — something else (entry timing, the ATR-scaled step/TP/SL formula itself) is the
+dominant driver, a real, useful prioritization signal for Step 5.
+
+**Runner is severely, monotonically cost-sensitive**: expectancy collapses from −0.182 R to
+−0.852 R (4.7x worse) as spread widens from 1x to 5x, win rate collapses from 27.3% to 4.9%, and
+both trade count and max drawdown *increase* with wider spread (more, not fewer, stop-outs
+cycling through the re-entry throttle's one open slot faster as SL gets hit sooner relative to a
+wider entry cost). This strongly implicates runner's SL distance (`sl_atr_mult=1.5` by default)
+as too tight relative to realistic execution costs, not just an unlucky parameter choice —
+directly actionable for Step 5, which now has real evidence for where to look first.
+
+No order, no live/trading call beyond the one read-only `get_symbol_info` pull. Process cleanup
+confirmed clean.
+
+**Files changed this entry**: `src/mt5_mcp_trading/backtest/engine.py` (modified —
+`spread_multiplier`, shared `half_spread_price()` helper), `tests/unit/test_backtest_engine.py`
+(modified, +3), `scripts/run_demo_execution_backtest_stress_test.py` (new), this checkpoint doc.
+
 ## Exact next smallest task
 
-**Steps 1–3 done; runner's re-entry throttle fixed and live-proven via the backtest engine.**
-Step 4 (transaction-cost/stress modeling — a sensitivity table at 1x/2x/5x observed spread) is
-next in the originally scoped order, followed by Step 5 (parameter tuning) — both strategies
-still show negative expectancy at current defaults, so there's real work ahead before any
-"validated edge" claim, but the risk-management gap this session found and fixed is now closed
-and proven, not just assumed fixed.
+**Steps 1–4 done; runner's re-entry throttle fixed and live-proven.** Step 5 (parameter tuning)
+is next and last in the originally scoped sequence before Step 6 (walk-forward/out-of-sample
+validation). Step 4 gives Step 5 real prioritization evidence, not a blind sweep: grid's negative
+expectancy isn't primarily cost-driven (look at entry timing/the step-TP-SL formula first);
+runner's is severely cost-sensitive and likely has too-tight a stop relative to real execution
+costs (`sl_atr_mult` is the first parameter worth examining). Recommend scoping Step 5's actual
+sweep methodology in conversation before building, same as every prior step — in particular, the
+train/test split discipline flagged as Step 5's own key risk (overfitting to this one cached
+window) needs a concrete design, not just a reminder that it matters.
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (runner's re-entry throttle fix is the most recent
-entry — RunnerStrategyConfig.max_concurrent_positions=1 by default, live-proven via the backtest
-engine to cut runner's trade count roughly in half and max drawdown by 43%, though expectancy is
-still negative and unchanged by this fix), confirm git status is clean at the latest commit, then
-ask me what to do next — Step 4 (cost/stress modeling) is next in sequence."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 4 is the most recent entry — cost/stress
+sensitivity run against real data at 1x/2x/5x spread: grid is only mildly cost-sensitive, runner
+is severely cost-sensitive with a likely-too-tight stop distance), confirm git status is clean at
+the latest commit, then ask me what to do next — Step 5 (parameter tuning) is next, but needs its
+own scoping pass first, particularly the train/test split design to avoid overfitting to the one
+cached historical window."

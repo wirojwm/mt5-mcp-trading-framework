@@ -10,6 +10,7 @@ from mt5_mcp_trading.backtest.engine import (
     BacktestMarketDataSource,
     BacktestOrderExecutor,
     ReplayCursor,
+    half_spread_price,
     run_backtest,
 )
 from mt5_mcp_trading.backtest.ledger import BacktestLedger
@@ -94,6 +95,42 @@ def test_market_data_source_get_bars_delegates_to_cursor() -> None:
     result = asyncio.run(market_data.get_bars("BTCUSD", "M1", count=3))
 
     assert [b.time for b in result] == [b.time for b in bars[3:6]]
+
+
+# ---------- spread_multiplier (Step 4, cost/stress modeling) ----------
+
+def test_half_spread_price_scales_linearly_with_multiplier() -> None:
+    bar = _bar(0, close=100.0, high=100.5, low=99.5, spread=200)  # 200 * 0.01 / 2 = 1.0 at 1x
+    assert half_spread_price(bar, SYMBOL_INFO, spread_multiplier=1.0) == pytest.approx(1.0)
+    assert half_spread_price(bar, SYMBOL_INFO, spread_multiplier=2.0) == pytest.approx(2.0)
+    assert half_spread_price(bar, SYMBOL_INFO, spread_multiplier=5.0) == pytest.approx(5.0)
+
+
+def test_market_data_source_get_tick_honors_spread_multiplier() -> None:
+    bars = [_bar(0, close=100.0, high=100.5, low=99.5, spread=200)]
+    cursor = ReplayCursor(bars)
+    market_data = BacktestMarketDataSource(cursor, SYMBOL_INFO, spread_multiplier=5.0)
+
+    tick = asyncio.run(market_data.get_tick("BTCUSD"))
+
+    assert tick.ask == pytest.approx(105.0)  # close + 5x half-spread (5.0)
+    assert tick.bid == pytest.approx(95.0)
+
+
+def test_market_order_fill_cost_doubles_when_spread_multiplier_doubles() -> None:
+    bars = [_bar(0, close=100.0, high=100.5, low=99.5, spread=200)]
+
+    def fill_price_at(multiplier: float) -> float:
+        cursor = ReplayCursor(bars)
+        ledger = BacktestLedger()
+        executor = BacktestOrderExecutor(cursor, ledger, SYMBOL_INFO, spread_multiplier=multiplier)
+        result = asyncio.run(executor.submit(_plan("MARKET", "BUY", None, sl=95.0, tp=110.0)))
+        return result.executed_price
+
+    cost_1x = fill_price_at(1.0) - 100.0
+    cost_2x = fill_price_at(2.0) - 100.0
+
+    assert cost_2x == pytest.approx(cost_1x * 2)
 
 
 # ---------- BacktestOrderExecutor: fill mechanics ----------
