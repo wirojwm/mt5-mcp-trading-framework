@@ -510,10 +510,24 @@ not done here, to avoid designing ahead of what's actually been asked for.
   `scripts/run_demo_execution_historical_data_cache_seed.py` (read-only, no `executor` reference):
   `var/market_data/BTCUSD_M1.csv` now holds 50,000 real `M1` bars
   (`2026-07-01T01:59` → `2026-08-05T06:48`), confirmed on disk. `M1` chosen as the only cached
-  timeframe for now, matching what grid/runner actually trade live. Next: Step 3 (cost-model
-  research + the pure backtest/replay engine itself — the phase's largest technical component,
-  needs its own scoping pass first given look-ahead bias is the biggest correctness risk in the
-  whole phase).
+  timeframe for now, matching what grid/runner actually trade live. **Step 3 now fully done**:
+  new `backtest/engine.py`/`ledger.py`/`metrics.py` drive `run_grid_cycle()`/`run_runner_cycle()`
+  completely unmodified against replayed bars (same seam `DryRunExecutor`/mocks already exploit),
+  `ReplayCursor.visible_bars()` as the one look-ahead-bias control point, spread-only cost
+  modeling (`get_deals` exposes commission/swap only for real historical deals, not usable
+  per-bar). 31 new tests, including one that caught a real bug (a position filling mid-call was
+  also being exit-checked in that same call — fixed via `just_filled` tracking) before it ever
+  reached real data. Run against the real cached `BTCUSD` `M1` history and found a second real
+  bug along the way: the engine was evaluating a new cycle every single bar, 5x more often than
+  `scripts/run_demo_execution_pipeline_loop.py`'s real `CYCLE_INTERVAL_SECONDS=300` cadence —
+  fixed via a new `cycle_interval_bars` parameter. Corrected run's real result: **both strategies
+  show negative expectancy** at current default parameters over the cached ~35-day window (grid:
+  43 trades, −0.308 R; runner: 9,881 trades, −0.159 R, 1,662 R max drawdown) — runner's volume and
+  drawdown trace to a real, previously-invisible strategy gap `run_runner_cycle()`'s own docstring
+  already admits: no re-entry throttle beyond the raw exposure cap. **First read, not a verdict**
+  — Step 4/5 haven't run yet, no production strategy code was touched. Next: Step 4 (cost/stress
+  modeling), but whether to fix runner's missing re-entry throttle before or alongside Step 5's
+  tuning is an open decision to raise explicitly, not silently pick.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

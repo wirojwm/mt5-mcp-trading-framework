@@ -234,23 +234,138 @@ deliverable (a real, tested, live-seeded local cache) are both complete.
 `scripts/run_demo_execution_historical_data_cache_seed.py` (new), this checkpoint doc.
 `var/market_data/BTCUSD_M1.csv` was also created but is git-ignored, never committed.
 
+## Step 3 — the backtest/replay engine: built, tested, run against real data, and a real cadence bug found and fixed along the way
+
+Scoped in conversation first (see the design notes this section assumes): reuse
+`run_grid_cycle()`/`run_runner_cycle()` completely unmodified by driving three backtest-flavored
+implementations of this project's own `MarketDataSource`/`AccountReader`/`OrderExecutor`
+Protocols — the same seam `DryRunExecutor`/`MockMarketDataSource`/`MockAccountReader` already
+exploit for dry-run testing, so no strategy/risk/order_planning logic is reimplemented anywhere.
+
+**Cost-model research (question 4), decided**: `get_deals` exposes real `commission`/`swap`/`fee`
+fields (confirmed by reading the vendored `metatrader_client` source — it returns MT5's raw
+`TradeDeal` struct directly), but only for this account's own real historical deals, not usable
+as a per-bar backtest input. **Decision: spread-only cost modeling**, using each cached bar's own
+real historical `spread` field — the practical, evidence-consistent default for this account's
+broker profile (retail CFD/crypto demo, no separate commission structure exposed anywhere).
+
+**Built**: `src/mt5_mcp_trading/backtest/ledger.py` (`BacktestLedger` — open positions, pending
+orders, closed trades, all in-memory; `ClosedTrade.r_multiple` computed directly from each
+trade's own risk distance, never a fixed nominal value), `engine.py` (`ReplayCursor` — the one
+look-ahead-bias control point; `BacktestMarketDataSource`/`BacktestAccountReader`/
+`BacktestOrderExecutor`; `run_backtest()`, the replay loop), `metrics.py`
+(`expectancy_r()`/`max_drawdown_r()`/`has_minimum_sample()`, implementing Step 1's decided
+metric directly). **31 new tests** across three files — ledger mechanics (R-multiple math for
+both BUY/SELL, hand-verified), metrics (a hand-computed drawdown example), and engine mechanics:
+a dedicated look-ahead test (`visible_bars()` never returns anything past the cursor even when
+asked for far more than exists), fill-timing tests for both order types, and — found directly by
+testing, not assumed safe — **a real bug**: a position that fills mid-call was also being
+exit-checked in that same call, so a same-bar coincidence between a fill price and its own SL/TP
+could close a position in the identical call it opened in, violating this engine's own documented
+"no same-bar exit" rule. Fixed by tracking `just_filled` tickets within each
+`check_fills_and_exits()` call and excluding them from that call's own exit pass. A separate test
+explicitly demonstrates *why* the loop's ordering matters (`check_fills_and_exits()` is
+intentionally stateless/order-agnostic — it would happily re-fill/re-exit the same bar if called
+twice; the "no same-bar" guarantee is entirely `run_backtest()`'s own loop discipline, not
+something the function enforces on its own).
+
+**Convention locked in, as scoped**: same-bar SL/TP double-hit assumes SL first (conservative);
+drawdown reported in R-units, not $ (no calibrated contract-size/pip-value figure exists anywhere
+in this codebase's domain model, and Step 1's primary metric doesn't need one either).
+
+```
+pytest -q                        -> 397 passed (366 previously + 31 new)
+pytest tests/test_architecture.py -q -> 13 passed (backtest/ deliberately not added to PURE_PACKAGES)
+```
+
+### Real-data demonstration run — a real cadence bug found and fixed
+
+`scripts/run_demo_execution_backtest_btcusd_m1.py` (new): makes exactly one real, read-only MCP
+call (`get_symbol_info(BTCUSD)`, real broker constraints rather than a hardcoded guess —
+`volume_max=5.0`, `freeze_level=0`, `filling_modes=('FOK',)`, notably different from values used
+in earlier synthetic test fixtures elsewhere in this project, confirming the "pull it live"
+decision was the right call), then runs `run_backtest()` entirely offline against the real cached
+50,000-bar `BTCUSD` `M1` history from Step 2.
+
+**First run: 27,269 total closed trades (27,234 of them `runner`'s) over 50,000 bars — an
+obviously implausible rate, investigated before trusting it.** Traced to a real design gap in the
+engine, not the strategy: `run_backtest()` evaluated a new cycle on *every single bar*, but the
+only real deployment this project has ever actually run
+(`scripts/run_demo_execution_pipeline_loop.py`) evaluates a cycle once every
+`CYCLE_INTERVAL_SECONDS=300` (5 minutes) regardless of the `M1` bar timeframe strategies compute
+signals from — confirmed by reading that script directly. The engine was evaluating 5x more often
+than any real deployment ever has. **Fixed**: added `cycle_interval_bars` to `run_backtest()`
+(default `1`, for engine-mechanics testing; real demonstration runs should pass `5` for `M1` data
+to match the real loop's cadence) — `check_fills_and_exits()` still runs every bar (real SL/TP
+monitoring is continuous), only *new*-order evaluation is throttled. +3 tests, including one
+proving the throttle has a measurable, directional effect (not just that the parameter exists).
+
+**Second run, with `cycle_interval_bars=5`: 9,924 total closed trades (9,881 `runner`'s) — better,
+still high, and traced to a second real thing, this time a genuine strategy property, not an
+engine bug**: `run_runner_cycle()`'s own module docstring already says it plainly — "No
+duplicate-order check here... that guard is about pending orders sitting at a price, and runner
+produces price-less MARKET orders." The exposure cap (`max_open_lots=0.06` / `fixed_lot=0.01` = 6
+concurrent slots) is the *only* thing limiting runner's exposure — nothing stops it from
+re-entering the same direction on its very next evaluation the moment any slot frees up, as long
+as the MACD sign hasn't flipped. No live run before this has ever run long enough (max 12 cycles)
+to expose this; a 10,000-cycle backtest does, immediately.
+
+**Real results, both strategies, this cached window (`2026-07-01` → `2026-08-05`, ~35 days),
+current default parameters, `cycle_interval_bars=5`**:
+
+| Strategy | Closed trades | Win rate | Expectancy | Max drawdown |
+|---|---|---|---|---|
+| grid (magic 71101) | 43 | 55.8% | **−0.308 R** | 13.72 R |
+| runner (magic 72101) | 9,881 | 28.0% | **−0.159 R** | 1,662.0 R |
+
+Both strategies show **negative expectancy** at current default parameters over this window. Both
+comfortably clear Step 1's 30-trade minimum sample (43 and 9,881). Grid's smaller, more plausible
+trade count reflects its existing duplicate-order protection (a 0.05-price-proximity check);
+runner's extreme volume and drawdown are consistent with, and now directly evidence for, the
+missing re-entry throttle above — a real, previously-invisible strategy design gap this
+backtesting effort exists to surface, not a backtest artifact.
+
+**Explicitly not resolved by this step, and not attempted here**: whether these negative numbers
+reflect a genuinely bad default parameter set (Step 5's job), an incomplete cost model (Step 4's),
+a real strategy design gap worth fixing (runner's missing re-entry throttle — a production code
+change, its own separate, explicitly-approved decision, not made here), or some combination.
+**This is the first real read, not a verdict** — exactly the caution Step 3's own exit criteria
+called for ("reviewed before being treated as meaningful"). No production strategy code was
+touched this step.
+
+No order, no symbol trading call beyond the one `get_symbol_info` read — fully read-only. Process
+cleanup confirmed clean after both live runs.
+
+```
+pytest -q                        -> 397 passed (unchanged after the cadence fix's own +3 tests were already counted)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this entry**: `src/mt5_mcp_trading/backtest/ledger.py` (new),
+`src/mt5_mcp_trading/backtest/engine.py` (new), `src/mt5_mcp_trading/backtest/metrics.py` (new),
+`tests/unit/test_backtest_ledger.py` (new), `tests/unit/test_backtest_metrics.py` (new),
+`tests/unit/test_backtest_engine.py` (new),
+`scripts/run_demo_execution_backtest_btcusd_m1.py` (new), this checkpoint doc.
+
 ## Exact next smallest task
 
-**Steps 1 and 2 are both done.** Step 3 is next: cost-model research (is commission/swap
-available via any MCP tool, or is spread-only the honest ceiling — question 4, still open) and
-the pure backtest/replay engine itself, reusing existing `strategy`/`risk`/`order_planning` code
-untouched. This is the single largest technical component of the whole phase — needs its own
-careful design pass before any code, specifically around look-ahead-bias prevention (the
-"Key risk" column already flags this), and should be scoped in conversation before building.
+**Steps 1, 2, and 3 are all done.** Step 4 (transaction-cost/stress modeling — a sensitivity
+table at 1x/2x/5x observed spread, using the now-working engine) is next in the originally
+scoped order. Given what Step 3 found, though, there's a real decision to make first, not
+technical work: does Step 5 (parameter tuning) proceed against runner exactly as currently
+designed (no re-entry throttle), or is fixing that gap itself proposed as a separate,
+explicitly-approved step before tuning parameters on top of it? Recommend raising this
+explicitly rather than silently picking one.
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 2 is now fully done — real BTCUSD M1 history
-cached locally at var/market_data/BTCUSD_M1.csv, 50,000 bars, via
-backtest/market_data_cache.py), confirm git status is clean at the latest commit, then ask me
-what to do next — Step 3 (cost-model research + the backtest/replay engine itself) is next and
-needs its own scoping pass before any code, given look-ahead bias is the single biggest
-correctness risk in the whole phase."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 3 is now fully done — the backtest engine is
+built, tested, and was run against the real cached BTCUSD M1 history: both grid and runner show
+negative expectancy at current default parameters, and runner has a real, previously-invisible
+missing re-entry throttle found along the way), confirm git status is clean at the latest commit,
+then ask me what to do next — Step 4 (cost/stress modeling) is next in sequence, but whether to
+address runner's missing re-entry throttle before or alongside Step 5's tuning is an open
+decision worth raising explicitly first."
