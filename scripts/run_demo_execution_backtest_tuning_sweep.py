@@ -68,7 +68,11 @@ CYCLE_INTERVAL_BARS = 5  # matches the real bounded loop's 300s cadence against 
 TRAIN_FRACTION = 0.8
 
 RUNNER_SL_ATR_MULT_CANDIDATES = (1.5, 2.0, 2.5, 3.0, 4.0)  # current default is 1.5
-GRID_STEP_MULT_CANDIDATES = (0.3, 0.4, 0.5, 0.6, 0.8)      # current default is 0.4
+# First pass (0.3-0.8) found 0.3 -- the low EDGE of that range -- as the best-expectancy point,
+# non-monotonically (worse at 0.4/0.5/0.6 than at 0.3, better again by 0.8 but never beating 0.3).
+# Widening below 0.3 to check whether that edge is a real, continuing trend or a reversal, before
+# trusting 0.3 as a candidate -- same caution already applied to runner's 3.0/4.0 reversal.
+GRID_STEP_MULT_CANDIDATES = (0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8)  # current default is 0.4
 
 _logger = get_logger("mt5_mcp_trading.scripts.backtest_tuning_sweep")
 

@@ -532,29 +532,83 @@ pytest tests/test_architecture.py -q -> 13 passed
 `scripts/run_demo_execution_backtest_tuning_sweep.py` (new), this checkpoint doc.
 `var/market_data/BTCUSD_M1.csv` also grew (95,000 bars now) but is git-ignored, never committed.
 
+## Step 5 — sweep tables interpreted, grid range widened, both candidates decided
+
+**Runner (`sl_atr_mult`)**: the original 1.5→4.0 table is a genuine interior peak, not an
+edge artifact — expectancy improves monotonically from 1.5 (−0.122 R) through 3.0 (**−0.065 R**,
+the best point), then reverses sharply at 4.0 (−0.123 R, back below 2.0's result). Win rate and
+max drawdown (829 R → 172 R) move the same way. Trade count at 3.0 (1,989) is comfortably above
+the 30-trade minimum. **Decided candidate: `sl_atr_mult=3.0`** (`tp_atr_mult` stays at its 2x
+ratio, i.e. 6.0). Still net-negative at this setting (−0.065 R) — this candidate reduces the
+loss substantially, it does not claim a positive edge.
+
+**Grid (`step_mult`)**: the original 0.3→0.8 table's own note ("best at 0.8, the edge of the
+tested range") was a misread — sorted by expectancy, 0.3 (−0.231 R) was already better than 0.8
+(−0.240 R); the real open question was the *untested low* edge, not the high one. Widened the
+sweep with three new low-end candidates (`GRID_STEP_MULT_CANDIDATES` in
+`scripts/run_demo_execution_backtest_tuning_sweep.py` now runs 0.15/0.2/0.25/0.3/0.4/0.5/0.6/0.8,
+same training window, same one live `get_symbol_info` call reused across the whole sweep,
+runner's rows reproduced bit-for-bit identical to the first pass — confirms determinism).
+
+| step_mult | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| 0.15 | 143 | 67.8% | −0.261 R | 37.721 R |
+| 0.2 | 137 | 66.4% | −0.256 R | 35.681 R |
+| **0.25** | 135 | 67.4% | **−0.225 R** | 31.100 R |
+| 0.3 | 135 | 65.2% | −0.231 R | 32.060 R |
+| 0.4 (current default) | 119 | 56.3% | −0.302 R | 37.120 R |
+| 0.5 | 121 | 57.0% | −0.259 R | 32.800 R |
+| 0.6 | 117 | 55.6% | −0.244 R | 29.321 R |
+| 0.8 | 113 | 51.3% | −0.240 R | 28.120 R |
+
+The widened range resolves the ambiguity: expectancy does **not** keep improving below 0.3 — it
+reverses again at 0.2/0.15, worse than both 0.25 and 0.3. **0.25 is now a genuine interior peak**,
+flanked by tested-worse values on both sides (0.2 and 0.3), the same shape that made runner's 3.0
+trustworthy rather than an edge guess. The tight cluster 0.15–0.3 all sit in a similar band (65–68%
+win rate, −0.22 to −0.26 R expectancy — plausibly within noise of each other given ~113–143-trade
+samples), but all of them are clearly, consistently better than the current default 0.4, which is
+the single worst point in the entire tested range on both expectancy and win rate. **Decided
+candidate: `step_mult=0.25`** (best point tested, comfortably above the 30-trade minimum at 135
+trades, though the small sample means this should be read as "meaningfully better than 0.4," not
+as precisely distinguishable from its 0.2/0.3 neighbors).
+
+**Candidate parameter set locked in for Step 6**: `RunnerStrategyConfig(sl_atr_mult=3.0,
+tp_atr_mult=6.0)`, `GridStrategyConfig(step_mult=0.25)` — training-window evidence only, no
+production default changed yet, no test-window data read by anything in this step.
+
+```
+pytest -q                        -> 413 passed (unchanged -- only a sweep-script candidate tuple changed)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call beyond the sweep's one read-only `get_symbol_info` pull (same
+call already covered by prior approval for this script). Process cleanup confirmed clean.
+
+**Files changed this entry**: `scripts/run_demo_execution_backtest_tuning_sweep.py` (modified —
+`GRID_STEP_MULT_CANDIDATES` widened to include 0.15/0.2/0.25), this checkpoint doc.
+
 ## Exact next smallest task
 
-**Stopped mid-Step-5, deliberately, for a midday break — not a stopping point chosen by
-necessity.** The sweep tables above are real and complete for the candidates tested, but nobody
-has looked at them and decided anything yet. Next smallest step, this afternoon: interpret the
-two tables (plateau vs. edge-of-range check first, per the "not yet interpreted" note above),
-decide whether either candidate set needs a wider range before trusting it, and only then decide
-whether to lock in a candidate parameter set for Step 6 to validate against the held-out test
-window. **Step 6 has not started. No test-window data has been touched by anything this
-session.** Phase 8 should not be considered complete or "an edge validated" under any
-circumstance until Step 6 confirms a locked candidate against that untouched window — the
-sweep table alone is training-window evidence only, exactly the overfitting risk this whole step
-was designed to guard against, not resolved by it alone.
+**Step 5 is now fully done**: both tables interpreted, grid's range widened and re-run, a
+candidate parameter set decided for each strategy (runner `sl_atr_mult=3.0`, grid
+`step_mult=0.25`). **No production default has been changed** — `GridStrategyConfig`/
+`RunnerStrategyConfig` still ship with their original defaults; only backtest sweep runs have used
+these candidates so far. **Step 6 (walk-forward/out-of-sample validation) has not started. No
+test-window data has been touched by anything in this phase to date.** Next smallest step: run the
+locked candidate set (and, for comparison, the current defaults) against the held-out 19,000-bar
+test window (`2026-07-22` → `2026-08-05`) and report both honestly — a disappointing result there
+is a valid, useful phase outcome per this step's own exit criteria, not a failed phase. Requires
+its own explicit go-ahead before any test-window code is written or run, same standing rule as
+every prior step.
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
 same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 5 is the most recent entry, IN PROGRESS,
-stopped deliberately before winner selection for a midday break — training-window sweep results
-exist for runner's sl_atr_mult and grid's step_mult, nobody has interpreted them yet, no
-production default changed, Step 6/test-window untouched), confirm git status is clean at
-the latest commit and no live process is running, then ask me what to do next — interpreting the
-sweep tables and deciding on a candidate parameter set is the next smallest step; do not touch
-the held-out test window or start Step 6 without my explicit go-ahead."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 5 is DONE — candidate parameter set decided:
+runner sl_atr_mult=3.0/tp_atr_mult=6.0, grid step_mult=0.25, both training-window evidence only,
+no production default changed). Confirm git status is clean at the latest commit and no live
+process is running, then ask me what to do next — running the locked candidate set against the
+held-out test window is Step 6, and needs my explicit go-ahead before any test-window code is
+written or run."

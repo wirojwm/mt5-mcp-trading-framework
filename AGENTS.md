@@ -553,10 +553,13 @@ not done here, to avoid designing ahead of what's actually been asked for.
   train window and a 19,000-bar held-out test window, never touched this step.
   `scripts/run_demo_execution_backtest_tuning_sweep.py` (new) ran a one-factor-at-a-time sweep
   against the training window only — runner's `sl_atr_mult` (candidates 1.5–4.0) and grid's
-  `step_mult` (candidates 0.3–0.8), full results table in the checkpoint doc. Both sweeps show a
-  trend toward less-negative expectancy at the edge of the tested range (runner best at 3.0 of
-  5, though 4.0 reverses it; grid best at 0.8, the edge itself) — **not yet interpreted, no
-  winner picked, Step 6/test window untouched.** Full detail and the exact resume point in
+  `step_mult` (candidates 0.3–0.8), full results table in the checkpoint doc. **Step 5 now fully
+  done**: tables interpreted (runner's 3.0 is a genuine interior peak; grid's original "best at
+  0.8" note was a misread — 0.3 already beat it — so the range was widened to 0.15–0.8, which
+  found grid's real interior peak at 0.25, not a continuing low-edge trend), and a candidate
+  parameter set decided for Step 6: runner `sl_atr_mult=3.0`/`tp_atr_mult=6.0`, grid
+  `step_mult=0.25`. **No production default changed** — both remain training-window candidates
+  only. Step 6/test window still untouched. Full detail in
   `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
