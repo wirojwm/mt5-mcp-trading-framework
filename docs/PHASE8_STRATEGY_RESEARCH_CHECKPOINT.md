@@ -69,9 +69,26 @@ of Step 3 below.
 ## Open questions, decided or still open
 
 1. **Guard wiring — DECIDED**: out of scope for Phase 8 (see above).
-2. **What "edge" means, concretely — OPEN**: a single target metric (e.g. per-trade expectancy
-   net of spread, a Sharpe-like ratio, max drawdown) needs to be picked before "edge validation"
-   has a pass/fail meaning. Not decided yet — first thing to resolve in Step 1 below.
+2. **What "edge" means, concretely — DECIDED (Step 1)**: **per-trade expectancy in R-multiples,
+   net of transaction costs, computed separately per strategy** (grid and runner each must
+   independently clear the bar — never blended, since blending could hide one strategy's losing
+   edge behind the other's positive one). R = the strategy's own actual per-trade risk distance
+   at the time of that trade (`|entry_price − sl_price|`, using the real, already-computed SL each
+   strategy attaches — grid's ATR-scaled `sl_price`, runner's `compute_stop_distances()` output —
+   not a fixed nominal value); a trade's result is expressed as its P&L divided by R, and expected
+   R is chosen over profit factor/Sharpe/CAGR specifically because it normalizes across grid's and
+   runner's very different stop widths, which none of those alternatives do (recorded reasoning,
+   not just the conclusion, in case a later session needs to revisit this). **Required companion
+   metric, not merely informative**: max drawdown, expressed in the same R units (peak-to-trough
+   equity decline) — expectancy alone says nothing about the ride, and a strategy with positive
+   expectancy but a catastrophic drawdown path is not validated by this metric alone. **Required
+   minimum sample size**: no "edge validated" claim (positive or negative) is made below **30
+   trades per strategy** in the tested window — expectancy from fewer trades is statistically too
+   noisy to trust either way; 50+ preferred before treating a positive result as reasonably
+   reliable, not just a hard floor at 30. Cost inputs (spread now, commission/swap if Step 3 finds
+   them available) feed directly into each trade's P&L before it's divided by R — this metric's
+   definition doesn't change once Step 3 resolves question 4 below, only its cost inputs get more
+   complete.
 3. **Data source — OPEN, but direction is clear**: a local historical-bar cache, seeded by one
    read-only live pull per symbol/timeframe (same risk category as the MCP disconnect effort's
    read-only calls — no order, no `executor`, no credential exposure beyond what any other real
@@ -87,7 +104,7 @@ sub-phases with their own numbers — Phase 8 is one phase, tracked here.
 
 | Step | Scope | Entry criteria | Exit criteria | Key risk |
 |---|---|---|---|---|
-| 1 | Decide the edge metric (question 2) | This doc reviewed | A single, written target metric | None — pure decision |
+| 1 | Decide the edge metric (question 2) | This doc reviewed | A single, written target metric | None — pure decision — **DONE**, see question 2 above |
 | 2 | Historical data acquisition + local cache | Step 1 done | Reusable, tested loader; real data actually pulled and cached for ≥1 symbol/timeframe, live-verified once | MT5 may retain less history than hoped — discover this **first**, before designing anything around an assumed depth |
 | 3 | Cost-model research (question 4) + pure backtest/replay engine, reusing existing strategy/risk/order_planning code untouched | Step 2 has real data | Deterministic trade log + equity curve from real historical data, reviewed before being treated as meaningful | **Look-ahead bias** — the single most common, most dangerous backtest-engine bug class; needs explicit fill-logic tests proving no future bar ever influences a past decision, not just informal review |
 | 4 | Transaction-cost / stress modeling | Step 3 engine trusted | Sensitivity table (expectancy at 1x/2x/5x observed spread) | Cost model may be incomplete per question 4's answer |
@@ -108,17 +125,18 @@ sub-phases with their own numbers — Phase 8 is one phase, tracked here.
 
 ## Exact next smallest task
 
-Step 1 (pick the edge metric — a short conversation, no code) followed immediately by Step 2's
-very first action: one read-only live pull to find out how much real `BTCUSD` history this demo
-connection can actually retrieve. That number determines whether Steps 3–7 are viable as scoped
-above or need adjusting — worth learning before designing the backtest engine around a guess.
+**Step 1 is done** (edge metric decided, see question 2 above). Step 2's very first action is
+next: one read-only live pull to find out how much real `BTCUSD` history this demo connection
+can actually retrieve. That number determines whether Steps 3–7 are viable as scoped above or
+need adjusting — worth learning before designing the backtest engine around a guess.
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
 and read-only by design, but any real MCP call (including a plain historical-data pull) still
 needs its own explicit go-ahead, same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (this is Phase 8's checkpoint doc, freshly scoped,
-no steps started yet), confirm git status is clean at the latest commit, then ask me what to do
-next — Step 1 (pick the edge metric) is the smallest first action, entirely a conversation, no
-code or live call needed."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 1 is done — edge metric decided: per-trade
+expectancy in R-multiples, per strategy, with a max-drawdown companion and a 30-trade minimum
+sample floor), confirm git status is clean at the latest commit, then ask me what to do next —
+Step 2's first action (a read-only live pull to discover real BTCUSD history depth) is the
+smallest next step, but still needs its own explicit go-ahead before any live call."

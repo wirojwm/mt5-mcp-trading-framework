@@ -493,8 +493,12 @@ not done here, to avoid designing ahead of what's actually been asked for.
   and validates grid/runner exactly as they run today, with no exit-guard. Wiring the guard in is
   a separate, not-yet-scoped effort, closer in kind to "pipeline wiring" than to tuning
   already-deployed behavior. Requires its own explicit scoping/approval before any code is
-  written, same as every phase in this project — the checkpoint doc's "Exact next smallest task"
-  is picking a single edge-validation target metric, a conversation, no code.
+  written, same as every phase in this project. **Step 1 done**: edge metric decided —
+  per-trade expectancy in R-multiples (P&L ÷ risk-per-trade), net of transaction costs, computed
+  separately per strategy (grid/runner never blended), paired with max drawdown in the same R
+  units as a required companion metric, no "edge validated" claim below a 30-trade-per-strategy
+  minimum sample. Full reasoning in the checkpoint doc. Next: Step 2's first action (a read-only
+  live pull to discover real BTCUSD history depth), still needing its own explicit go-ahead.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
