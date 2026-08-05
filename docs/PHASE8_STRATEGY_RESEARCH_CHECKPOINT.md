@@ -828,35 +828,92 @@ cleanup confirmed clean.
 **Files changed this entry**: `scripts/run_demo_execution_backtest_tuning_sweep.py` (modified —
 new `GRID_COUPLED_RATIO`/`GRID_COUPLED_STEP_MULT_CANDIDATES` sweep block), this checkpoint doc.
 
+## Step 7 — regime analysis: a real, clean, genuinely informative finding
+
+Four single-parameter/shape hypotheses had all been checked and rejected (cost, step-spacing,
+decoupled SL, coupled fixed ratio) without finding a fix. The remaining open question: is grid's
+negative expectancy uniform across market conditions, or concentrated in a specific regime? Grid
+is architecturally mean-reversion (LIMIT orders seeded around an EMA center), so the natural
+hypothesis is that it does better when price is ranging/choppy and worse when price trends
+strongly away from center without reverting.
+
+**Built**: `src/mt5_mcp_trading/features/regime.py` — `efficiency_ratio(bars, period)`, Kaufman's
+Efficiency Ratio (`|net change| / total path length` over a trailing window; 1.0 = pure trend,
+0.0 = pure chop), same pure-function-over-`MarketBar.close` pattern and the same
+"`period<1` raises, insufficient bars returns `0.0`" convention as `features/atr.py`. 8 new unit
+tests (pure uptrend/downtrend = 1.0, symmetric round-trip = 0.0, partial chop hand-computed,
+flat closes, insufficient bars, window isolation, invalid period).
+
+**Analysis script**: `scripts/run_demo_execution_backtest_regime_analysis.py` — one real
+`get_symbol_info` call, then a single offline backtest against the training window
+(current production defaults, `GridStrategyConfig()`/`RunnerStrategyConfig()` unmodified).
+Classifies each of grid's own real closed trades by ER computed over the `atr_period`-length
+(14-bar) window ending at that trade's own entry bar — "what did the market look like right
+before grid decided to enter this specific trade" — then splits at the **median observed ER**
+(data-driven, not an arbitrary universal threshold) so both buckets comfortably clear the
+30-trade minimum even with grid's relatively small trade count.
+
+**Real results, training window, 119 grid trades, median ER = 0.3847**:
+
+| | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| all (unconditional) | 119 | 56.3% | −0.302 R | 37.120 R |
+| ranging (ER < median) | 58 | 72.4% | **−0.102 R** | **7.920 R** |
+| trending (ER ≥ median) | 61 | 41.0% | **−0.492 R** | 30.720 R |
+
+**This confirms the hypothesis directly.** Grid's negative expectancy is not uniform — it's
+disproportionately driven by trending conditions. In ranging windows it's still net-negative but
+close to breakeven with a small drawdown; in trending windows it's badly negative with 4x the
+drawdown. Both buckets clear the 30-trade minimum (58/61), a real effect size, not noise. **Not
+a positive-edge finding** — grid does not have a validated positive edge in either regime, only a
+much smaller negative one in ranging conditions — but a genuinely more actionable diagnosis than
+"structurally negative everywhere": it points toward a regime *filter* (pause/skip new grid
+entries when the market is trending) as a concrete, evidence-backed idea worth its own future
+proposal, exactly the exit criteria Step 7 was scoped for from the start.
+
+**Explicitly not done here, by design**: no regime filter was built or adopted — Step 7's own
+exit criteria is "informs whether a filter is worth a future, separate proposal," not to build
+one. This finding is training-window-only and single-split (median); it has not itself been
+checked out-of-sample the way Step 5/6 checked runner's SL/TP candidate — a real regime-filter
+proposal would need that same discipline before being trusted, not assumed from this alone.
+
+```
+pytest -q                        -> 421 passed (413 previously + 8 new, features/regime.py)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call beyond the one read-only `get_symbol_info` pull. Process cleanup
+confirmed clean.
+
+**Files changed this entry**: `src/mt5_mcp_trading/features/regime.py` (new),
+`tests/unit/test_features_regime.py` (new),
+`scripts/run_demo_execution_backtest_regime_analysis.py` (new), this checkpoint doc.
+
 ## Exact next smallest task
 
-**Phase 8's originally-scoped work is complete**: edge validation (Step 1-3), cost/stress
-sensitivity (Step 4), parameter tuning (Step 5), walk-forward out-of-sample validation (Step 6),
-production adoption and live verification of runner's validated candidate — all done. **Grid's
-negative expectancy remains open and unresolved** — four hypotheses now checked and rejected
-(cost, step-spacing, decoupled SL distance, coupled fixed reward:risk ratio), the last one a
-real, clean, unambiguously negative result pointing toward entry-timing quality as the actual
-driver rather than any SL/TP shape. Not yet a "no fix exists" verdict — no *parameter* fix has
-been found by this approach, and every SL/TP-shape lever this architecture exposes has now been
-tried. Live testing remains paused (the smoke-test entry above was a single, explicitly-approved
-exception, not a resumption). Next decision, not yet made:
-- Step 7 (regime analysis) — check whether grid's negative expectancy is regime-dependent, or
-  whether its entry logic itself has no genuine directional edge in this window at all; no
-  regime classifier exists in this codebase yet, real new infrastructure, not a quick sweep.
-- Reconsider grid's entry logic itself (e.g. `center_mode`, `atr_period`, or the EMA-center
-  premise) rather than its SL/TP shape — a bigger, more exploratory change than anything tried
-  so far in this step.
-- Stop investigating grid for now and treat "no validated SL/TP/spacing fix, structural negative
-  expectancy" as this phase's honest, final verdict for grid — a legitimate phase outcome.
+**Phase 8's originally-scoped work, including Step 7, is now complete**: edge validation
+(Step 1-3), cost/stress sensitivity (Step 4), parameter tuning (Step 5), walk-forward
+out-of-sample validation (Step 6), production adoption and live verification of runner's
+candidate, and regime analysis (Step 7) — all done. **Grid's negative expectancy has a real,
+evidence-backed diagnosis now** (trend-concentrated, not uniform) even though no fix has been
+adopted. Live testing remains paused (the smoke-test entry above was a single, explicitly-
+approved exception, not a resumption). Next decision, not yet made — all genuinely optional, none
+required to consider Phase 8 done:
+- Propose a grid regime filter (e.g. skip new entries above some ER threshold) as its own new,
+  separately-scoped effort — this would be real production strategy logic, needing its own
+  design, out-of-sample validation (same discipline as Step 5/6), and explicit approval before
+  any code, not an extension of this analysis.
+- Reconsider grid's entry logic itself (`center_mode`, `atr_period`, the EMA-center premise) —
+  a bigger, more exploratory change than anything tried so far.
+- Stop investigating grid for now and treat "negative expectancy, now known to be
+  trend-concentrated, no fix adopted" as this phase's honest, final verdict for grid — a
+  legitimate, informative phase outcome.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Phase 8's core scope is complete; runner's
-sl_atr_mult=3.0/tp_atr_mult=6.0 is live-verified as the production default. Grid's negative
-expectancy is still open — cost, step_mult, a decoupled sl_atr_mult sweep, and a coupled
-fixed-ratio sweep have all been checked and rejected as fixes; the decoupled sl_atr_mult sweep
-looked promising but was found to be an R-unit measurement artifact, and the coupled fixed-ratio
-sweep was a real, clean result showing every tested candidate genuinely worse than the current
-default — see those entries for the exact reasoning). Confirm git status is clean at the latest
-commit and no live process is running, then ask me what to do next — Step 7 regime analysis,
-reconsidering grid's entry logic itself, or stopping the grid investigation here are the open
-options, none decided yet."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Phase 8's originally-scoped work, through Step 7, is
+complete. Runner's sl_atr_mult=3.0/tp_atr_mult=6.0 is live-verified as the production default.
+Grid's negative expectancy has no adopted fix, but Step 7's regime analysis found it's
+trend-concentrated, not uniform — see that entry for the ER-based method and results). Confirm
+git status is clean at the latest commit and no live process is running, then ask me what to do
+next — proposing a grid regime filter as its own new effort, reconsidering grid's entry logic, or
+stopping the grid investigation here are the open options, none decided yet."

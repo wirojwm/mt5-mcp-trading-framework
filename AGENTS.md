@@ -592,8 +592,17 @@ not done here, to avoid designing ahead of what's actually been asked for.
   Four hypotheses now checked and rejected for grid (cost, step-spacing, decoupled SL, coupled
   fixed-ratio) — the strongest evidence yet that grid's negative expectancy is an entry-timing
   quality problem, not an SL/TP-shape problem; every SL/TP lever this architecture exposes has
-  now been tried. Full detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next
-  smallest task."
+  now been tried. **Step 7 (regime analysis) run and found a real, clean, genuinely informative
+  result**: new `features/regime.py` (`efficiency_ratio()`, Kaufman's Efficiency Ratio, same
+  pattern/conventions as `features/atr.py`) classified each of grid's 119 training-window trades
+  by market condition at entry, split at the median. Ranging trades: 58, win rate 72.4%,
+  expectancy −0.102 R, drawdown 7.920 R. Trending trades: 61, win rate 41.0%, expectancy
+  −0.492 R, drawdown 30.720 R. Grid's negative expectancy is not uniform — it's disproportionately
+  driven by trending conditions (still negative in ranging conditions, but far less damaging).
+  Not a positive edge in either regime, but a real diagnosis that makes a future regime *filter*
+  a concrete, evidence-backed idea, not adopted or built here. **Phase 8's originally-scoped
+  work, through Step 7, is now complete.** Full detail in
+  `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
