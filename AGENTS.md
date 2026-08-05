@@ -497,8 +497,14 @@ not done here, to avoid designing ahead of what's actually been asked for.
   per-trade expectancy in R-multiples (P&L ÷ risk-per-trade), net of transaction costs, computed
   separately per strategy (grid/runner never blended), paired with max drawdown in the same R
   units as a required companion metric, no "edge validated" claim below a 30-trade-per-strategy
-  minimum sample. Full reasoning in the checkpoint doc. Next: Step 2's first action (a read-only
-  live pull to discover real BTCUSD history depth), still needing its own explicit go-ahead.
+  minimum sample. Full reasoning in the checkpoint doc. **Step 2's discovery action done and
+  live-verified**: a read-only historical-data probe (`scripts/run_demo_execution_historical_data_probe.py`)
+  confirmed real `BTCUSD` history on this demo terminal goes back to 2015-01-01 (via uncapped
+  `H4`/`D1` results); `M1`–`H1` all returned exactly the requested 50,000-bar ceiling, meaning
+  more exists than measured — not yet a problem, since even the confirmed depth (35+ days of
+  `M1`, 6+ years of `H1`) comfortably supports Step 1's 30-trade-per-strategy minimum with room
+  to spare. Next: Step 2's remaining deliverable, a real local cache/loader (not yet built), still
+  needing its own explicit go-ahead for any further live call.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

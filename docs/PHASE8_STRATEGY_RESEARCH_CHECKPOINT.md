@@ -123,20 +123,68 @@ sub-phases with their own numbers — Phase 8 is one phase, tracked here.
   expanding to `EURUSD`/`XAUUSD` (named in the live-pilot framing) is Phase 9/live-pilot
   territory, not decided or needed here.
 
+## Step 2, first action — historical data depth probe: live-verified, real BTCUSD history goes back to 2015
+
+Ran `scripts/run_demo_execution_historical_data_probe.py` (new, read-only — only calls
+`get_candles_latest` via `McpMarketDataSource.get_bars()`, no `executor` reference anywhere in
+the file, same pattern as `scripts/run_demo_execution_mcp_disconnect_smoke_test.py`). Requested
+50,000 bars per timeframe (deliberately far more than expected to be cached) for `M1`, `M5`,
+`M15`, `H1`, `H4`, `D1`, since `get_candles_latest` wraps `MetaTrader5.copy_rates_from_pos()`
+directly (confirmed by reading the vendored client) — there's no hard-coded count cap anywhere
+in this project's or the vendored client's code; requesting more than is cached just returns
+fewer bars, never errors or blocks on a broker download, so a single large request per timeframe
+safely reveals the real ceiling (or shows the request itself was the bottleneck, see below).
+
+**Result, real data, all six timeframes**:
+
+| Timeframe | Bars returned | Earliest | Latest | Span |
+|---|---|---|---|---|
+| M1 | 50,000 (capped by request) | 2026-07-01 | 2026-08-05 | 35.2 days |
+| M5 | 50,000 (capped by request) | 2026-02-10 | 2026-08-05 | 175.7 days |
+| M15 | 50,000 (capped by request) | 2025-02-19 | 2026-08-05 | 531.9 days |
+| H1 | 50,000 (capped by request) | 2020-07-22 | 2026-08-05 | 2204.5 days |
+| H4 | 16,112 (natural limit) | 2015-01-01 | 2026-08-05 | 4234.2 days |
+| D1 | 3,750 (natural limit) | 2015-01-01 | 2026-08-05 | 4234.0 days |
+
+**Interpretation**: `H4`/`D1` weren't capped by the request (16,112/3,750 bars is well under the
+50,000 ceiling) — they hit the *terminal's actual earliest cached data*, 2015-01-01, meaning this
+demo terminal has real BTCUSD history back over a decade. `M1` through `H1` all returned exactly
+50,000 bars, meaning **the request size, not real availability, was the limiting factor for those
+four** — more history almost certainly exists at every finer granularity too, not yet measured.
+This is a strong, clearly-sufficient result for Step 3 onward: even the already-confirmed depth
+(35 days of `M1`, 6 years of `H1`) comfortably supports a real train/test split with room to
+spare for the 30-trade-per-strategy minimum sample decided in Step 1, and finding the *exact*
+`M1`–`H1` ceiling isn't needed to proceed — only relevant if Step 3's chosen backtest timeframe
+later turns out to need more than what's already confirmed available.
+
+No order, no symbol trading call, no `executor` reference — fully read-only. Process cleanup
+confirmed clean afterward (no stray processes, verified read-only, same discipline as every
+other real script this project runs).
+
+```
+pytest -q -> 356 passed (unchanged -- this script lives outside testpaths, never collected)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_historical_data_probe.py` (new), this
+checkpoint doc.
+
 ## Exact next smallest task
 
-**Step 1 is done** (edge metric decided, see question 2 above). Step 2's very first action is
-next: one read-only live pull to find out how much real `BTCUSD` history this demo connection
-can actually retrieve. That number determines whether Steps 3–7 are viable as scoped above or
-need adjusting — worth learning before designing the backtest engine around a guess.
+**Step 1 done** (edge metric decided). **Step 2's discovery action done** (real history depth
+confirmed, more than sufficient). Step 2's remaining deliverable — a reusable, tested local
+cache/loader that actually persists pulled bars (not just probes them) — is next, along with
+deciding a storage format (e.g. one file per symbol/timeframe under `var/market_data/`) and
+exactly which timeframe(s) Step 3's backtest engine will target first (likely `M1` or `M5`,
+matching what grid/runner actually trade on live).
 
 **Live testing remains paused for anything order-related — this entire phase is research-only
-and read-only by design, but any real MCP call (including a plain historical-data pull) still
-needs its own explicit go-ahead, same standing rule as every prior step in this project.**
+and read-only by design, but any further real MCP call still needs its own explicit go-ahead,
+same standing rule as every prior step in this project.**
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Step 1 is done — edge metric decided: per-trade
-expectancy in R-multiples, per strategy, with a max-drawdown companion and a 30-trade minimum
-sample floor), confirm git status is clean at the latest commit, then ask me what to do next —
-Step 2's first action (a read-only live pull to discover real BTCUSD history depth) is the
-smallest next step, but still needs its own explicit go-ahead before any live call."
+docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (the historical-data-probe entry is the most recent
+— Step 1 done, Step 2's discovery action done: confirmed BTCUSD history back to 2015-01-01,
+M1 has at least 35 days readily available, more almost certainly exists but wasn't the
+bottleneck), confirm git status is clean at the latest commit, then ask me what to do next —
+Step 2's remaining piece (a real local cache/loader, storage format decision) is the smallest
+next step."
