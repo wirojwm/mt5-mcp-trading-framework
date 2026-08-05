@@ -151,10 +151,16 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   `close_position()` via `_current_posture()` — this was true of the old format too and is
   **not** fixed by this change; flagged as a remaining risk only if ticket volume ever grows
   very large under sustained use. Full detail: `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`.
-- **Phase 7: done.** Both scoped slices (grid_cycle failure handling, state-store-at-scale
-  sweep + the O(N²) fix) are complete; user chose to close out the phase here rather than
-  continue with live/MCP-adjacent failure testing or the `all_open()` per-action cost noted
-  above.
+- **Phase 7: done for its two scoped slices, but not full failure-mode coverage — do not treat
+  "done" as "complete."** grid_cycle failure handling and the state-store-at-scale sweep + the
+  O(N²) fix are complete; user chose to close out the phase here rather than continue with
+  live/MCP-adjacent failure testing or the `all_open()` per-action cost noted above.
+  **Never done, still open**: no test or live run has ever forced an MCP disconnect, made a call
+  actually hit `McpClient.call_tool()`'s 30s timeout, or exercised a process-restart-then-reconcile
+  cycle — the pipeline-wiring loop runs below only ever observed a connection *not* dropping, which
+  proves nothing about the documented "a dropped connection is fatal, no reconnect logic" behavior.
+  See "Forward phases" below — do not start Phase 8 until this is explicitly completed or accepted
+  as an open risk.
 - **Pipeline wiring (post-Phase 7): in progress, first live cycle done and cleaned up.** Not
   one of the numbered phases — like "wire real adapters" before Phase 6, a separate,
   explicitly-approved effort, called out in both the Phase 6 and Phase 7 checkpoint docs as
@@ -393,6 +399,35 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`, and pipeline wiring in
 `docs/PIPELINE_WIRING_CHECKPOINT.md` — read whichever is relevant before continuing that work in
 a new session.
+
+## Forward phases (named, not yet scoped)
+
+Referenced informally across pipeline-wiring checkpoint entries (`docs/PIPELINE_WIRING_CHECKPOINT.md`,
+"Remaining roadmap") but never formally defined here until now. Unlike phases 0–7 above (phases of
+*building* this codebase), these are phases of *running and tuning* the strategy once built — a
+different kind of work, each still requiring its own explicit scoping and approval before any code
+is written, per this project's normal workflow. None of the three below has a checkpoint doc yet,
+and writing detailed entry/exit criteria for any of them is itself a future, explicitly-approved
+task — not done here, to avoid designing ahead of what's actually been asked for.
+
+- **Phase 8 (strategy research, edge validation, parameter tuning, regime analysis,
+  transaction-cost/stress testing, walk-forward/out-of-sample validation)**: not started, not
+  scoped. No tuning framework, walk-forward harness, regime classifier, or transaction-cost model
+  exists anywhere in this codebase. Do not start until Phase 7's still-open live/MCP-adjacent
+  failure testing (see above) is either completed or explicitly accepted as an open risk.
+- **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
+  operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
+  locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
+  gate exists anywhere in this codebase.
+- **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
+  limit, limited symbols/orders, human approval before real-money execution)**: not started, not
+  scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
+  guards, spread filters, and daily shutdown rules were never ported from the legacy project and
+  don't exist here — there is no daily-loss-limit or kill-switch code anywhere in this codebase
+  today (`pipeline/loop_control.py`'s cycle/runtime ceilings bound *time*, not *loss*). This phase
+  cannot begin until that's written and tested, Phase 9 defines objective readiness criteria, and
+  this doc's "No `LIVE` mode exists in this codebase" boundary (see "Execution modes" below) is
+  itself explicitly revisited and approved.
 
 ## Safety rules
 
