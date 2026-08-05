@@ -78,6 +78,24 @@ GRID_STEP_MULT_CANDIDATES = (0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8)  # curren
 # (Step 5/6). sl_atr_mult (grid's stop distance, independent of step_mult/tp's formula -- see
 # strategy/grid.py's own docstring) is the next untested lever.
 GRID_SL_ATR_MULT_CANDIDATES = (1.0, 1.5, 2.0, 2.5, 3.0, 4.0)  # current default is 2.0
+# The sl_atr_mult sweep above looked like the cleanest signal of the phase but was found to be an
+# R-unit measurement artifact (docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md): tp_price is derived
+# from step_mult only, independent of sl_atr_mult, so widening sl alone just inflates the R
+# denominator while the underlying entry/exit quality never changes. A genuinely coupled sweep
+# must scale sl AND tp together at a FIXED ratio. GridStrategyConfig has no independent tp field
+# by design (tp_price = atr * step_mult * 1.2, deliberately tied to step_mult so it can never go
+# stale -- see strategy/grid.py's own docstring) -- step_mult is ALSO what sets the entry offset
+# from center (buy_price/sell_price = center -+ step_price). This means there is no way, within
+# the current architecture, to scale tp independently of the entry offset: any fixed-ratio sl/tp
+# sweep necessarily moves the entry offset too. Not a flaw in this sweep's design -- an inherent
+# property of grid's current formula, worth knowing regardless of this sweep's result.
+# Ratio chosen: 2:1 reward:risk, matching RunnerStrategyConfig's own established convention
+# (tp_atr_mult = 2 * sl_atr_mult) -- the healthiest ratio already validated elsewhere in this
+# codebase, not an arbitrary pick. GRID_COUPLED_STEP_MULT_CANDIDATES reuses the exact step_mult
+# values already swept above, for direct comparability; sl_atr_mult is DERIVED per candidate as
+# (step_mult * 1.2) / GRID_COUPLED_RATIO so the ratio is identical at every point in this sweep.
+GRID_COUPLED_RATIO = 2.0
+GRID_COUPLED_STEP_MULT_CANDIDATES = (0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8)
 
 _logger = get_logger("mt5_mcp_trading.scripts.backtest_tuning_sweep")
 
@@ -170,6 +188,25 @@ async def main() -> None:
         )
         trades = [t for t in ledger.closed_trades if t.magic == GRID_MAGIC]
         print(_row(f"sl={sl_mult}", trades))
+
+    print(f"\n--- grid: COUPLED sl/tp sweep, fixed {GRID_COUPLED_RATIO}:1 reward:risk ratio "
+          f"(sl_atr_mult derived from step_mult -- see script comment for why entry offset "
+          f"necessarily moves too) ---")
+    for step_mult in GRID_COUPLED_STEP_MULT_CANDIDATES:
+        sl_mult = (step_mult * 1.2) / GRID_COUPLED_RATIO
+        _logger.info("grid coupled sweep: step_mult=%s -> sl_atr_mult=%s (ratio=%s) ...",
+                     step_mult, sl_mult, GRID_COUPLED_RATIO)
+        grid_config = GridStrategyConfig(step_mult=step_mult, sl_atr_mult=sl_mult)
+        ledger = await run_backtest(
+            bars=train_bars, symbol=SYMBOL, timeframe=TIMEFRAME, bars_count=BARS_COUNT,
+            symbol_info=symbol_info, grid_config=grid_config, runner_config=RunnerStrategyConfig(),
+            money_config=MoneyConfig(lot_size_mode="fixed", fixed_lot=0.01),
+            caps=ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06),
+            grid_magic=GRID_MAGIC, runner_magic=RUNNER_MAGIC,
+            cycle_interval_bars=CYCLE_INTERVAL_BARS,
+        )
+        trades = [t for t in ledger.closed_trades if t.magic == GRID_MAGIC]
+        print(_row(f"step={step_mult}/sl={sl_mult:.3f}", trades))
 
     print("\n=====================================================================\n")
 

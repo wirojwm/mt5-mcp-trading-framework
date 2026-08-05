@@ -584,10 +584,16 @@ not done here, to avoid designing ahead of what's actually been asked for.
   artifact (grid's `tp_price` is independent of `sl_atr_mult`, so widening the stop only inflates
   the R denominator; expectancy can only approach 0 from below this way, never genuinely turn
   positive, and the shrinking R-drawdown number masks real dollar risk per trade actually
-  *growing*). Not adopted. Three single-parameter hypotheses (cost, step-spacing, decoupled SL
-  distance) are now checked and rejected for grid; no fix found yet, not a "no fix exists"
-  verdict. Full detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest
-  task."
+  *growing*). Not adopted. **Follow-up coupled sl/tp sweep at a fixed 2:1 reward:risk ratio
+  (matching runner's own convention) run to test SL/TP shape without that artifact** — a real,
+  clean result this time (confirmed via `expectancy = 3×win_rate−1` matching every row exactly):
+  every single candidate came back worse than the current default (best −0.378 R vs. default
+  −0.302 R), win rate collapsing to 14–21%, well below the ~33% a 2:1 ratio needs to break even.
+  Four hypotheses now checked and rejected for grid (cost, step-spacing, decoupled SL, coupled
+  fixed-ratio) — the strongest evidence yet that grid's negative expectancy is an entry-timing
+  quality problem, not an SL/TP-shape problem; every SL/TP lever this architecture exposes has
+  now been tried. Full detail in `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next
+  smallest task."
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

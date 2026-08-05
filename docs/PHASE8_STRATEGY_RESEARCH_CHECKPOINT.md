@@ -772,30 +772,91 @@ cleanup confirmed clean.
 **Files changed this entry**: `scripts/run_demo_execution_backtest_tuning_sweep.py` (modified —
 new `GRID_SL_ATR_MULT_CANDIDATES` sweep block), this checkpoint doc.
 
+## Grid coupled sl/tp sweep at a fixed 2:1 reward:risk ratio — a real, clean, unambiguously negative result
+
+Direct follow-up to the R-unit-artifact finding above. To genuinely test SL/TP *shape* without
+the artifact, sl and tp must scale together at a fixed ratio. `GridStrategyConfig` has no
+independent tp field by design (`tp_price = atr * step_mult * 1.2`, deliberately tied to
+`step_mult` so it can never go stale — see `strategy/grid.py`'s own docstring), and `step_mult`
+is also what sets the entry offset from center. This means there is no way, within the current
+architecture, to scale tp independently of the entry offset — a real, inherent property of
+grid's formula, not a flaw introduced by this sweep. Added a fourth block to
+`scripts/run_demo_execution_backtest_tuning_sweep.py`: `GRID_COUPLED_RATIO = 2.0` (matching
+`RunnerStrategyConfig`'s own established 2:1 convention, not an arbitrary pick), reusing the same
+`step_mult` candidates already swept, with `sl_atr_mult` *derived* per candidate as
+`(step_mult * 1.2) / 2.0` so the ratio is identical at every point.
+
+**Real results, training window, ratio held fixed at 2:1 throughout**:
+
+| step_mult | sl_atr_mult (derived) | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|---|
+| 0.15 | 0.090 | 149 | 18.1% | −0.456 R | 68.001 R |
+| 0.2 | 0.120 | 147 | 19.7% | −0.408 R | 61.984 R |
+| 0.25 | 0.150 | 139 | 18.0% | −0.461 R | 66.018 R |
+| 0.3 | 0.180 | 137 | 16.8% | −0.496 R | 70.008 R |
+| 0.4 | 0.240 | 117 | 13.7% | −0.590 R | 69.997 R |
+| 0.5 | 0.300 | 117 | 17.1% | −0.487 R | 58.001 R |
+| 0.6 | 0.360 | 115 | 19.1% | −0.426 R | 50.004 R |
+| 0.8 | 0.480 | 111 | 20.7% | −0.378 R | 43.008 R |
+
+**Confirmed NOT an artifact this time**: with the ratio genuinely fixed, expectancy should equal
+`3 × win_rate − 1` exactly (the algebra of a flat +2R win / −1R loss payoff) if no floor is
+distorting it. Checked against every row — matches almost exactly (e.g. `step=0.8`:
+`3×0.207−1=−0.379`, reported `−0.378`). These are real differences in win probability, not a
+measurement effect.
+
+**Every single candidate is worse than the current default** (`step=0.4`/`sl=2.0` → `−0.302 R`).
+Best case in this sweep is `−0.378 R`, worst is `−0.590 R`. Win rate collapsed to 14–21%,
+well below the ~33.3% a 2:1 ratio needs to break even — grid reaches a proportionally distant
+target far less often than it gets stopped out at a proportionally closer stop. **This is the
+strongest evidence yet that grid's negative expectancy is not a risk/reward-shape problem at
+all**: forcing a healthier ratio didn't just fail to help, it made things substantially worse,
+consistent with grid's entries having a real, structural mean-reversion shape (needs a
+high-win-rate/low-ratio profile to work at all) rather than a trend-following one. Four
+single-parameter/shape hypotheses are now checked and rejected for grid: cost (Step 4),
+step-spacing (Step 5/6), decoupled SL widening (artifact, above), and coupled fixed-ratio
+(this entry, genuinely worse).
+
+```
+pytest -q                        -> 413 passed (unchanged -- only a sweep-script candidate tuple added)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/trading call beyond the sweep's one read-only `get_symbol_info` pull. Process
+cleanup confirmed clean.
+
+**Files changed this entry**: `scripts/run_demo_execution_backtest_tuning_sweep.py` (modified —
+new `GRID_COUPLED_RATIO`/`GRID_COUPLED_STEP_MULT_CANDIDATES` sweep block), this checkpoint doc.
+
 ## Exact next smallest task
 
 **Phase 8's originally-scoped work is complete**: edge validation (Step 1-3), cost/stress
 sensitivity (Step 4), parameter tuning (Step 5), walk-forward out-of-sample validation (Step 6),
 production adoption and live verification of runner's validated candidate — all done. **Grid's
-negative expectancy remains open and unresolved** — three single-parameter hypotheses checked and
-rejected (cost, step-spacing, decoupled SL distance), not yet a "no fix exists" verdict, just no
-fix found yet by this approach. Live testing remains paused (the smoke-test entry above was a
-single, explicitly-approved exception, not a resumption). Next decision, not yet made:
-- A coupled `sl_atr_mult`/`tp_mult` ratio sweep for grid (the fixed-ratio design that avoids the
-  R-unit artifact just found) — the natural next single-lever attempt.
-- Step 7 (regime analysis) — check whether grid's negative expectancy is regime-dependent rather
-  than a parameter problem at all; no regime classifier exists in this codebase yet, real new
-  infrastructure, not a quick sweep.
-- Stop investigating grid for now and treat "no validated fix, structural negative expectancy" as
-  this phase's honest, final verdict for grid — a legitimate phase outcome, not a failure to find
-  one.
+negative expectancy remains open and unresolved** — four hypotheses now checked and rejected
+(cost, step-spacing, decoupled SL distance, coupled fixed reward:risk ratio), the last one a
+real, clean, unambiguously negative result pointing toward entry-timing quality as the actual
+driver rather than any SL/TP shape. Not yet a "no fix exists" verdict — no *parameter* fix has
+been found by this approach, and every SL/TP-shape lever this architecture exposes has now been
+tried. Live testing remains paused (the smoke-test entry above was a single, explicitly-approved
+exception, not a resumption). Next decision, not yet made:
+- Step 7 (regime analysis) — check whether grid's negative expectancy is regime-dependent, or
+  whether its entry logic itself has no genuine directional edge in this window at all; no
+  regime classifier exists in this codebase yet, real new infrastructure, not a quick sweep.
+- Reconsider grid's entry logic itself (e.g. `center_mode`, `atr_period`, or the EMA-center
+  premise) rather than its SL/TP shape — a bigger, more exploratory change than anything tried
+  so far in this step.
+- Stop investigating grid for now and treat "no validated SL/TP/spacing fix, structural negative
+  expectancy" as this phase's honest, final verdict for grid — a legitimate phase outcome.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
 docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md (Phase 8's core scope is complete; runner's
 sl_atr_mult=3.0/tp_atr_mult=6.0 is live-verified as the production default. Grid's negative
-expectancy is still open — cost, step_mult, and a decoupled sl_atr_mult sweep have all been
-checked and rejected as fixes; the sl_atr_mult sweep looked promising but was found to be an
-R-unit measurement artifact, not a real edge, see that entry for the exact reasoning). Confirm
-git status is clean at the latest commit and no live process is running, then ask me what to do
-next — a coupled sl/tp ratio sweep for grid, Step 7 regime analysis, or stopping the grid
-investigation here are the open options, none decided yet."
+expectancy is still open — cost, step_mult, a decoupled sl_atr_mult sweep, and a coupled
+fixed-ratio sweep have all been checked and rejected as fixes; the decoupled sl_atr_mult sweep
+looked promising but was found to be an R-unit measurement artifact, and the coupled fixed-ratio
+sweep was a real, clean result showing every tested candidate genuinely worse than the current
+default — see those entries for the exact reasoning). Confirm git status is clean at the latest
+commit and no live process is running, then ask me what to do next — Step 7 regime analysis,
+reconsidering grid's entry logic itself, or stopping the grid investigation here are the open
+options, none decided yet."
