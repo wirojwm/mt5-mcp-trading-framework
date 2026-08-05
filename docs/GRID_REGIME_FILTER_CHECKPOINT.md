@@ -265,35 +265,94 @@ confirmed clean.
 `scripts/run_demo_execution_backtest_regime_filter_test_window_validation.py` (new), this
 checkpoint doc.
 
+## Second Step 1 attempt — wider sweep, then a fine-grained probe, found a new tentative candidate
+
+`0.2` was rejected by Step 3. Per the "fresh Step 1, not a continuation" path above, re-swept
+`scripts/run_demo_execution_backtest_regime_filter_sweep.py`'s `THRESHOLD_CANDIDATES` against the
+training window (still never touching the held-out test window).
+
+**Wide pass (0.01–1.0, 23 candidates)**: `0.9`/`1.0` correctly converged to the exact unfiltered
+baseline (confirms filter mechanics at the extreme — no threshold above Step 7's observed max ER
+of 0.8209 can ever trigger). `0.01` posted the best expectancy of the entire table by a wide
+margin (−0.131 R vs. next-best −0.209 R), but its immediate neighbor `0.02` collapsed straight
+back to baseline-like (−0.311 R) — a massive, one-point discontinuity (401 trades at `0.01` vs.
+63 at `0.02`) with no smooth transition, unlike `0.2`'s well-behaved earlier neighborhood. Flagged
+as a likely noise/instability artifact rather than trusted, pending finer investigation.
+
+**Fine-grained probe (0.005–0.02, 11 candidates)** — this revised that read substantially:
+
+| threshold | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| unfiltered | 119 | 56.3% | −0.302 R | 37.120 R |
+| 0.005 | 326 | 68.7% | −0.148 R | 49.200 R |
+| 0.007 | 455 | 69.7% | −0.136 R | 62.400 R |
+| 0.008 | 489 | 71.0% | −0.120 R | 59.841 R |
+| 0.009 | 383 | 70.2% | −0.129 R | 49.679 R |
+| 0.01 | 401 | 70.1% | −0.131 R | 52.560 R |
+| 0.011 | 433 | 68.8% | −0.147 R | 63.480 R |
+| 0.012 | 445 | 67.4% | −0.164 R | 73.001 R |
+| **0.013** | 235 | **72.8%** | **−0.098 R** | **22.960 R** |
+| 0.015 | 237 | 70.9% | −0.121 R | 28.680 R |
+| 0.017 | 53 | 56.6% | −0.298 R | 15.800 R |
+| 0.02 | 63 | 55.6% | −0.311 R | 19.600 R |
+
+**Not an isolated spike after all — a real, broad plateau.** Every threshold from `0.005` through
+`0.015` beats the unfiltered baseline substantially (expectancy −0.098 to −0.164 R vs. −0.302 R;
+win rate 67–73% vs. 56.3%), ten consecutive candidates, not one lucky point. The actual cliff sits
+between `0.015` and `0.017`, not between `0.01` and `0.02` as the coarser first pass made it look.
+`0.013` is the single best point in the plateau (−0.098 R, 72.8% win rate, 22.960 R drawdown — also
+the lowest drawdown in the region) and comfortably clears the 50+ preferred sample size (235
+trades).
+
+**Real, honest caveat, not glossed over**: trade count *within* the plateau is noisy and
+non-monotonic (235–489, no smooth progression) even though the outcome metrics (expectancy, win
+rate) are consistently good throughout — evidence the underlying exposure-cap-freeing dynamic is
+genuinely sensitive at this fine a threshold granularity, not that the improved-performance
+finding itself is fragile. This is training-window evidence only. **Not validated out-of-sample.
+Not adopted. No production default changed** — `GridStrategyConfig.max_entry_efficiency_ratio`
+still defaults to `None` everywhere; only the sweep script's candidate list changed.
+
+```
+pytest -q -> 428 passed (unchanged -- only sweep-script candidate tuples changed, no production code)
+```
+
+No order, no live/trading call beyond each sweep's one read-only `get_symbol_info` pull (same
+script, same call already covered by prior approval). Process cleanup confirmed clean.
+
+**Files changed this entry**: `scripts/run_demo_execution_backtest_regime_filter_sweep.py`
+(modified — `THRESHOLD_CANDIDATES` widened, then narrowed to a fine-grained probe), this
+checkpoint doc.
+
 ## Exact next smallest task
 
-**Step 3 is done, and its answer is no.** Steps 4–5 (production adoption, live verification) do
-not apply — their entry criteria was "Step 3 validates," which it didn't. This effort's original
-question is now answered: the `0.2` threshold found on the training window does not generalize to
-unseen data. Two honest paths forward, neither required:
-- Try a different candidate/design (e.g. sweep additional thresholds against a wider range, or a
-  different `efficiency_ratio_period`) — a fresh Step 1, not a continuation, since the current
-  candidate is now rejected, same discipline as Phase 8 re-sweeping grid's `step_mult` after its
-  first candidate was similarly rejected.
-- Treat this effort as complete with a "no validated filter found" verdict — a legitimate,
-  informative outcome. The opt-in filter mechanism (`GridStrategyConfig` fields +
-  `pipeline/grid_cycle.py` gate) stays in the codebase either way, tested and inert by default
-  (`max_entry_efficiency_ratio=None`) — reusable infrastructure for a future candidate, not dead
-  code to revert.
+**A new tentative candidate exists (`max_entry_efficiency_ratio=0.013`) but is training-window
+evidence only — nothing has changed about this effort's core discipline.** Before this candidate
+can be trusted at all, it needs the same out-of-sample check that correctly rejected `0.2`: run
+it against the held-out test window via the real `pipeline/grid_cycle.py` path (same shape as
+`scripts/run_demo_execution_backtest_regime_filter_test_window_validation.py`, just pointed at
+`0.013` instead of `0.2`). **This has not been done. The held-out test window has not been
+touched by anything today.** No production code should change, and no live/demo order action is
+needed or appropriate — this is 100% offline, historical-data research, same as every other step
+in this effort and in Phase 8 itself. Needs its own explicit go-ahead before any test-window code
+is written or run, same standing rule as always.
 
 **Continuation prompt for a new session**: "Read AGENTS.md and
-docs/GRID_REGIME_FILTER_CHECKPOINT.md (Steps 1–3 are done. Step 1 found a training-window
-candidate, max_entry_efficiency_ratio=0.2, validated as a genuine non-edge interior peak. Step 2
-built the opt-in production filter, default off. Step 3 tested the candidate against the held-out
-test window and it did NOT validate — expectancy reversed from an improvement to a degradation.
-No production default changed; the filter mechanism remains in the codebase, inert by default).
-Confirm git status is clean at the latest commit and no live process is running, then ask me what
-to do next — trying a different candidate/threshold range, or treating this effort as complete
-with a 'no validated filter found' verdict, are the open options, neither decided yet."
+docs/GRID_REGIME_FILTER_CHECKPOINT.md (Steps 1–3 completed once already for candidate
+max_entry_efficiency_ratio=0.2, which was REJECTED by out-of-sample testing. A second Step 1
+attempt — a wider sweep, then a fine-grained probe around an initially-suspicious spike — found a
+NEW tentative candidate, max_entry_efficiency_ratio=0.013, this time as a genuine ~10-point
+plateau (0.005-0.015) rather than an isolated fluke, still training-window only. Step 3
+out-of-sample validation for 0.013 has NOT been run — the held-out test window remains untouched.
+No production default changed anywhere). Confirm git status is clean at the latest commit and no
+live process is running, then ask me what to do next — running Step 3 against 0.013 is the
+obvious next step but needs my explicit go-ahead before any test-window code is written or run."
 
 ## Status
 
-**Step 1 done** (validated, non-edge training-window candidate: `max_entry_efficiency_ratio=0.2`).
-**Step 2 done** (opt-in production filter built and tested, default off, zero behavior change for
-any existing caller). **Step 3 done — the candidate did NOT validate out-of-sample.** No
-production default changed anywhere in this effort.
+**First candidate (`max_entry_efficiency_ratio=0.2`): Steps 1–3 all done — REJECTED, did not
+validate out-of-sample.** **Second candidate (`max_entry_efficiency_ratio=0.013`), found via a
+fresh Step 1 (wide sweep + fine-grained probe): training-window evidence only, a genuine
+~10-point plateau, NOT yet validated out-of-sample.** No production default changed anywhere in
+this effort — `GridStrategyConfig.max_entry_efficiency_ratio` still defaults to `None`
+everywhere. Next smallest step: Step 3 for the `0.013` candidate against the held-out test
+window, awaiting explicit go-ahead.

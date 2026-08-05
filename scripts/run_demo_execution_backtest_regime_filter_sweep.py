@@ -62,13 +62,16 @@ CYCLE_INTERVAL_BARS = 5
 TRAIN_FRACTION = 0.8
 ER_PERIOD = 14  # matches GridStrategyConfig.atr_period's own default
 
-# None = no filter (baseline, current behavior). First pass (0.2-0.7) found 0.2 -- the low EDGE
-# of that range -- as the best-expectancy point, monotonically improving all the way down to it.
-# Widening below 0.2 to check whether that edge is a real, continuing trend or a reversal, before
-# trusting 0.2 as a candidate -- same caution already applied to grid's step_mult and runner's
-# sl_atr_mult sweeps earlier in Phase 8.
+# None = no filter (baseline, current behavior). The wide pass (0.01-1.0) found 0.01 posting the
+# best expectancy in the entire table by a wide margin (-0.131R) -- but its immediate neighbor
+# 0.02 collapsed straight back to baseline-like (-0.311R), a massive discontinuity (401 trades at
+# 0.01 vs just 63 at 0.02) with no smooth transition at all, unlike the well-behaved interior peak
+# 0.2 had before it. That shape is a strong instability/noise warning, not confirmation. Probing
+# the gap between 0.01 and 0.02 at fine granularity before trusting (or dismissing) the 0.01
+# spike: a smooth ramp between these two points would suggest a real, narrow effect; a sharp
+# cliff anywhere in between would confirm this is noise/an artifact of this specific value.
 THRESHOLD_CANDIDATES: tuple[Optional[float], ...] = (
-    None, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7,
+    None, 0.005, 0.007, 0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.015, 0.017, 0.02,
 )
 
 _logger = get_logger("mt5_mcp_trading.scripts.backtest_regime_filter_sweep")
