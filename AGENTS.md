@@ -470,9 +470,9 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/PIPELINE_WIRING_CHECKPOINT.md`, Phase 8 in
 `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, the grid regime filter (a new, separately-scoped
 effort motivated by Phase 8's Step 7 finding, **CLOSED as a negative result**) in
-`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, and Phase 9 (**scoped, not started**) in
-`docs/PHASE9_FORWARD_TEST_CHECKPOINT.md` — read whichever is relevant before continuing that work
-in a new session.
+`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, and Phase 9 (**Steps 1-4 done, Step 5 wiring built but
+NOT live-run**) in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md` — read whichever is relevant before
+continuing that work in a new session.
 
 ## Forward phases (named, not yet scoped)
 
@@ -480,8 +480,9 @@ Referenced informally across pipeline-wiring checkpoint entries (`docs/PIPELINE_
 "Remaining roadmap") but never formally defined here until now. Unlike phases 0–7 above (phases of
 *building* this codebase), these are phases of *running and tuning* the strategy once built — a
 different kind of work, each still requiring its own explicit scoping and approval before any code
-is written, per this project's normal workflow. Phase 9 is now scoped, with Steps 1-3 done — see
-`docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. Live pilot still has no checkpoint doc, and writing
+is written, per this project's normal workflow. Phase 9 is now scoped, with Steps 1-4 done and
+Step 5's wiring built (not yet live-run) — see `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. Live
+pilot still has no checkpoint doc, and writing
 detailed entry/exit criteria for it is itself a future, explicitly-approved task — not done here,
 to avoid designing ahead of what's actually been asked for.
 
@@ -684,15 +685,45 @@ to avoid designing ahead of what's actually been asked for.
   for the wrong reason -- caught by checking actual cycle counts, fixed by switching to the
   40-bar `_runner_bars()` fixture already used elsewhere for the same reason. 458 passed total,
   architecture tests still pass, no live/demo call in any of Steps 1-3.
-  **Step 4 (live performance/drawdown monitor) IN PROGRESS, research only, stopped for a lunch
-  break**: no code written yet. Confirmed by reading vendored source (not guessed): the
-  `get_deals` MCP tool returns CSV (reuse `parse_dataframe_csv()`), real deal fields include
-  `position_id` (the confirmed join key to `LocalOrderRecord.ticket`) and `magic` (reliability
-  UNCONFIRMED for deals -- must attribute via `StateStore`, never `deal.magic`, same as the
-  existing magic-recovery fix). Full findings and planned shape in
-  `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`'s Step 4 section. Next smallest step:
-  `StateStore.all_closed()` (pure/local, no live dependency), awaiting explicit go-ahead before
-  any code is written.
+  **Step 4 (live performance/drawdown monitor) DONE, live-verified, both follow-ups resolved**:
+  `StateStore.all_closed()`, a new `Deal` domain model (two wire-format corrections found by
+  tracing past the docs into vendored source -- `type` is a raw MT5 enum int not a string,
+  `time` arrives naive and needs explicit UTC attachment), `mt5_adapter/mcp_deal_history.py`
+  (`McpDealHistoryReader`, reuses `parse_dataframe_csv()`), and `monitoring/live_performance.py`
+  (`build_closed_trades()` joins by `position_id` only, never `deal.magic`;
+  `realized_pnl_since()` sums real $ P&L for a trusted ticket set) are all built and unit tested.
+  `scripts/run_demo_execution_live_performance_monitor.py` (read-only, `get_deals` only, no
+  `executor` reference) was written, then live-verified for real (2026-08-06, explicit
+  go-ahead): grid 19 trades/-0.825 R expectancy/16.302 R drawdown, runner 13 trades/-0.418 R
+  expectancy/10.214 R drawdown -- both negative, consistent with Phase 8, neither past the
+  30-trade minimum sample yet. Two things the live run surfaced were both root-caused: 2 skipped
+  tickets (`171648990`/`171649461`) were confirmed cancelled grid LIMIT orders that never filled
+  (one real `get_orders` call, `state='2'`/CANCELED, `volume_current == volume_initial`) --
+  correctly excluded, not a bug; 5 unrecognized-magic trades were identified from local records
+  alone (no live call needed) as known `magic=79999` Phase 6/8 smoke tests, also correctly
+  excluded. One structural, unfixed finding surfaced along the way: this project's local
+  `"CLOSED"` status is written identically by several reconciliation scripts for both "filled
+  then closed" and "cancelled/expired unfilled" -- flagged, not retroactively relabeled. 488
+  passed total after Step 4, architecture tests pass, no live/demo call in building any of it
+  (only the explicitly-approved monitor run and the `get_orders` diagnostic).
+  **Step 5 (live kill-switch smoke test) SCOPED AND PARTIALLY BUILT -- wiring + tests only, NOT
+  RUN LIVE.** Per the checkpoint doc's own Proposed Steps table, Step 5 is specifically "a single
+  short live smoke test proving the wired kill-switch actually halts a REAL loop run" -- the one
+  live/order-adjacent step in the whole plan. `monitoring/live_performance.py` gained
+  `compute_daily_loss_decision()` (combines `realized_pnl_since()` with
+  `risk.daily_loss_guard.check_daily_loss_limit()`). `scripts/run_demo_execution_pipeline_loop.py`
+  is now wired at both real `should_stop()` call sites via a new `_daily_loss_decision_for_cycle()`
+  (never raises -- FAILS CLOSED on a computation error, e.g. a failed `get_deals` call, rather
+  than silently skipping the check), computed once per loop iteration (one real `get_deals` call
+  per cycle, not per guard check, short-circuited to zero calls when the threshold is unset).
+  `MAX_DAILY_LOSS` defaults to `None` (kill-switch present but inert) -- deliberately: the real
+  smoke-test threshold is still an open design point, and this wiring alone changes nothing about
+  today's live behavior. 16 new tests (6 unit + 10 integration against the real script's own
+  functions via a stub `McpClient`, no live call). 504 passed total, architecture tests pass, no
+  live/demo call anywhere in this increment. **Explicitly NOT done and NOT authorized**: the
+  actual live smoke test run, the real threshold value, and Step 6 (demo-to-live readiness
+  criteria) -- each needs its own separate, explicit go-ahead per this project's standing
+  live-testing-pause rule. Full detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin

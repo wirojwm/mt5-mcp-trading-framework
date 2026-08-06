@@ -741,6 +741,146 @@ strategy signal ever produced. No code change needed or made.
 
 **Files changed this entry**: this checkpoint doc only.
 
+## Step 5 — live kill-switch wiring + smoke test: WIRING + TESTS BUILT, NOT LIVE-RUN
+
+Per the Proposed Steps table above: *"A single, short, explicitly-approved live smoke test
+proving the wired kill-switch actually halts a REAL loop run when triggered (a deliberately tiny,
+easily-crossed threshold, not the real production one)."* Entry criteria (Steps 2–4 done) are
+now met. This is the one step in the whole plan flagged live/order-adjacent — its own separate
+go-ahead, same discipline as every past live step in this project. **Status as of end of this
+session (2026-08-06): the proposal below was approved, and its code-only half (wiring + tests,
+"Sequencing" bullet (a)) is now built. The live half (bullet (b), actually running the wired
+script) has NOT happened and was NOT authorized — a separate, later, explicit go-ahead per this
+project's standing pause rule.**
+
+### Goal
+
+Two things, in order:
+1. Wire the real live script (`scripts/run_demo_execution_pipeline_loop.py`) to a REAL
+   `daily_loss_decision`, computed from a real `get_deals` read each cycle — closing the gap
+   Step 3 deliberately left open ("the real script still cannot actually stop on a loss
+   breach... wiring the actual live script's call sites to a real decision is deferred to
+   whichever of Step 4/5 first has a real number to supply"). Step 4 built that real number
+   (`realized_pnl_since()`); Step 5 is where it gets connected.
+2. Prove it, live: run the wired script with a deliberately tiny, easily-crossed threshold and
+   observe one real trigger — the loop actually halts, verified via a live re-read, zero
+   leftover unmanaged risk.
+
+### What's needed, and why it's smaller than it first looks
+
+`realized_pnl_since(deals, since, trusted_position_ids)` (Step 4) only needs `deals` and a
+`trusted_position_ids` set — NOT the full `build_closed_trades()` join. So the live wiring per
+cycle is:
+```
+trusted_ids = {r.ticket for r in state_store.all_closed()}
+reset_boundary = daily_reset_boundary(datetime.now(timezone.utc), reset_hour_utc=RESET_HOUR_UTC)
+deals = await deal_reader.get_deals(from_date=reset_boundary.strftime("%Y-%m-%d"))
+pnl = realized_pnl_since(deals, since=reset_boundary, trusted_position_ids=trusted_ids)
+decision = check_daily_loss_limit(pnl, DailyLossLimitConfig(max_daily_loss=MAX_DAILY_LOSS, reset_hour_utc=RESET_HOUR_UTC))
+```
+then pass `decision` as `daily_loss_decision` into both of `should_stop()`'s existing real call
+sites (`main()`'s top-of-loop check, `_wait_for_next_cycle()`'s during-wait check — confirmed by
+reading the current script, lines ~184 and ~228). `from_date` narrows to just today's reset
+window here (unlike the one-shot monitor script's "earliest ever closed record" — the kill-switch
+only ever cares about the current window), so this is cheap: one extra real `get_deals` call per
+5-minute cycle, not per guard check.
+
+### Open design points — flag if you'd rather choose differently
+
+1. **`MAX_DAILY_LOSS` for the smoke test**: a placeholder, deliberately tiny value, NOT the real
+   production threshold (open design point 3 upstream is still undecided and stays undecided by
+   this step). Candidate: derive it from what's already near-certain rather than guessed — every
+   closed trade pays real spread/commission, a small guaranteed negative contribution to
+   `realized_pnl_since_reset` even on a directionally-winning trade. A threshold set just below
+   one trade's typical commission magnitude would trip reliably on the first real closed trade of
+   the smoke-test run, regardless of win/loss direction — bounding the live exposure to
+   "however long until one trade closes," not "however long until a real loss occurs" (which is
+   unpredictable in timing). Needs a concrete number before this step can actually run; not fixed
+   here.
+2. **`RESET_HOUR_UTC`**: still just Step 2's placeholder default (`0`), never reviewed against an
+   operational preference (carried forward, unresolved since Step 2).
+3. **Per-cycle `get_deals` cost/reliability**: new real MCP traffic this loop didn't make before.
+   Cheap in isolation (one call per 5-minute cycle), but if `get_deals` itself ever raises
+   (network hiccup, timeout), does the cycle correctly fail closed (treat as "can't confirm
+   safety, stop") or fail open (skip the check, keep running)? Not decided here — needs an
+   explicit choice before wiring, since this is exactly the kind of guard-computation failure
+   mode `AGENTS.md`'s "never silently trust" discipline cares about.
+4. **Smoke-test duration/scope**: should reuse the loop's own existing `MAX_CYCLES`/
+   `MAX_RUNTIME_MINUTES` ceilings as a backstop (unchanged), sized small — this is a smoke test
+   proving ONE trigger, not Step 7's sustained run.
+
+### Files to create/change (once approved — no code yet)
+
+- `scripts/run_demo_execution_pipeline_loop.py`: add `MAX_DAILY_LOSS`/`RESET_HOUR_UTC` module
+  constants (mirroring the existing `MAX_CYCLES`/`MAX_RUNTIME_MINUTES` pattern); wire the real
+  `daily_loss_decision` computation into both `should_stop()` call sites; construct
+  `McpDealHistoryReader` alongside the existing `McpMarketDataSource`.
+- Possibly a small new pure/testable helper (rather than inlining the computation in `main()`) —
+  e.g. `pipeline/loop_control.py` or a new function near it — so the per-cycle computation above
+  can be unit-tested against a stub, not only proven by reading `main()`.
+- New integration test extending `tests/integration/test_pipeline_loop_daily_loss_stop.py`'s
+  pattern (or a new file) against the REAL script's own `main()`/call sites this time (loaded via
+  `importlib`, same harness `test_pipeline_loop_disconnect.py` already established) — proving the
+  wiring doesn't regress stop-file/`max_cycles`/`max_runtime` precedence in the real script, not
+  just in the mock harness Step 3 already proved this in isolation.
+
+### Sequencing — two separate go-aheads, not one
+
+Matching how every other live-adjacent step in this project has worked: (a) build the wiring +
+tests above with **no live call at all** (same discipline as Steps 2–3) — this alone can be done
+under a code-only go-ahead; then (b) actually RUNNING the wired script against the real demo
+connection is its own, separate, later go-ahead — building the wiring does not imply permission
+to run it, per this project's standing live-testing-pause rule (a fresh go-ahead is required
+each time, not assumed carried forward from an earlier one in the same session).
+
+### Exit criteria (from the Proposed Steps table, restated)
+
+One real observed trigger event, loop halted, verified via a live re-read, zero leftover
+unmanaged risk left behind. **Not yet met — the live half of this step has not run.**
+
+### Built this session (code + tests only, no live call)
+
+- `monitoring/live_performance.py`: new `compute_daily_loss_decision(deals,
+  trusted_position_ids, now, config) -> RiskDecision` — combines `realized_pnl_since()` with
+  `risk.daily_loss_guard.check_daily_loss_limit()`, still pure (no adapter access; callers fetch
+  `deals` themselves). 6 new unit tests in `tests/unit/test_monitoring_live_performance.py`
+  (within-limit approval, at-limit breach, deals before the reset boundary excluded, untrusted
+  `position_id`s excluded, off-by-default always approves, naive-`now` rejected).
+- `scripts/run_demo_execution_pipeline_loop.py`: new `MAX_DAILY_LOSS`/`RESET_HOUR_UTC`/
+  `DAILY_LOSS_CONFIG` module constants (`MAX_DAILY_LOSS` defaults to `None` — kill-switch present
+  but inert, per open design point 1 staying deliberately undecided); two new functions —
+  `_compute_daily_loss_decision()` (the real computation, CAN raise, short-circuits to zero real
+  calls when the threshold is unset) and `_daily_loss_decision_for_cycle()` (never raises — FAILS
+  CLOSED on a computation error, resolving open design point 3 above: a safety-critical gate that
+  can't confirm safety stops, it doesn't proceed on blind trust); wired into both real
+  `should_stop()` call sites, the SAME decision computed once per loop iteration and reused for
+  both the pre-cycle and during-wait checks (one real `get_deals` call per iteration, not per
+  guard check, resolving open design point 3's cost question too).
+- New `tests/integration/test_pipeline_loop_daily_loss_wiring.py` (10 tests) — against the REAL
+  script's own functions (loaded via `importlib`, same harness as
+  `test_pipeline_loop_disconnect.py`) via a stub `McpClient`, not a re-implemented mock harness:
+  off-by-default makes no real call, within-limit/breach/untracked-ticket computation, a real
+  `get_deals` failure raises from `_compute_daily_loss_decision()` but is caught and fails closed
+  by `_daily_loss_decision_for_cycle()`, and three end-to-end driver tests proving a real breach,
+  a real approval, and a MID-RUN computation failure (succeeds on cycle 1's check, fails on
+  cycle 2's) each correctly stop or continue a real multi-cycle `DryRunExecutor` run.
+
+```
+pytest -q                        -> 504 passed (488 previously + 16 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind building this. `MAX_DAILY_LOSS=None` means today's real
+script behavior is otherwise unaffected — the kill-switch is wired and computed every cycle
+(when enabled) but cannot trip until its threshold is deliberately set for an explicitly-approved
+live run.
+
+**Files changed this entry**: `src/mt5_mcp_trading/monitoring/live_performance.py` (modified,
++`compute_daily_loss_decision()`), `scripts/run_demo_execution_pipeline_loop.py` (modified, real
+kill-switch wiring), `tests/unit/test_monitoring_live_performance.py` (modified, +6),
+`tests/integration/test_pipeline_loop_daily_loss_wiring.py` (new, +10), this checkpoint doc,
+`AGENTS.md`.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
@@ -771,10 +911,16 @@ fixed. **Known open gap, not blocking**: `close_reason` on live-built `ClosedTra
 `"closed"` — a genuine SL-vs-TP breakdown would need `Deal.reason` (MT5's `ENUM_DEAL_REASON`),
 not modeled yet since it wasn't in `client_history.py`'s documented field list; doesn't affect
 `expectancy_r()`/`max_drawdown_r()`, which never read that field. **This closes out Step 4's
-originally-scoped work AND both of its live-run follow-ups.** **Exact next smallest step**: not
-yet decided — candidates are Step 5 (operational reliability hardening) or Step 6
-(demo-to-live readiness criteria), each per the checkpoint's own step table and each needing its
-own scoping/go-ahead first. Live-loop wiring (actually connecting any of this to
-`scripts/run_demo_execution_pipeline_loop.py`'s `should_stop()` call sites) remains deferred
-regardless — that was never Step 4's job, and stays out of scope until its own explicitly-approved
-step.
+originally-scoped work AND both of its live-run follow-ups.** **Step 5's code-only half is now
+BUILT** (2026-08-06, explicit go-ahead for the wiring, NOT for a live run): `should_stop()` is
+wired into `scripts/run_demo_execution_pipeline_loop.py`'s two real call sites via a real,
+fail-closed `_daily_loss_decision_for_cycle()`; `MAX_DAILY_LOSS` defaults to `None` (kill-switch
+present but inert) since the real smoke-test threshold remains an open design point. 504 passed
+total, architecture tests still pass, no live/demo call anywhere in building this. **Explicitly
+NOT done**: the live smoke test itself, the real threshold value, and Step 6 (demo-to-live
+readiness criteria) — each its own separate, later, explicit go-ahead. **Session paused here for
+the day (2026-08-06), per explicit instruction, before any of those.** **Exact next smallest
+step, whenever resumed**: decide Step 5's open design points (the smoke-test threshold value
+above all) and get explicit go-ahead for the live run itself — or, if priorities have shifted,
+scope Step 6 or the unscoped "operational reliability hardening" design item instead. No code
+work should start until one of those is chosen.

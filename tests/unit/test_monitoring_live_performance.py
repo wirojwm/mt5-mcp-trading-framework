@@ -1,7 +1,8 @@
 """
-build_closed_trades()/realized_pnl_since() against synthetic StateStore records and synthetic
-Deal objects only -- no adapter, no MCP/MT5 call, no live data anywhere in this file, per Phase
-9 Step 4's own discipline (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md).
+build_closed_trades()/realized_pnl_since()/compute_daily_loss_decision() against synthetic
+StateStore records and synthetic Deal objects only -- no adapter, no MCP/MT5 call, no live data
+anywhere in this file, per Phase 9 Step 4/5's own discipline
+(docs/PHASE9_FORWARD_TEST_CHECKPOINT.md).
 """
 
 from __future__ import annotations
@@ -12,7 +13,12 @@ import pytest
 
 from mt5_mcp_trading.backtest.ledger import BacktestLedger
 from mt5_mcp_trading.domain.models import Deal
-from mt5_mcp_trading.monitoring.live_performance import build_closed_trades, realized_pnl_since
+from mt5_mcp_trading.monitoring.live_performance import (
+    build_closed_trades,
+    compute_daily_loss_decision,
+    realized_pnl_since,
+)
+from mt5_mcp_trading.risk.daily_loss_guard import DailyLossLimitConfig
 from mt5_mcp_trading.state.models import LocalOrderRecord
 
 T0 = datetime(2026, 8, 4, 10, 0, 0, tzinfo=timezone.utc)
@@ -221,3 +227,49 @@ def test_realized_pnl_since_never_filters_by_deal_magic() -> None:
 def test_realized_pnl_since_rejects_naive_since() -> None:
     with pytest.raises(ValueError):
         realized_pnl_since([], since=datetime(2026, 8, 4), trusted_position_ids=set())
+
+
+# ---------- compute_daily_loss_decision ----------
+
+def test_compute_daily_loss_decision_approves_when_within_limit() -> None:
+    deals = [_deal(position_id=1, time=T0, profit=-50.0, commission=0.0, swap=0.0, fee=0.0)]
+    config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=0)
+    decision = compute_daily_loss_decision(deals, {1}, now=T1, config=config)
+    assert decision.approved is True
+
+
+def test_compute_daily_loss_decision_breaches_when_loss_reaches_the_limit() -> None:
+    deals = [_deal(position_id=1, time=T0, profit=-500.0, commission=0.0, swap=0.0, fee=0.0)]
+    config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=0)
+    decision = compute_daily_loss_decision(deals, {1}, now=T1, config=config)
+    assert decision.approved is False
+    assert decision.blocking_guard == "risk.daily_loss_limit"
+
+
+def test_compute_daily_loss_decision_ignores_deals_before_the_reset_boundary() -> None:
+    # T0/T1 are both 2026-08-04; a deal from the day before must not count toward "today"'s loss.
+    yesterday = datetime(2026, 8, 3, 23, 0, 0, tzinfo=timezone.utc)
+    deals = [_deal(position_id=1, time=yesterday, profit=-5000.0, commission=0.0, swap=0.0, fee=0.0)]
+    config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=0)
+    decision = compute_daily_loss_decision(deals, {1}, now=T1, config=config)
+    assert decision.approved is True  # the huge loss is outside today's window, excluded
+
+
+def test_compute_daily_loss_decision_ignores_untrusted_position_ids() -> None:
+    deals = [_deal(position_id=99, time=T0, profit=-5000.0, commission=0.0, swap=0.0, fee=0.0)]
+    config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=0)
+    decision = compute_daily_loss_decision(deals, {1}, now=T1, config=config)
+    assert decision.approved is True  # deal belongs to an untracked position, not counted
+
+
+def test_compute_daily_loss_decision_off_by_default_always_approves() -> None:
+    deals = [_deal(position_id=1, time=T0, profit=-999999.0, commission=0.0, swap=0.0, fee=0.0)]
+    config = DailyLossLimitConfig(max_daily_loss=None, reset_hour_utc=0)
+    decision = compute_daily_loss_decision(deals, {1}, now=T1, config=config)
+    assert decision.approved is True
+
+
+def test_compute_daily_loss_decision_rejects_naive_now() -> None:
+    config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=0)
+    with pytest.raises(ValueError):
+        compute_daily_loss_decision([], set(), now=datetime(2026, 8, 4), config=config)

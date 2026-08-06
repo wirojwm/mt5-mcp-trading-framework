@@ -17,6 +17,18 @@ extension of something already proven. The one piece of genuinely new DECISION l
 stop) lives in pipeline/loop_control.py as a pure, unit-tested function -- this script is a thin
 orchestration shell around it, matching every sibling script's shape.
 
+PHASE 9 STEP 5 (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md): the real daily-loss kill-switch is now
+WIRED into both of should_stop()'s call sites below, via _daily_loss_decision_for_cycle() -- one
+real get_deals call per loop iteration (not per guard check; the same decision, computed once at
+the top of each iteration, is reused for both the pre-cycle check and the during-wait check),
+short-circuited to zero real calls when MAX_DAILY_LOSS is None (the default -- see the constant
+below). A failure to compute the decision (e.g. get_deals raising) FAILS CLOSED: treated as a
+breach, stopping the loop, rather than silently skipping the check and continuing -- a
+safety-critical gate that can't confirm safety should stop, not proceed on blind trust. Building
+this wiring is NOT the same as running the Step 5 smoke test: MAX_DAILY_LOSS defaults to None
+(kill-switch present but inert), so today's behavior is otherwise unaffected until that constant
+is deliberately set to a real, tiny threshold for an explicitly-approved live run.
+
 FOUR STRUCTURAL DESIGN DECISIONS (explicitly approved before this was written -- see
 docs/PIPELINE_WIRING_CHECKPOINT.md, "Step 14"):
 1. STRATEGY SCOPE: runs BOTH run_grid_cycle() and run_runner_cycle() every cycle, sequentially.
@@ -81,14 +93,23 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from mt5_mcp_trading.config.settings import ExecutionMode, load_settings
+from mt5_mcp_trading.domain.models import RiskDecision
 from mt5_mcp_trading.execution.composition import demo_execution_session
+from mt5_mcp_trading.monitoring.live_performance import compute_daily_loss_decision
 from mt5_mcp_trading.monitoring.logging_setup import configure_logging, get_logger
+from mt5_mcp_trading.mt5_adapter.mcp_deal_history import McpDealHistoryReader
 from mt5_mcp_trading.mt5_adapter.mcp_market_data import McpMarketDataSource
 from mt5_mcp_trading.pipeline.grid_cycle import GridCycleError, run_grid_cycle
 from mt5_mcp_trading.pipeline.loop_control import LoopLimits, should_stop
 from mt5_mcp_trading.pipeline.runner_cycle import run_runner_cycle
+from mt5_mcp_trading.risk.daily_loss_guard import (
+    DailyLossLimitConfig,
+    check_daily_loss_limit,
+    daily_reset_boundary,
+)
 from mt5_mcp_trading.risk.portfolio_guards import ExposureCaps
 from mt5_mcp_trading.sizing.money import MoneyConfig
+from mt5_mcp_trading.state.store import StateStore
 from mt5_mcp_trading.strategy.grid import GridStrategyConfig
 from mt5_mcp_trading.strategy.runner import RunnerStrategyConfig
 
@@ -111,6 +132,15 @@ CYCLE_INTERVAL_SECONDS = 300.0   # 5 minutes between cycles
 POLL_INTERVAL_SECONDS = 5.0      # how often to re-check the stop file while waiting
 MAX_CYCLES = 12                  # hard ceiling regardless of runtime
 MAX_RUNTIME_MINUTES = 90.0       # hard ceiling regardless of cycle count
+
+# Phase 9 Step 5's kill-switch config (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md). MAX_DAILY_LOSS
+# deliberately defaults to None -- off, per every other Optional guard field in this codebase --
+# until a real smoke-test threshold is explicitly decided and approved as its own separate step;
+# building this wiring does not itself authorize running a live trigger test. RESET_HOUR_UTC is
+# still Step 2's unreviewed placeholder default, carried forward unresolved.
+MAX_DAILY_LOSS: float | None = None
+RESET_HOUR_UTC = 0
+DAILY_LOSS_CONFIG = DailyLossLimitConfig(max_daily_loss=MAX_DAILY_LOSS, reset_hour_utc=RESET_HOUR_UTC)
 
 _logger = get_logger("mt5_mcp_trading.scripts.pipeline_loop")
 
@@ -174,16 +204,58 @@ async def _run_one_cycle(market_data, account, executor, state_store, cycle_num:
     return ok
 
 
-async def _wait_for_next_cycle(limits: LoopLimits, start_time: float, cycle_num: int) -> bool:
+async def _compute_daily_loss_decision(
+    client, state_store: StateStore, config: DailyLossLimitConfig,
+) -> RiskDecision:
+    """The real computation (Phase 9 Step 5) -- CAN raise (a real get_deals call is involved);
+    callers must not treat this as safe to call unguarded. Short-circuits to zero real MCP calls
+    when config.max_daily_loss is None (check_daily_loss_limit() always approves in that case
+    regardless of the P&L figure -- see risk/daily_loss_guard.py), so leaving the kill-switch off
+    costs nothing extra per cycle."""
+    if config.max_daily_loss is None:
+        return check_daily_loss_limit(0.0, config)
+    now = datetime.now(timezone.utc)
+    boundary = daily_reset_boundary(now, config.reset_hour_utc)
+    deals = await McpDealHistoryReader(client).get_deals(from_date=boundary.strftime("%Y-%m-%d"))
+    trusted_ids = {r.ticket for r in state_store.all_closed()}
+    return compute_daily_loss_decision(deals, trusted_ids, now, config)
+
+
+async def _daily_loss_decision_for_cycle(
+    client, state_store: StateStore, config: DailyLossLimitConfig,
+) -> RiskDecision:
+    """Never raises -- FAILS CLOSED: a computation failure (e.g. get_deals raising) is treated
+    as a breach, stopping the loop, rather than silently skipped. A safety-critical gate that
+    can't confirm safety should stop, not proceed on blind trust (Phase 9 Step 5's own scoping
+    decision, docs/PHASE9_FORWARD_TEST_CHECKPOINT.md)."""
+    try:
+        return await _compute_daily_loss_decision(client, state_store, config)
+    except Exception as exc:
+        _logger.warning("Could not compute daily-loss decision this cycle -- failing closed: %r", exc)
+        return RiskDecision(
+            approved=False,
+            reasons=(f"could not compute daily-loss decision, failing closed: {exc!r}",),
+            blocking_guard="daily_loss_computation_error",
+        )
+
+
+async def _wait_for_next_cycle(
+    limits: LoopLimits, start_time: float, cycle_num: int,
+    daily_loss_decision: RiskDecision | None = None,
+) -> bool:
     """Waits CYCLE_INTERVAL_SECONDS in small polled increments. Returns True if a stop was
     requested during the wait (stop-file appeared, or a bound was already reached -- no point
     waiting out the full interval just to stop on the next top-of-loop check anyway), False if
-    the full interval elapsed with nothing triggering a stop."""
+    the full interval elapsed with nothing triggering a stop. `daily_loss_decision` is the SAME
+    decision computed once at the top of this cycle's iteration (Phase 9 Step 5) -- not
+    re-fetched during the wait, matching "one real get_deals call per iteration, not per guard
+    check"."""
     waited = 0.0
     while waited < limits.cycle_interval_seconds:
         reason = should_stop(
             cycle_num=cycle_num, elapsed_seconds=time.monotonic() - start_time,
             stop_file_exists=STOP_FILE.exists(), limits=limits,
+            daily_loss_decision=daily_loss_decision,
         )
         if reason is not None:
             _logger.info("Stop requested during inter-cycle wait: %s", reason)
@@ -212,6 +284,8 @@ async def main() -> None:
     _logger.info("Bounded autonomous loop: max_cycles=%s, max_runtime_minutes=%s, "
                  "cycle_interval_seconds=%s, stop_file=%s",
                  MAX_CYCLES, MAX_RUNTIME_MINUTES, CYCLE_INTERVAL_SECONDS, STOP_FILE)
+    _logger.info("Daily loss kill-switch: max_daily_loss=%s, reset_hour_utc=%s (None = off)",
+                 DAILY_LOSS_CONFIG.max_daily_loss, DAILY_LOSS_CONFIG.reset_hour_utc)
     _logger.info("Log file: %s", log_path)
 
     start_time = time.monotonic()
@@ -225,9 +299,13 @@ async def main() -> None:
             market_data = McpMarketDataSource(client)
 
             while True:
+                daily_loss_decision = await _daily_loss_decision_for_cycle(
+                    client, state_store, DAILY_LOSS_CONFIG,
+                )
                 reason = should_stop(
                     cycle_num=cycle_num, elapsed_seconds=time.monotonic() - start_time,
                     stop_file_exists=STOP_FILE.exists(), limits=limits,
+                    daily_loss_decision=daily_loss_decision,
                 )
                 if reason is not None:
                     _logger.info("Stopping before cycle %d: %s", cycle_num + 1, reason)
@@ -240,7 +318,9 @@ async def main() -> None:
                                   "(no error tolerance in this version)", cycle_num)
                     break
 
-                stopped_during_wait = await _wait_for_next_cycle(limits, start_time, cycle_num)
+                stopped_during_wait = await _wait_for_next_cycle(
+                    limits, start_time, cycle_num, daily_loss_decision,
+                )
                 if stopped_during_wait:
                     break
     except KeyboardInterrupt:

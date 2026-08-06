@@ -23,6 +23,11 @@ real SL exit from a real TP exit would need MT5's own ENUM_DEAL_REASON (a raw `r
 the wire), which Deal does not currently model (Step 4's research scope only covered
 client_history.py's documented field list). Not resolved here; a real gap if that distinction
 is ever needed downstream, flagged rather than guessed at.
+
+compute_daily_loss_decision() (Phase 9 Step 5) is the single function a live caller needs each
+cycle to get a real daily-loss-limit RiskDecision -- combines realized_pnl_since() above with
+risk.daily_loss_guard.check_daily_loss_limit(). Still pure/no adapter access: callers fetch
+`deals` themselves (scoped to the current reset window) before calling this.
 """
 
 from __future__ import annotations
@@ -33,7 +38,12 @@ from datetime import datetime
 from typing import AbstractSet, Optional, Sequence
 
 from mt5_mcp_trading.backtest.ledger import ClosedTrade
-from mt5_mcp_trading.domain.models import Deal
+from mt5_mcp_trading.domain.models import Deal, RiskDecision
+from mt5_mcp_trading.risk.daily_loss_guard import (
+    DailyLossLimitConfig,
+    check_daily_loss_limit,
+    daily_reset_boundary,
+)
 from mt5_mcp_trading.state.models import LocalOrderRecord
 
 
@@ -147,3 +157,22 @@ def realized_pnl_since(
         for deal in deals
         if deal.position_id in trusted_position_ids and deal.time >= since
     )
+
+
+def compute_daily_loss_decision(
+    deals: Sequence[Deal],
+    trusted_position_ids: AbstractSet[int],
+    now: datetime,
+    config: DailyLossLimitConfig,
+) -> RiskDecision:
+    """Phase 9 Step 5: the single function a live caller needs each cycle to get a real
+    daily-loss-limit decision -- derives the current reset boundary, sums realized P&L since it
+    via realized_pnl_since(), and feeds the result into
+    risk.daily_loss_guard.check_daily_loss_limit(). `now` must be timezone-aware
+    (daily_reset_boundary()'s own requirement). `deals` is expected to already cover at least
+    the current reset window -- callers fetch it via
+    McpDealHistoryReader.get_deals(from_date=...) scoped to
+    daily_reset_boundary(now, config.reset_hour_utc)."""
+    boundary = daily_reset_boundary(now, config.reset_hour_utc)
+    pnl = realized_pnl_since(deals, since=boundary, trusted_position_ids=trusted_position_ids)
+    return check_daily_loss_limit(pnl, config)
