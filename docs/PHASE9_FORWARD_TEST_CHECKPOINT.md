@@ -675,6 +675,44 @@ new capability.
 
 **Files changed this entry**: this checkpoint doc only.
 
+## Follow-up: the 2 skipped tickets, root-caused (2026-08-06, explicit go-ahead given)
+
+`scripts/run_demo_execution_check_two_skipped_grid_tickets.py` (new, one-off diagnostic — not
+part of Phase 9's scoped deliverables) confirmed the hypothesis directly: one real, read-only
+`get_orders` call (MT5's pending-order HISTORY tool, distinct from `get_deals` — already
+`READ_ONLY`-classified, no `executor` reference) shows both tickets at `state='2'`
+(`OrderState.CANCELED` per `client_history.py`'s own enum), with `volume_current` equal to
+`volume_initial` (`0.01 == 0.01`) — confirming zero volume was ever filled, not even partially.
+
+Both were ordinary grid LIMIT orders cancelled while still pending (price never reached the
+level, later superseded) — never real trades. `build_closed_trades()`'s skip was correct
+behavior, not a bug: a cancelled-unfilled order genuinely has no deal to join against, since MT5
+only records a deal for an actual execution.
+
+One loose thread noted, not chased further (outside what was asked): the broker's own
+`time_done` for both (`2026-08-04 08:18:42`/`43` UTC) is ~1.5 hours after the local records'
+`closed_at` (`06:53:44` UTC) — a real gap between when MT5 actually cancelled the orders and
+when a later reconciliation script happened to notice and record it locally. Not a correctness
+problem (the cancellation is real either way), just a timing note.
+
+**Broader, structural finding this surfaces**: this project's local `"CLOSED"` status is
+overloaded — it's written identically by ~10 reconciliation scripts
+(`run_demo_execution_cleanup_loop_run.py` and siblings) for BOTH "filled then closed" and
+"cancelled/expired without ever filling," using the same generic
+`"confirmed absent from live positions/orders..."` reason text that admits the ambiguity in its
+own wording. The project already has the correct distinction available in one place
+(`run_demo_execution_reconcile_manual_cancel_5_grid_orders.py` uses `record_cancelled()`
+correctly for a known-unfilled case) — it just wasn't applied consistently every time historical
+reconciliation happened. Not fixed here (retroactively relabeling old records wasn't asked for,
+and `build_closed_trades()` already handles the ambiguity correctly today, at the cost of a skip
+instead of a `CANCELLED`-aware exclusion) — flagged for awareness, not acted on.
+
+No `StateStore`/production code changed by this follow-up (skip logic already handled this
+correctly) — only the new one-off diagnostic script and this checkpoint doc.
+
+**Files changed this entry**: `scripts/run_demo_execution_check_two_skipped_grid_tickets.py`
+(new), this checkpoint doc.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
