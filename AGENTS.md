@@ -468,9 +468,10 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md`, Phase 7 in
 `docs/PHASE7_REGRESSION_FAILURE_TESTING_CHECKPOINT.md`, pipeline wiring in
 `docs/PIPELINE_WIRING_CHECKPOINT.md`, Phase 8 in
-`docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, and the grid regime filter (a new, separately-
-scoped effort motivated by Phase 8's Step 7 finding, **proposed but not started**) in
-`docs/GRID_REGIME_FILTER_CHECKPOINT.md` — read whichever is relevant before continuing that work
+`docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, the grid regime filter (a new, separately-scoped
+effort motivated by Phase 8's Step 7 finding, **CLOSED as a negative result**) in
+`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, and Phase 9 (**scoped, not started**) in
+`docs/PHASE9_FORWARD_TEST_CHECKPOINT.md` — read whichever is relevant before continuing that work
 in a new session.
 
 ## Forward phases (named, not yet scoped)
@@ -645,9 +646,19 @@ not done here, to avoid designing ahead of what's actually been asked for.
   windowing/split strategy), not a repeat threshold search over the same signal/window
   combination. Full detail in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`'s "Effort closed" section.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
-  operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
-  locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness
-  gate exists anywhere in this codebase.
+  operational reliability, demo-to-live readiness criteria)**: **scoped, not started** — full
+  detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. No locked-parameter-set concept, automated
+  performance/drawdown monitor, loss-based kill-switch, or demo-to-live readiness gate exists
+  anywhere in this codebase yet; no step has been built. Proposed design: freeze current
+  production defaults as the locked parameter set (no re-tuning); build a new loss-based
+  kill-switch guard (the hard blocker `AGENTS.md`'s Live pilot entry already flags); build a
+  live performance/drawdown monitor reusing `backtest/metrics.py` against real `StateStore` data;
+  revisit two previously-deferred operational costs (`StateStore.all_open()`'s O(N) scan, the
+  pipeline loop's no-reconnect decision) now that sustained operation is actually being proposed;
+  and define objective demo-to-live readiness criteria. Explicitly framed against Phase 8's honest
+  backdrop — both strategies still show negative held-out expectancy, so this phase proves
+  operational machinery and measures backtest-vs-forward drift, it does not assume profitability.
+  Awaiting review/explicit approval before Step 1.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
