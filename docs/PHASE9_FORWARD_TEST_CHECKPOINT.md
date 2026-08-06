@@ -713,6 +713,34 @@ correctly) — only the new one-off diagnostic script and this checkpoint doc.
 **Files changed this entry**: `scripts/run_demo_execution_check_two_skipped_grid_tickets.py`
 (new), this checkpoint doc.
 
+## Follow-up: the 5 unrecognized-magic trades, identified (2026-08-06, local records only)
+
+No live call needed — the 5 local `StateStore` records already self-document. Grepping
+`var/order_state/*.json` for `magic` outside `{71101, 72101}` finds exactly 5 files, matching
+the live run's count exactly:
+
+| Ticket | Comment | Submitted |
+|---|---|---|
+| `171617865` | `phase6_step6_market_smoke_test` | 2026-08-03 |
+| `171618036` | `phase6_step6_market_smoke_test` | 2026-08-03 |
+| `171618202` | `phase6_step7_market_sell_smoke_test` | 2026-08-03 |
+| `171621792` | `runner` | 2026-08-03 |
+| `171702598` | `runner` | 2026-08-05 |
+
+All five carry `magic=79999` and `strategy="unknown_magic_79999"` — flagged as non-strategy
+trades at the time they were originally recorded, not a new discovery. The first three are
+Phase 6 Steps 6–7's live MARKET-order verification; the last two match
+`scripts/run_demo_execution_runner_sltp_smoke_test.py` runs — tickets `171621792` and
+`171702598` are both named explicitly in `AGENTS.md`'s own history (Phase 8's runner SL/TP
+validation and its closing smoke test), independently confirming the identification.
+
+**Not a data problem.** These are deliberate, one-off smoke-test trades, not real strategy
+output — correctly excluded from grid/runner's performance numbers by the monitor's
+magic-based split. Including them would have polluted the strategy metrics with trades no
+strategy signal ever produced. No code change needed or made.
+
+**Files changed this entry**: this checkpoint doc only.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
@@ -731,16 +759,20 @@ grid 19 trades/−0.825 R expectancy/16.302 R drawdown, runner 13 trades/−0.41
 expectancy/10.214 R drawdown, both directionally consistent with Phase 8's backtested findings
 but neither past the 30-trade minimum-sample bar yet — a first honest read, not a validated one.
 488 passed total, architecture tests still pass, no live/demo call made building any of Step 4's
-code (only the one deliberate, explicitly-approved live run above). **Two open items the live run
-surfaced, not yet investigated**: 5 matched trades carry a magic outside `{71101, 72101}`
-(likely earlier smoke-test magics, unconfirmed); 2 local records (`171648990`, `171649461`) had
-no matching OUT-entry deal, root cause not yet determined. **Known open gap, not blocking**:
-`close_reason` on live-built `ClosedTrade`s is a fixed `"closed"` — a genuine SL-vs-TP breakdown
-would need `Deal.reason` (MT5's `ENUM_DEAL_REASON`), not modeled yet since it wasn't in
-`client_history.py`'s documented field list; doesn't affect `expectancy_r()`/`max_drawdown_r()`,
-which never read that field. **This closes out Step 4's originally-scoped work.** **Exact next
-smallest step**: not yet decided — candidates include investigating the two open items above,
-or moving on to Step 5 (operational reliability hardening) or Step 6
+code (only the deliberate, explicitly-approved live calls in the two follow-ups below). **Both
+open items the live run surfaced are now resolved**: the 2 skipped tickets (`171648990`,
+`171649461`) were root-caused via one real `get_orders` call — both cancelled grid LIMIT orders,
+never filled, correctly skipped; the 5 unrecognized-magic trades were identified from local
+records alone (no live call needed) — all `magic=79999` Phase 6/8 smoke tests, correctly excluded
+from grid/runner's numbers, not a data problem. One structural, unfixed finding surfaced along the
+way: this project's local `"CLOSED"` status conflates "filled then closed" with
+"cancelled/expired unfilled" across several reconciliation scripts — flagged, not retroactively
+fixed. **Known open gap, not blocking**: `close_reason` on live-built `ClosedTrade`s is a fixed
+`"closed"` — a genuine SL-vs-TP breakdown would need `Deal.reason` (MT5's `ENUM_DEAL_REASON`),
+not modeled yet since it wasn't in `client_history.py`'s documented field list; doesn't affect
+`expectancy_r()`/`max_drawdown_r()`, which never read that field. **This closes out Step 4's
+originally-scoped work AND both of its live-run follow-ups.** **Exact next smallest step**: not
+yet decided — candidates are Step 5 (operational reliability hardening) or Step 6
 (demo-to-live readiness criteria), each per the checkpoint's own step table and each needing its
 own scoping/go-ahead first. Live-loop wiring (actually connecting any of this to
 `scripts/run_demo_execution_pipeline_loop.py`'s `should_stop()` call sites) remains deferred
