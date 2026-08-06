@@ -203,11 +203,82 @@ pytest -q -> unaffected (no code changed this entry)
 
 **Files changed this entry**: this checkpoint doc only.
 
+## Step 2 — loss-based kill-switch guard: built, unit tested only, NOT wired anywhere
+
+New `src/mt5_mcp_trading/risk/daily_loss_guard.py` — same independent/composable shape as
+`portfolio_guards.py`/`symbol_guards.py` (returns `RiskDecision`, `combine()`-compatible), pure
+(no adapter imports; `tests/test_architecture.py`'s `PURE_PACKAGES` check covers `risk/`
+automatically and still passes). No legacy precedent — genuinely new, project-original code,
+closing the hard blocker `AGENTS.md`'s Live pilot entry has flagged since before Phase 9 existed.
+
+**Two pieces, matching the checkpoint's Design section exactly**:
+- `DailyLossLimitConfig(max_daily_loss: Optional[float] = None, reset_hour_utc: int = 0)` — `$`
+  unit (open design point 1), `None` means off, matching every other Optional guard field in this
+  codebase.
+- `check_daily_loss_limit(realized_pnl_since_reset, limit) -> RiskDecision` — **TRIGGER**: rejects
+  once `realized_pnl_since_reset` is a genuine loss (`< 0`) whose magnitude is **at or beyond**
+  `max_daily_loss`. Deliberately at-or-beyond, not strictly-beyond like `check_exposure_cap()`'s
+  "exactly at cap is not a violation" convention — this is a safety-critical, stop-loss-shaped
+  gate (reaching the limit exactly must trip it), documented explicitly in the module docstring so
+  the difference from the existing convention reads as a deliberate choice, not an inconsistency.
+- `daily_reset_boundary(now, reset_hour_utc=0) -> datetime` — **RESET**: one canonical, tested
+  definition of "start of the current loss-tracking window" (most recent `reset_hour_utc:00 UTC`
+  at or before `now`), so Step 3's live wiring and any future monitoring script agree on the same
+  boundary rather than each reimplementing "start of day" independently. Requires a
+  timezone-aware `now` (rejects naive datetimes) and converts non-UTC timezones correctly.
+
+**A real bug caught by the tests, not shipped**: the first implementation used
+`pnl <= -max_daily_loss` as the trigger condition. At `max_daily_loss=0.0` (the most conservative
+possible setting) this misfired on an exact `$0.00` breakeven — `0.0 <= -0.0` is `True` in
+floating point, so a session with literally no loss at all would have tripped the kill-switch.
+Fixed by requiring a genuine loss (`realized_pnl_since_reset < 0`) before comparing magnitude —
+`test_zero_max_daily_loss_still_approves_breakeven_or_profit` failed against the original
+implementation and passes now, the same "prove the fix actually fixes it" discipline this project
+has used throughout (e.g. the grid regime filter's normalized-SL/TP regression test).
+
+**18 new unit tests** (`tests/unit/test_risk_daily_loss_guard.py`), synthetic P&L values and
+hand-constructed datetimes only — no adapter, no MCP/MT5 call, no order of any kind: the trigger
+boundary (profit / just-under / exactly-at / over the limit), the zero-threshold edge case above,
+invalid config (`max_daily_loss < 0`) rejected, the reset-boundary function's own boundary cases
+(exactly at the reset hour, one second before it, a non-UTC timezone converted, naive-datetime and
+invalid-hour rejection), and one explicit `combine()` interop test proving this guard's
+`RiskDecision` composes with an existing guard's (`check_exposure_cap`) exactly like any other —
+without touching `pipeline/grid_cycle.py`, `pipeline/runner_cycle.py`, or
+`pipeline/loop_control.py` at all.
+
+**Confirmed NOT wired anywhere**: `grep -rl "daily_loss_guard"` across the whole repo returns only
+the new module and its own test file — no pipeline script, `loop_control.py`, or live script
+references it yet, exactly as scoped. Wiring is Step 3, a separate, later, explicitly-approved
+step.
+
+```
+pytest -q                        -> 446 passed (428 previously + 18 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind this entry.
+
+**Risks / open items carried forward, not resolved by this step**:
+- The actual dollar threshold for a real forward test is still undecided (open design point 3) —
+  Step 2 built the mechanism, not the number.
+- This guard cannot compute `realized_pnl_since_reset` itself (architecturally, `risk/` may never
+  touch an adapter) — Step 3/4 must supply that number from a real `StateStore`/account read, and
+  getting that computation right (correct magic filtering, no double-counting, correct window) is
+  real remaining work, not a formality.
+- `reset_hour_utc`'s default (`0`, UTC midnight) is a placeholder, not yet reviewed against any
+  operational preference (e.g. aligning to broker's own server-day rollover).
+
+**Files changed this entry**: `src/mt5_mcp_trading/risk/daily_loss_guard.py` (new),
+`tests/unit/test_risk_daily_loss_guard.py` (new, +18), this checkpoint doc.
+
 ## Status
 
-**Step 1 done.** Locked parameter set documented and verified against the current codebase (see
-"Step 1 — locked parameter set: done" above) — the single source of truth for the rest of this
-effort. No code changed, no live/demo call made. **Next smallest step: Step 2** — build the
-loss-based kill-switch guard (unit tested against synthetic P&L data only, not yet wired into the
-live loop). Needs its own explicit go-ahead before any code is written, same standing rule as
-always, though Step 2 itself makes no live call either.
+**Step 1 done.** Locked parameter set documented and verified against the current codebase — the
+single source of truth for the rest of this effort. **Step 2 done.** Loss-based kill-switch guard
+(`risk/daily_loss_guard.py`) built and unit tested (18 new tests, 446 passed total, architecture
+tests still pass) — confirmed NOT wired into the live loop or any pipeline code anywhere. No
+code changed outside `risk/daily_loss_guard.py` and its own test file; no live/demo call made in
+either step. **Next smallest step: Step 3** — wire the kill-switch into the loop
+(`pipeline/loop_control.py`'s `should_stop()` or equivalent), unit + integration tested against
+mocks/`DryRunExecutor` only (still no live call). Needs its own explicit go-ahead before any code
+is written, same standing rule as always.

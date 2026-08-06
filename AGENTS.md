@@ -480,7 +480,7 @@ Referenced informally across pipeline-wiring checkpoint entries (`docs/PIPELINE_
 "Remaining roadmap") but never formally defined here until now. Unlike phases 0–7 above (phases of
 *building* this codebase), these are phases of *running and tuning* the strategy once built — a
 different kind of work, each still requiring its own explicit scoping and approval before any code
-is written, per this project's normal workflow. Phase 9 is now scoped, with Step 1 done — see
+is written, per this project's normal workflow. Phase 9 is now scoped, with Steps 1-2 done — see
 `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. Live pilot still has no checkpoint doc, and writing
 detailed entry/exit criteria for it is itself a future, explicitly-approved task — not done here,
 to avoid designing ahead of what's actually been asked for.
@@ -647,24 +647,29 @@ to avoid designing ahead of what's actually been asked for.
   windowing/split strategy), not a repeat threshold search over the same signal/window
   combination. Full detail in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`'s "Effort closed" section.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
-  operational reliability, demo-to-live readiness criteria)**: **scoped, Step 1 done** — full
-  detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. No automated performance/drawdown monitor,
-  loss-based kill-switch, or demo-to-live readiness gate exists anywhere in this codebase yet.
-  Proposed design: freeze current production defaults as the locked parameter set (no re-tuning);
-  build a new loss-based kill-switch guard (the hard blocker `AGENTS.md`'s Live pilot entry
-  already flags); build a live performance/drawdown monitor reusing `backtest/metrics.py` against
-  real `StateStore` data; revisit two previously-deferred operational costs
-  (`StateStore.all_open()`'s O(N) scan, the pipeline loop's no-reconnect decision) now that
-  sustained operation is actually being proposed; and define objective demo-to-live readiness
-  criteria. Explicitly framed against Phase 8's honest backdrop — both strategies still show
-  negative held-out expectancy, so this phase proves operational machinery and measures
-  backtest-vs-forward drift, it does not assume profitability. **Step 1 (locked parameter set)
-  done**: today's production defaults documented and verified directly against source
-  (`strategy/grid.py`, `strategy/runner.py`, `sizing/money.py`, `risk/portfolio_guards.py`,
-  `scripts/run_demo_execution_pipeline_loop.py`) as the single source of truth for the rest of
-  this effort — pure documentation, no code changed, no live/demo call made. Next: Step 2 (build
-  the loss-based kill-switch guard, unit-tested only, not yet wired into the live loop), awaiting
-  explicit go-ahead.
+  operational reliability, demo-to-live readiness criteria)**: **scoped, Steps 1-2 done** — full
+  detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. No automated performance/drawdown monitor
+  or demo-to-live readiness gate exists anywhere in this codebase yet. Explicitly framed against
+  Phase 8's honest backdrop — both strategies still show negative held-out expectancy, so this
+  phase proves operational machinery and measures backtest-vs-forward drift, it does not assume
+  profitability. **Step 1 (locked parameter set) done**: today's production defaults documented
+  and verified directly against source (`strategy/grid.py`, `strategy/runner.py`,
+  `sizing/money.py`, `risk/portfolio_guards.py`, `scripts/run_demo_execution_pipeline_loop.py`) as
+  the single source of truth for the rest of this effort. **Step 2 (loss-based kill-switch guard)
+  done**: new `risk/daily_loss_guard.py` -- same independent/composable `RiskDecision` shape as
+  `portfolio_guards.py`/`symbol_guards.py`, closing the hard blocker this doc's Live pilot entry
+  has flagged since before Phase 9 existed. `check_daily_loss_limit()` trips (at-or-beyond, not
+  strictly-beyond -- a deliberate departure from `check_exposure_cap()`'s "exactly at cap is not a
+  violation" convention, since this is a safety-critical stop-loss-shaped gate) once realized $
+  P&L since `daily_reset_boundary()`'s reset point is a genuine loss meeting the configured
+  threshold. A real bug was caught by the tests before shipping: the first version's
+  `pnl <= -limit` comparison misfired on an exact `$0.00` breakeven at `max_daily_loss=0.0`
+  (`0.0 <= -0.0` is `True` in floating point) -- fixed by requiring a genuine loss (`< 0`) before
+  comparing magnitude. +18 unit tests, all synthetic P&L/datetimes, no adapter or live call
+  anywhere (446 passed total, architecture tests still pass) -- confirmed by repo-wide grep NOT
+  wired into `pipeline/grid_cycle.py`, `runner_cycle.py`, `loop_control.py`, or any script yet.
+  Next: Step 3 (wire it into the loop, unit + integration tested against mocks/`DryRunExecutor`
+  only, still no live call), awaiting explicit go-ahead.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
