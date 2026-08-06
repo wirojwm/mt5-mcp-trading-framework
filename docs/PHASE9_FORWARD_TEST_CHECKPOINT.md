@@ -137,6 +137,77 @@ Five components, each independently useful, in increasing order of risk:
   no real demo call; Step 5 and Step 7 are the only steps that do, and each needs its own fresh
   go-ahead per this project's standing rule.
 
+## Step 1 — locked parameter set: done
+
+Pure documentation, no code changed, no live/demo call of any kind. Per open design point 4,
+locked to exactly today's production defaults — verified by reading each source file directly
+(not assumed from this doc's own earlier draft), so this table is the single source of truth for
+every later Phase 9 step, superseding open design point 4's proposal text above if the two ever
+appear to differ.
+
+**Strategy parameters** (`src/mt5_mcp_trading/strategy/grid.py`,
+`src/mt5_mcp_trading/strategy/runner.py` — both dataclass defaults, unmodified by this step):
+
+| `GridStrategyConfig` field | Locked value |
+|---|---|
+| `atr_period` | `14` |
+| `center_ema_period` | `50` |
+| `center_mode` | `"ema"` |
+| `step_mult` | `0.4` |
+| `min_step_points` | `10.0` |
+| `sl_atr_mult` | `2.0` |
+| `max_entry_efficiency_ratio` | `None` (regime filter off — see `docs/GRID_REGIME_FILTER_CHECKPOINT.md`, closed as a negative result) |
+| `efficiency_ratio_period` | `14` |
+
+| `RunnerStrategyConfig` field | Locked value |
+|---|---|
+| `fast` | `12` |
+| `slow` | `26` |
+| `min_bars_floor` | `30` |
+| `atr_period` | `14` |
+| `sl_atr_mult` | `3.0` |
+| `tp_atr_mult` | `6.0` |
+| `min_stop_distance_points` | `10.0` |
+| `max_concurrent_positions` | `1` |
+
+**Sizing, risk, and run parameters** (`src/mt5_mcp_trading/sizing/money.py`'s `MoneyConfig`
+default, `src/mt5_mcp_trading/risk/portfolio_guards.py`'s `ExposureCaps`, and
+`scripts/run_demo_execution_pipeline_loop.py`'s own module-level constants — the exact script
+this project has already run live multiple times, confirmed by reading it directly):
+
+| Parameter | Locked value | Source |
+|---|---|---|
+| Lot sizing | `MoneyConfig()` default → `lot_size_mode="fixed"`, `fixed_lot=0.01` | `sizing/money.py` |
+| `ExposureCaps.max_open_lots` | `0.06` | `run_demo_execution_pipeline_loop.py` |
+| `ExposureCaps.budget_max_lots` | `0.06` | `run_demo_execution_pipeline_loop.py` |
+| Symbol | `BTCUSD` | `run_demo_execution_pipeline_loop.py` |
+| Timeframe | `M1` | `run_demo_execution_pipeline_loop.py` |
+| Grid magic | `71101` | `run_demo_execution_pipeline_loop.py` (registered in `state/strategy_registry.py`) |
+| Runner magic | `72101` | `run_demo_execution_pipeline_loop.py` |
+| Cycle interval | `300.0` s (5 min) | `run_demo_execution_pipeline_loop.py` |
+
+**`MAX_CYCLES`/`MAX_RUNTIME_MINUTES` (currently `12`/`90.0` in the same script) are deliberately
+NOT locked here** — those are the loop's own time/count safety ceiling, not a strategy or sizing
+parameter, and Step 7 (the actual forward-test run) will need its own, likely much larger, values
+sized to whatever duration gets separately approved at that point. Locking them now would be
+guessing ahead of evidence this effort doesn't have yet.
+
+Nothing above changes any file — this step exists purely to freeze-and-cite what's already true in
+the codebase today, so Steps 2–7 have one unambiguous reference point rather than each re-deriving
+it. If any of these values ever change for a real (separately-approved) reason before Step 7 runs,
+this table must be updated in the same commit, not left stale.
+
+```
+pytest -q -> unaffected (no code changed this entry)
+```
+
+**Files changed this entry**: this checkpoint doc only.
+
 ## Status
 
-**Proposal only. Nothing built.** Awaiting review and explicit approval before Step 1.
+**Step 1 done.** Locked parameter set documented and verified against the current codebase (see
+"Step 1 — locked parameter set: done" above) — the single source of truth for the rest of this
+effort. No code changed, no live/demo call made. **Next smallest step: Step 2** — build the
+loss-based kill-switch guard (unit tested against synthetic P&L data only, not yet wired into the
+live loop). Needs its own explicit go-ahead before any code is written, same standing rule as
+always, though Step 2 itself makes no live call either.
