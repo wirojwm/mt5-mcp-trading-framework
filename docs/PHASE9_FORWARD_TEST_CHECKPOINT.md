@@ -593,7 +593,8 @@ No order, no live/demo call of any kind this entry.
 **Files changed this entry**: `src/mt5_mcp_trading/monitoring/live_performance.py` (new),
 `tests/unit/test_monitoring_live_performance.py` (new, +18), this checkpoint doc.
 
-**`scripts/run_demo_execution_live_performance_monitor.py` written — NOT YET RUN.** Same
+**`scripts/run_demo_execution_live_performance_monitor.py` written, then live-verified — run for
+real against the demo connection, per explicit go-ahead.** Same
 READ-ONLY shape as `run_demo_execution_historical_data_probe.py`: goes through
 `demo_execution_session()`, unpacks `executor` and immediately discards it (never referenced),
 only calls `get_deals` (`McpDealHistoryReader`, `READ_ONLY`-classified). Uses the REAL production
@@ -624,13 +625,55 @@ call, so no session/connection attempted) both succeed — every import resolves
 (unchanged, since nothing under `src/`/`tests/` was touched this entry), architecture tests
 still 13 passed.
 
-**Deliberately not executed.** This script's own one real `get_deals` call is, per this
-checkpoint's Step 4 entry point and the project's standing live-testing-pause rule, its own
-explicit go-ahead moment — writing it is not running it. `git status` confirms only this one new
-file plus the checkpoint doc changed; no live/demo call of any kind was made building it.
+**Written entry: deliberately not executed at the time it was built.** `git status` at that point
+confirmed only this one new file plus the checkpoint doc had changed; no live/demo call of any
+kind was made writing it. Running it required its own explicit go-ahead, per this checkpoint's
+own Step 4 entry point and the project's standing live-testing-pause rule.
 
 **Files changed this entry**: `scripts/run_demo_execution_live_performance_monitor.py` (new),
 this checkpoint doc.
+
+## Live run: first real Phase 9 forward-test read (2026-08-06, explicit go-ahead given)
+
+Ran for real against the demo connection. One real `get_deals` call, read-only throughout — no
+order, no `executor` reference, connection closed normally afterward. `require_demo_account`'s
+informational check logged its already-known, already-documented warning
+(`trade_mode='REAL'` — the confirmed `mcp_account.py` inversion bug) and was correctly ignored,
+same as every prior real run in this project; the actual safety gate
+(`require_demo_account_kind`, `MT5_ACCOUNT_KIND=DEMO`) passed before any connection was even
+opened.
+
+**Real results** — 39 locally closed `StateStore` records found; `from_date` derived as
+`2026-08-03` (the earliest of those records' `submitted_at`); 162 real deals returned; 37 records
+matched to a genuine `ClosedTrade`, 2 skipped:
+
+| Strategy (magic) | Trades | `expectancy_r` | `max_drawdown_r` | 30-trade minimum met? |
+|---|---|---|---|---|
+| grid (71101) | 19 | −0.825 R | 16.302 R | no |
+| runner (72101) | 13 | −0.418 R | 10.214 R | no |
+
+Both negative, directionally consistent with Phase 8's backtested findings for both strategies —
+but neither has reached the 30-trade minimum sample this project's own acceptance bar requires
+(`has_minimum_sample()`), so this is a first honest read, not a validated result one way or the
+other. Realized P&L since the most recent UTC daily-reset boundary
+(`2026-08-06T00:00:00+00:00`) was `+0.00` (nothing closed today at the moment of the run).
+
+**Two things the report surfaced, not diagnosed further this entry (flagged, not investigated,
+per instruction to hold here)**:
+- **5 matched trades carry a magic outside `{71101, 72101}`** — not attributed to either strategy,
+  listed for visibility only, not counted in the table above. Likely earlier-phase smoke-test
+  magics (e.g. `79999`, see Phase 8's `runner_sltp_smoke_test` runs) rather than a new issue, but
+  not confirmed here.
+- **2 local records skipped** (tickets `171648990`, `171649461`) — no matching OUT-entry deal
+  found in the returned deal history, so no real close price could be determined for either.
+  Could be pruned MT5-side deal history, a `from_date` edge case, or a genuine local/real
+  mismatch — not root-caused this entry, reported honestly via `build_closed_trades()`'s skip
+  mechanism exactly as designed (never fabricated, never silently dropped).
+
+No production code changed this entry — a live run of already-built, already-tested code, not a
+new capability.
+
+**Files changed this entry**: this checkpoint doc only.
 
 ## Status
 
@@ -641,20 +684,27 @@ own call sites yet). 458 passed total, architecture tests still pass, no live/de
 any of Steps 1–3. **Step 4 IN PROGRESS**: research done (real `get_deals` CSV shape, field list,
 and the `position_id`-as-join-key confirmed by reading source, later extended with two wire-format
 corrections — `type` is a raw int not a string, `time` needs explicit UTC attachment);
-`StateStore.all_closed()`, the `Deal` domain model, `mt5_adapter/mcp_deal_history.py`'s reader, and
-`monitoring/live_performance.py`'s join/computation logic are all now built and unit tested (see
-above). `scripts/run_demo_execution_live_performance_monitor.py` (the read-only monitor script
-itself) is now WRITTEN but deliberately NOT YET RUN — its one real `get_deals` call remains its
-own explicit go-ahead moment. 488 passed total, architecture tests still pass, no live/demo call
-made anywhere in Step 4's work so far. **Known open gap, not blocking**: `close_reason` on
-live-built `ClosedTrade`s is a fixed `"closed"` — a genuine SL-vs-TP breakdown would need
-`Deal.reason` (MT5's `ENUM_DEAL_REASON`), not modeled yet since it wasn't in
+`StateStore.all_closed()`, the `Deal` domain model, `mt5_adapter/mcp_deal_history.py`'s reader,
+`monitoring/live_performance.py`'s join/computation logic, and
+`scripts/run_demo_execution_live_performance_monitor.py` are all now built, unit tested, and (the
+script) **live-verified** — run for real against the demo connection with explicit go-ahead
+(2026-08-06), one real read-only `get_deals` call, no order of any kind. **Real first result**:
+grid 19 trades/−0.825 R expectancy/16.302 R drawdown, runner 13 trades/−0.418 R
+expectancy/10.214 R drawdown, both directionally consistent with Phase 8's backtested findings
+but neither past the 30-trade minimum-sample bar yet — a first honest read, not a validated one.
+488 passed total, architecture tests still pass, no live/demo call made building any of Step 4's
+code (only the one deliberate, explicitly-approved live run above). **Two open items the live run
+surfaced, not yet investigated**: 5 matched trades carry a magic outside `{71101, 72101}`
+(likely earlier smoke-test magics, unconfirmed); 2 local records (`171648990`, `171649461`) had
+no matching OUT-entry deal, root cause not yet determined. **Known open gap, not blocking**:
+`close_reason` on live-built `ClosedTrade`s is a fixed `"closed"` — a genuine SL-vs-TP breakdown
+would need `Deal.reason` (MT5's `ENUM_DEAL_REASON`), not modeled yet since it wasn't in
 `client_history.py`'s documented field list; doesn't affect `expectancy_r()`/`max_drawdown_r()`,
-which never read that field. **Exact next smallest step**: get a fresh, explicit go-ahead to
-actually RUN `run_demo_execution_live_performance_monitor.py` against the real demo connection
-(its one real `get_deals` call) — the only remaining piece of Step 4 (and the only live-adjacent
-one). Once run, the report itself may reveal further work (e.g. if `close_reason` or a magic
-mismatch turns out to matter for a real result). Live-loop wiring (actually connecting any of
-this to `scripts/run_demo_execution_pipeline_loop.py`'s `should_stop()` call sites) remains
-deferred regardless — that was never Step 4's job, and stays out of scope until its own
-explicitly-approved step.
+which never read that field. **This closes out Step 4's originally-scoped work.** **Exact next
+smallest step**: not yet decided — candidates include investigating the two open items above,
+or moving on to Step 5 (operational reliability hardening) or Step 6
+(demo-to-live readiness criteria), each per the checkpoint's own step table and each needing its
+own scoping/go-ahead first. Live-loop wiring (actually connecting any of this to
+`scripts/run_demo_execution_pipeline_loop.py`'s `should_stop()` call sites) remains deferred
+regardless — that was never Step 4's job, and stays out of scope until its own explicitly-approved
+step.
