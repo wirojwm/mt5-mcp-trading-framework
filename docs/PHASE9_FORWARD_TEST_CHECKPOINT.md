@@ -346,17 +346,93 @@ No order, no live/demo call of any kind this entry. `git status` confirms
 `tests/unit/test_pipeline_loop_control.py` (modified, +8),
 `tests/integration/test_pipeline_loop_daily_loss_stop.py` (new, +4), this checkpoint doc.
 
+## Step 4 — IN PROGRESS (research only, no code written, stopped for a lunch break)
+
+Read-only research into how to get real closed-trade P&L, confirmed by reading source (this
+project's own established practice), not guessed. **No file was created or modified this entry —
+research only.** Findings, so the next session doesn't have to re-derive them:
+
+- The `get_deals` MCP tool (already classified `READ_ONLY` in `mcp_adapter/metatrader_tools.py`,
+  never yet called anywhere in this codebase) returns **CSV text** (`metatrader_mcp/server.py`:
+  `df.to_csv()`), the same shape `get_positions_with_magic`/`get_pending_orders_with_magic`
+  already return and already parse via `mt5_adapter/metatrader_parsing.py`'s
+  `parse_dataframe_csv()` — that existing helper should be reused as-is, not reinvented.
+- Real per-deal fields, confirmed via `metatrader_client/client_history.py`'s own docstring:
+  `ticket`, `time`, `type`, `entry` (0=in, 1=out, 2=inout), `symbol`, `volume`, `price`, `profit`,
+  `commission`, `swap`, `fee`, `magic`, `position_id`, `order`, `comment`.
+- **`position_id` is the join key back to `LocalOrderRecord.ticket`** — confirmed, not assumed:
+  `metatrader_client/order/close_position.py` already treats the ticket this project's
+  `McpOrderExecutor.close_position(ticket)` passes as a `position_id` (`position_id = int(id)`),
+  so `StateStore`'s own `ticket` concept already IS MT5's `position_id` elsewhere in this
+  codebase; a deal's `position_id` should match it directly.
+- **`deal.magic`'s reliability is UNCONFIRMED, must not be trusted directly** — this project has
+  already confirmed `magic=0` on every position it places (the reason
+  `get_positions_with_magic`/the magic-recovery `state_store` cross-reference fix exist at all);
+  whether the same broker/terminal quirk also affects deal history has never been tested. Plan:
+  attribute every deal to a strategy via `StateStore`'s locally-recorded magic (matched by
+  `position_id`/ticket), exactly like the existing magic-recovery fix does for
+  positions/orders — never via `deal.magic` directly. This is precisely the checkpoint's own
+  standing caution ("must not misattribute another magic's trades... reuse the existing
+  magic-recovery fix").
+- **A real (harmless, third-party) bug found along the way, not fixed** (it's vendored,
+  out-of-repo code, and doesn't affect this project): `metatrader_client/client_history.py`'s
+  `MT5History.get_deals()` **class method** has a dead early return —
+  `return f"from_date: ${from_date}, ..."` sits BEFORE its real `return get_deals(...)` call,
+  so calling `client.history.get_deals()` directly would silently return a debug string, never
+  real data. Irrelevant here because the actual MCP tool calls
+  `client.history.get_deals_as_dataframe()` instead, which correctly delegates to the real
+  module-level `get_deals()` function via a different import path — confirmed by reading both
+  files, not assumed safe. Flagged so nothing in this project ever calls the broken class method
+  directly if a future `mt5_adapter` addition is tempted to use `metatrader_client` more
+  directly.
+
+**Planned shape (not yet built)**: a new `Deal` domain model (`domain/models.py`, matching
+`PositionState`/`OrderState`'s style); `StateStore.all_closed()` (mirrors `all_open()`, filters
+`status == "CLOSED"` — today only `all_open()` exists, and `record_closed()` itself never even
+receives a P&L value, confirmed by reading `state/store.py` fully); a new
+`mt5_adapter/mcp_deal_history.py` reader (reusing `parse_dataframe_csv()`, same defensive
+`int(float(row[...]))`-style coercion as `mcp_account.py`); a new pure
+`monitoring/live_performance.py` that joins `StateStore` closed records to real deals by
+`position_id`, sums `profit+commission+swap+fee` per position for real $ P&L, derives
+`price_close` from the OUT-entry deal's `price`, and constructs genuine
+`backtest.ledger.ClosedTrade` instances (`r_multiple` computed with the exact same
+`signed_pnl / risk` formula the backtest engine already uses, so live and backtested R-multiples
+stay comparable) — feeding straight into `backtest/metrics.py`'s existing, already-tested
+`expectancy_r()`/`max_drawdown_r()`/`has_minimum_sample()` unchanged, per the checkpoint's own
+Design section. Note: for live data, `ClosedTrade.notional_pnl` would hold a REAL, broker-confirmed
+dollar figure (unlike the backtest engine's own explicitly-uncalibrated use of that same field) —
+must be documented clearly wherever this is built, not left as a silent mismatch with that field's
+existing docstring. A `realized_pnl_since(deals, since, position_ids)` function (filtered by a
+caller-supplied, `StateStore`-derived set of trusted position IDs, never by `deal.magic`) is the
+natural, final piece feeding Step 2's kill-switch its still-missing real input. Finally, a
+read-only monitor script following this project's established one-real-call pattern (like the
+`SymbolInfo`/historical-data probes) — `demo_execution_session()`, never touching `executor`.
+
+**Stopped here deliberately, for a lunch break, per explicit instruction** — mid-research, before
+any file was written, so there is nothing to roll back and nothing partially built. **No live/demo
+call was made at any point in this research** (everything above came from reading already-installed
+package source on disk, never from calling the MCP server). Next session picks up by actually
+building the pieces above, still entirely offline/unit-tested first (matching Steps 2–3's own
+discipline) — the "one live account read" the original Step 4 proposal describes remains its own
+explicit-go-ahead moment, not assumed to be pre-approved by this research.
+
 ## Status
 
-**Step 1 done.** Locked parameter set documented and verified against the current codebase — the
-single source of truth for the rest of this effort. **Step 2 done.** Loss-based kill-switch guard
-(`risk/daily_loss_guard.py`) built and unit tested. **Step 3 done.** The kill-switch is wired into
-`pipeline/loop_control.py`'s `should_stop()` (precedence: stop-file > daily-loss breach >
-max_cycles > max_runtime), proven end-to-end against a real multi-cycle run driven with
-`DryRunExecutor`/mocks — but deliberately NOT wired into
-`scripts/run_demo_execution_pipeline_loop.py`'s own live call sites yet, since no real
-`realized_pnl_since_reset` source exists until Step 4. 458 passed total, architecture tests still
-pass, no live/demo call made in any of Steps 1–3. **Next smallest step: Step 4** — the live
-performance/drawdown monitor (read-only, computed from real `StateStore` + one live account
-read), which is also the natural place to build the real P&L computation this kill-switch still
-needs. Needs its own explicit go-ahead before any code is written, same standing rule as always.
+**Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
+kill-switch wired into `pipeline/loop_control.py`'s `should_stop()`, proven end-to-end against a
+real multi-cycle run with `DryRunExecutor`/mocks, deliberately not wired into the live script's
+own call sites yet). 458 passed total, architecture tests still pass, no live/demo call made in
+any of Steps 1–3. **Step 4 IN PROGRESS**: research only (see above) — real `get_deals` CSV shape,
+field list, and the `position_id`-as-join-key confirmed by reading source; nothing built yet, no
+file created or modified in `src/`/`tests/` this entry, no live/demo call made. **Exact next
+smallest step**: build `StateStore.all_closed()` first (the smallest, purely-local piece, no
+adapter/live dependency at all), then the `Deal` domain model and
+`mt5_adapter/mcp_deal_history.py` reader (unit-tested against a stub `McpClient`, same pattern as
+`test_mt5_adapter_mcp_market_data.py` — no live call), then the pure
+`monitoring/live_performance.py` join/computation logic (unit-tested against synthetic
+`StateStore` records + synthetic `Deal` objects — no live call), and only after all of that is
+built and tested, the read-only monitor script itself — whose one real `get_deals` call remains
+its own explicit go-ahead moment, not assumed pre-approved. Live-loop wiring (actually connecting
+this to `scripts/run_demo_execution_pipeline_loop.py`'s `should_stop()` call sites) remains
+deferred regardless — that was never Step 4's job, and stays out of scope until its own
+explicitly-approved step.

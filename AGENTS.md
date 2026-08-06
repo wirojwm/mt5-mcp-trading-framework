@@ -684,9 +684,15 @@ to avoid designing ahead of what's actually been asked for.
   for the wrong reason -- caught by checking actual cycle counts, fixed by switching to the
   40-bar `_runner_bars()` fixture already used elsewhere for the same reason. 458 passed total,
   architecture tests still pass, no live/demo call in any of Steps 1-3.
-  Next: Step 4 (the live performance/drawdown monitor, read-only, computed from real `StateStore`
-  + one live account read -- also the natural place to build the real P&L computation the
-  kill-switch still needs), awaiting explicit go-ahead.
+  **Step 4 (live performance/drawdown monitor) IN PROGRESS, research only, stopped for a lunch
+  break**: no code written yet. Confirmed by reading vendored source (not guessed): the
+  `get_deals` MCP tool returns CSV (reuse `parse_dataframe_csv()`), real deal fields include
+  `position_id` (the confirmed join key to `LocalOrderRecord.ticket`) and `magic` (reliability
+  UNCONFIRMED for deals -- must attribute via `StateStore`, never `deal.magic`, same as the
+  existing magic-recovery fix). Full findings and planned shape in
+  `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`'s Step 4 section. Next smallest step:
+  `StateStore.all_closed()` (pure/local, no live dependency), awaiting explicit go-ahead before
+  any code is written.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
