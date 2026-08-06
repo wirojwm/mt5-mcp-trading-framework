@@ -605,10 +605,16 @@ not done here, to avoid designing ahead of what's actually been asked for.
   a concrete, evidence-backed idea, not adopted or built here. **Phase 8's originally-scoped
   work, through Step 7, is now complete.** Full detail in
   `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`'s "Exact next smallest task."
-- **Grid regime filter (post-Phase-8): first candidate rejected, second candidate found,
-  not yet validated.** Not one of the numbered phases — like "wire real adapters" before Phase 6
-  or "pipeline wiring" after Phase 7, a separate effort motivated by Phase 8's Step 7
-  regime-analysis finding. Full scoping/design in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`.
+- **Grid regime filter (post-Phase-8): CLOSED, negative result.** Not one of the numbered
+  phases — like "wire real adapters" before Phase 6 or "pipeline wiring" after Phase 7, a
+  separate effort motivated by Phase 8's Step 7 regime-analysis finding. User explicitly closed
+  this effort out after both candidates it produced failed out-of-sample validation (see below) —
+  no viable Efficiency-Ratio threshold was found for a grid regime filter on this symbol/window.
+  `GridStrategyConfig.max_entry_efficiency_ratio`/`efficiency_ratio_period` (Step 2) remain in the
+  codebase, opt-in and default-`None`/`14`, tested but unused — dead but harmless. Grid's default
+  configuration is unchanged from Phase 8. Full scoping/design/history in
+  `docs/GRID_REGIME_FILTER_CHECKPOINT.md`; re-opening needs a genuinely new idea, not a repeat
+  threshold search, per that doc's closing section.
   **Step 1**: a training-window threshold sweep (via two new opt-in parameters on
   `backtest/engine.py`'s `run_backtest()`, simulating the filter's dynamic exposure-cap effect
   without building the production change first) found and confirmed a genuine interior peak:
@@ -625,10 +631,19 @@ not done here, to avoid designing ahead of what's actually been asked for.
   isolated-looking spike at `0.01`; a fine-grained probe (0.005-0.02) around it revealed a
   genuine ~10-point plateau (`0.005`-`0.015` all substantially beat baseline), not a fluke --
   best point `max_entry_efficiency_ratio=0.013` (expectancy -0.098 R vs. -0.302 R baseline, win
-  rate 72.8%, drawdown 22.960 R, 235 trades). Still training-window only -- **Step 3 for `0.013`
-  has not been run; the held-out test window remains untouched.** No production default changed
-  anywhere in this effort -- `max_entry_efficiency_ratio` still defaults to `None` everywhere.
-  Full detail in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`'s "Exact next smallest task."
+  rate 72.8%, drawdown 22.960 R, 235 trades). **Step 3 for `0.013` now run against the held-out
+  test window (fully offline, zero MCP/MT5 calls) -- REJECTED.** Expectancy improvement held
+  out-of-sample (-0.311 R baseline -> -0.219 R, unlike `0.2` which reversed outright), but max
+  drawdown -- the required companion risk metric -- nearly tripled versus baseline (14.240 R ->
+  43.718 R), the opposite of the training-window finding (37.120 R -> 22.960 R), driven by the
+  filter freeing up far more exposure-cap headroom on this window (45 -> 197 trades) than on the
+  training window. Fails this project's own acceptance bar, which has consistently required both
+  expectancy and drawdown to hold together. No production default changed anywhere in this effort
+  -- `max_entry_efficiency_ratio` still defaults to `None` everywhere. **User then explicitly
+  closed this effort out as a negative result** -- both candidates produced by this effort are
+  rejected, and re-opening it needs a genuinely new idea (different signal, different
+  windowing/split strategy), not a repeat threshold search over the same signal/window
+  combination. Full detail in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`'s "Effort closed" section.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
   operational reliability, demo-to-live readiness criteria)**: not started, not scoped. No
   locked-parameter-set concept, automated performance/drawdown monitor, or demo-to-live readiness

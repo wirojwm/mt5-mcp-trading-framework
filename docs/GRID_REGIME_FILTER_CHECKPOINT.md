@@ -1,11 +1,17 @@
-# Checkpoint: Grid regime filter — proposal, not yet started
+# Checkpoint: Grid regime filter — CLOSED, negative result (2026-08-06)
+
+**This effort is closed.** Both threshold candidates it produced
+(`max_entry_efficiency_ratio=0.2` and `0.013`) were rejected by out-of-sample validation. No
+production default changed. See "Effort closed — negative result, user-approved" near the end of
+this doc for the full outcome and reasoning before proposing any follow-on work.
 
 A new, separately-scoped effort, not one of this project's numbered phases (0–7) and not part of
 Phase 8 itself — same relationship "wire real adapters" had to Phase 6, or "pipeline wiring" had
 to Phases 6/7: motivated by a Phase 8 finding, but its own explicitly-approved unit of work, per
 `AGENTS.md`'s required workflow ("explain the goal, list files to create/change, identify risks
 and assumptions — before editing... stop and wait for explicit approval before starting the next
-phase"). **Nothing in this doc has been built. This is the proposal, for review before any code.**
+phase"). The sections below are kept as originally written (the proposal, then each step's
+real results) for full history — read "Effort closed" for the final status.
 
 ## Motivation
 
@@ -323,36 +329,137 @@ script, same call already covered by prior approval). Process cleanup confirmed 
 (modified — `THRESHOLD_CANDIDATES` widened, then narrowed to a fine-grained probe), this
 checkpoint doc.
 
+## Step 3 (second candidate) — out-of-sample validation run for 0.013: does NOT pass acceptance
+
+`scripts/run_demo_execution_backtest_regime_filter_test_window_validation_0013.py` (new): runs
+`GridStrategyConfig()` (filter off), `GridStrategyConfig(max_entry_efficiency_ratio=0.2)` (the
+already-rejected first candidate, kept in the same run purely as a reproducibility/consistency
+check), and `GridStrategyConfig(max_entry_efficiency_ratio=0.013)` back-to-back against the
+identical held-out test window, via the real `pipeline/grid_cycle.py` path. **Deliberately fully
+offline, zero MCP/MT5 calls** — unlike the first candidate's validation script, this one does not
+open a `demo_execution_session` or call `get_symbol_info()`; it reuses the real BTCUSD
+`SymbolInfo` already fetched live and recorded in `docs/MCP_ADAPTER_WIRING_CHECKPOINT.md` (static
+broker symbol constraints, not live price — unchanged since that fetch and already the same value
+every backtest script in this project has used). No order, no live/demo call of any kind this
+entry.
+
+**Reproducibility check passed first**: the filter-off and `0.2` rows in this run are
+byte-for-bit identical to Step 3's original results for those two configs (45 trades/55.6%/
+−0.311 R/14.240 R baseline; 33 trades/51.5%/−0.361 R/12.400 R for `0.2`) — confirms the hardcoded
+real `SymbolInfo` substitution changed nothing material, so the new `0.013` row below is trustworthy.
+
+**Real results, held-out test window (never touched by Step 1's sweep for either candidate)**:
+
+| | grid trades | grid win rate | grid expectancy | grid drawdown |
+|---|---|---|---|---|
+| filter off (baseline) | 45 | 55.6% | −0.311 R | 14.240 R |
+| rejected candidate `max_er=0.2` | 33 | 51.5% | −0.361 R | 12.400 R |
+| new candidate `max_er=0.013` | 197 | 62.9% | **−0.219 R** | **43.718 R** |
+
+**Training vs. held-out, side by side, for the `0.013` candidate specifically**:
+
+| | trades | win rate | expectancy | max drawdown |
+|---|---|---|---|---|
+| training, baseline | 119 | 56.3% | −0.302 R | 37.120 R |
+| training, `max_er=0.013` | 235 | 72.8% | −0.098 R | 22.960 R |
+| **held-out, baseline** | 45 | 55.6% | −0.311 R | 14.240 R |
+| **held-out, `max_er=0.013`** | 197 | 62.9% | −0.219 R | 43.718 R |
+
+**Does NOT pass this project's predefined acceptance bar.** This project has consistently required
+BOTH companion metrics (expectancy AND max drawdown — Phase 8 Step 1 fixed this pairing explicitly,
+and Step 1 of this effort selected `0.013` over other plateau points partly *because* it improved
+both together on the training window) to hold out-of-sample, not just one:
+- **Expectancy direction holds, does not reverse**: held-out expectancy still beats held-out
+  baseline (−0.219 R vs. −0.311 R, a genuine 0.092 R improvement) — unlike `0.2`, which reversed
+  into a result worse than doing nothing. On this metric alone, `0.013` looks better than `0.2`.
+- **Drawdown reverses badly**: the training window showed drawdown *improving* under this filter
+  (37.120 R → 22.960 R, a 38% reduction — part of why this looked like a genuine risk-reduction
+  candidate). Held-out, it does the opposite: drawdown roughly **triples** versus the held-out
+  baseline (14.240 R → 43.718 R, a 207% increase) and is also nearly double the training window's
+  own drawdown under this same filter. Trade count also explains why: the filter frees up far more
+  exposure-cap headroom on this window than on the training window (45 → 197, a ~4.4x increase,
+  versus training's ~2x increase), clustering more trades and compounding risk exactly where this
+  filter's original purpose was to reduce it.
+- Since the filter's stated motivation (Motivation section, above) is explicitly damage limitation
+  / risk reduction, not just expectancy — a candidate whose out-of-sample drawdown gets
+  *dramatically worse* than doing nothing fails on its own terms, even though its expectancy number
+  looks superficially better than `0.2`'s outright reversal.
+
+**Verdict: `max_entry_efficiency_ratio=0.013` is REJECTED, same as `0.2`, on the drawdown leg of
+validation.** Not adopted. No production default changed — `GridStrategyConfig` still defaults to
+`max_entry_efficiency_ratio=None` everywhere.
+
+```
+pytest -q                        -> 428 passed (unchanged -- only a new read-only script added)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Files changed this entry**:
+`scripts/run_demo_execution_backtest_regime_filter_test_window_validation_0013.py` (new), this
+checkpoint doc.
+
+## Effort closed — negative result, user-approved
+
+User explicitly chose to close this effort out as a negative result rather than attempt a third
+Step 1 restart. **Final outcome: no viable grid regime filter threshold was found.** Both
+candidates this effort produced were tried in good faith through the full Step 1→3 discipline and
+both failed out-of-sample validation, for two genuinely different reasons — not the same bug
+recurring twice:
+- `max_entry_efficiency_ratio=0.2`: training-window expectancy improvement (−0.302 R → −0.209 R)
+  reversed outright out-of-sample (−0.311 R → −0.361 R, worse than doing nothing).
+- `max_entry_efficiency_ratio=0.013`: training-window expectancy improvement held directionally
+  out-of-sample (−0.311 R → −0.219 R, a real gain), but max drawdown — the required companion risk
+  metric this project has used since Phase 8 Step 1 — reversed badly (14.240 R → 43.718 R, nearly
+  tripling), driven by the filter freeing far more exposure-cap headroom on the held-out window
+  than it did on the training window (45 → 197 trades, vs. ~2x on training).
+
+Two independent, differently-shaped candidates both failing out-of-sample — one via expectancy
+reversal, the other via drawdown reversal — is itself informative: it's evidence against a stable,
+generalizable Efficiency-Ratio threshold existing for this grid/symbol/window combination at all,
+not just evidence that these two specific numbers were wrong picks. Grid's underlying negative
+expectancy (Phase 8 Step 7) remains real and diagnosed (disproportionately trend-concentrated),
+but a regime *filter* built on Kaufman's Efficiency Ratio has not been shown to fix or meaningfully
+mitigate it on the evidence gathered so far.
+
+**No production code changed anywhere in this effort, start to finish.**
+`GridStrategyConfig.max_entry_efficiency_ratio`/`efficiency_ratio_period` (added in Step 2) remain
+in the codebase, both still opt-in and default-`None`/`14` — dead but harmless: zero behavior
+change for any caller that doesn't explicitly opt in, fully unit/integration tested, and available
+unchanged if a future effort wants to try a different threshold-selection approach against this
+same mechanism rather than rebuilding it. Left in place rather than reverted, since removing
+tested, harmless, opt-in infrastructure isn't itself risk-reducing and this project's own
+conventions elsewhere (e.g. the backtest engine's parallel simulation hook, kept "available for any
+future threshold re-sweep") treat this as normal.
+
+**Re-opening this effort in the future** would need a genuinely new idea, not a third blind
+threshold search over the same signal/window combination — e.g. a different regime signal
+entirely, a different windowing/split strategy, or accepting that grid's entry-timing problem
+(Phase 8's own diagnosis: "an entry-timing quality problem, not an SL/TP-shape problem") may not be
+addressable by *any* single-bar-window filter of this shape. That's a future, separately-scoped,
+separately-approved decision — not implied or pre-committed by this closure.
+
 ## Exact next smallest task
 
-**A new tentative candidate exists (`max_entry_efficiency_ratio=0.013`) but is training-window
-evidence only — nothing has changed about this effort's core discipline.** Before this candidate
-can be trusted at all, it needs the same out-of-sample check that correctly rejected `0.2`: run
-it against the held-out test window via the real `pipeline/grid_cycle.py` path (same shape as
-`scripts/run_demo_execution_backtest_regime_filter_test_window_validation.py`, just pointed at
-`0.013` instead of `0.2`). **This has not been done. The held-out test window has not been
-touched by anything today.** No production code should change, and no live/demo order action is
-needed or appropriate — this is 100% offline, historical-data research, same as every other step
-in this effort and in Phase 8 itself. Needs its own explicit go-ahead before any test-window code
-is written or run, same standing rule as always.
+None — this effort is closed. Any further grid regime-filter work is a fresh, separately-scoped
+effort requiring its own explicit proposal and approval, per this project's normal workflow
+(`AGENTS.md`'s "Required workflow"). Grid's default configuration is unchanged; the production
+default remains what Phase 8 left it (see `AGENTS.md`'s "Grid regime filter" progress entry for
+the one-line summary).
 
-**Continuation prompt for a new session**: "Read AGENTS.md and
-docs/GRID_REGIME_FILTER_CHECKPOINT.md (Steps 1–3 completed once already for candidate
-max_entry_efficiency_ratio=0.2, which was REJECTED by out-of-sample testing. A second Step 1
-attempt — a wider sweep, then a fine-grained probe around an initially-suspicious spike — found a
-NEW tentative candidate, max_entry_efficiency_ratio=0.013, this time as a genuine ~10-point
-plateau (0.005-0.015) rather than an isolated fluke, still training-window only. Step 3
-out-of-sample validation for 0.013 has NOT been run — the held-out test window remains untouched.
-No production default changed anywhere). Confirm git status is clean at the latest commit and no
-live process is running, then ask me what to do next — running Step 3 against 0.013 is the
-obvious next step but needs my explicit go-ahead before any test-window code is written or run."
+**Continuation prompt for a new session** (only needed if this effort is ever re-opened): "Read
+AGENTS.md and docs/GRID_REGIME_FILTER_CHECKPOINT.md. This effort is CLOSED as a negative result —
+both candidates it produced (max_entry_efficiency_ratio=0.2 and 0.013) were rejected by
+out-of-sample testing, for two different reasons (expectancy reversal and drawdown reversal
+respectively). No production default changed. Re-opening this needs a genuinely new idea, not a
+repeat threshold search over the same signal — read the 'Effort closed' section for the reasoning
+before proposing anything."
 
 ## Status
 
-**First candidate (`max_entry_efficiency_ratio=0.2`): Steps 1–3 all done — REJECTED, did not
-validate out-of-sample.** **Second candidate (`max_entry_efficiency_ratio=0.013`), found via a
-fresh Step 1 (wide sweep + fine-grained probe): training-window evidence only, a genuine
-~10-point plateau, NOT yet validated out-of-sample.** No production default changed anywhere in
-this effort — `GridStrategyConfig.max_entry_efficiency_ratio` still defaults to `None`
-everywhere. Next smallest step: Step 3 for the `0.013` candidate against the held-out test
-window, awaiting explicit go-ahead.
+**CLOSED — negative result, user-approved 2026-08-06.** First candidate
+(`max_entry_efficiency_ratio=0.2`): REJECTED, did not validate out-of-sample (expectancy
+reversed). Second candidate (`max_entry_efficiency_ratio=0.013`), found via a fresh Step 1 (wide
+sweep + fine-grained probe): REJECTED, did not validate out-of-sample (expectancy held, but max
+drawdown reversed badly). No production default changed anywhere in this effort —
+`GridStrategyConfig.max_entry_efficiency_ratio` still defaults to `None` everywhere. No further
+work planned; re-opening requires a new proposal.
