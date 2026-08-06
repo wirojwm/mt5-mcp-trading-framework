@@ -250,6 +250,78 @@ class OrderState:
 
 
 @dataclass(frozen=True, slots=True)
+class Deal:
+    """
+    One row of real MT5 deal history, as returned by the get_deals MCP tool (Phase 9 Step 4
+    research; see docs/PHASE9_FORWARD_TEST_CHECKPOINT.md). Field set confirmed by reading
+    metatrader_client/client_history.py's own docstring, not guessed -- this is a faithful,
+    adapter-agnostic transcription of what a deal record contains, not yet an interpretation
+    of it (see the caveats below for what deliberately hasn't been resolved here).
+
+    position_id is the join key back to LocalOrderRecord.ticket -- confirmed, not assumed:
+    metatrader_client/order/close_position.py already treats the ticket this project's
+    McpOrderExecutor.close_position(ticket) passes as a position_id, so StateStore's own
+    `ticket` concept already IS MT5's position_id elsewhere in this codebase.
+
+    magic is UNCONFIRMED and must NEVER be trusted directly for strategy attribution. This
+    project has already confirmed magic=0 on every position/order it places (the reason
+    get_positions_with_magic and the magic-recovery state_store cross-reference exist at
+    all); whether the same broker/terminal quirk also affects deal history has never been
+    tested. Callers must attribute a deal to a strategy via StateStore (matched by
+    position_id/ticket), exactly like the existing magic-recovery fix does for
+    positions/orders -- never via this field.
+
+    type is a raw MT5 ENUM_DEAL_TYPE int, NOT a string -- traced past the docstring into
+    metatrader_client/history/get_deals.py (`deal._asdict()` on the raw MetaTrader5
+    TradeDeal namedtuple, no string conversion anywhere in the call chain) and confirmed
+    against client_history.py's own local DealType(Enum) (BUY=0, SELL=1, BALANCE=2, CREDIT=3,
+    CHARGE=4, CORRECTION=5, BONUS=6, COMMISSION=7/8/9/10, INTEREST=11, CANCELED_BUY=12,
+    CANCELED_SELL=13). That local enum is a partial transcription of MT5's real
+    ENUM_DEAL_TYPE (which also defines DIVIDEND/DIVIDEND_FRANKED/TAX in newer builds) --
+    deliberately kept as a plain int here rather than a Literal/enum, since a deal can
+    represent a non-trade event (balance/commission/etc.) as well as a BUY/SELL fill, and no
+    live capture has yet exercised every value. Resolving type into something more specific
+    is a reader-level concern once real values have been observed, not something to guess
+    here.
+
+    entry's documented meaning (client_history.py's own docstring): 0=in (opens/adds to a
+    position), 1=out (closes/reduces one), 2=inout (a netting reversal in one fill). Kept as
+    a plain int rather than a Literal for the same reason as type -- MT5's own
+    ENUM_DEAL_ENTRY additionally defines 3=out_by (a hedging-account close-by-opposite-deal),
+    unconfirmed either way against this project's netting-mode demo account and not yet
+    ruled out.
+
+    time is a UTC INSTANT but arrives, and must be stored here, as a naive datetime -- also
+    traced past the docstring: metatrader_client/history/get_deals_as_dataframe.py converts
+    MT5's raw epoch-seconds `time` field via `pd.to_datetime(df['time'], unit='s')`, which
+    is unambiguously a UTC instant (Unix epoch is UTC by definition) but pandas attaches no
+    tzinfo, and get_deals()'s to_csv() serialization carries no offset suffix either -- unlike
+    every other timestamp this codebase parses (candles/positions/orders/price all carry an
+    explicit "Z" or "+00:00", see metatrader_parsing.py's module docstring). A reader
+    constructing this field is responsible for attaching tzinfo=timezone.utc explicitly, not
+    trusting datetime.fromisoformat() to infer it -- the value would otherwise be a plain
+    naive datetime, silently disagreeing with every other tz-aware datetime in this codebase's
+    domain layer.
+    """
+
+    ticket: int
+    order: int
+    position_id: int
+    time: datetime
+    type: int
+    entry: int
+    symbol: str
+    volume: float
+    price: float
+    profit: float
+    commission: float
+    swap: float
+    fee: float
+    magic: int
+    comment: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SymbolInfo:
     symbol: str
     digits: int

@@ -416,23 +416,245 @@ building the pieces above, still entirely offline/unit-tested first (matching St
 discipline) — the "one live account read" the original Step 4 proposal describes remains its own
 explicit-go-ahead moment, not assumed to be pre-approved by this research.
 
+**`StateStore.all_closed()` built and unit tested** (`src/mt5_mcp_trading/state/store.py`) — mirrors
+`all_open()` exactly: one filter over `_load_all()`, same full-directory `StateLoadError`
+hard-stop-on-corruption guarantee. Filters `status == "CLOSED"` only — `CANCELLED` is deliberately
+excluded (an order that never filled has no closed-trade P&L for the live performance monitor to
+join against real deals; `OPEN`/`OPEN_UNPROTECTED` are excluded because they're still `all_open()`'s
+domain). No adapter import, no live/demo call — purely local, same as every other `StateStore`
+method. 6 new assertions added across existing tests in `tests/unit/test_state_store.py` (cold
+start returns `()`; `record_closed` populates it and excludes it from `all_open()`; `record_cancelled`
+confirms it stays excluded from `all_closed()`; `OPEN_UNPROTECTED` confirms the same; the
+multi-ticket independence test and the 200-ticket at-scale sweep both now check `all_closed()`
+alongside `all_open()`; the corrupted-file test confirms `all_closed()` hard-stops on a bad ticket
+file exactly like `all_open()` does) — no new test functions, since every scenario `all_closed()`
+needs already had an `all_open()`-checking test in place to extend.
+
+```
+pytest -q                        -> 458 passed (unchanged total -- new assertions in existing tests, no new test functions)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind this entry. `git status` confirms nothing outside
+`src/mt5_mcp_trading/state/store.py`, `tests/unit/test_state_store.py`, and this checkpoint doc
+was touched.
+
+**Files changed this entry**: `src/mt5_mcp_trading/state/store.py` (modified, +`all_closed()`),
+`tests/unit/test_state_store.py` (modified, +6 assertions in existing tests), this checkpoint doc.
+
+**`Deal` domain model built and unit tested** (`src/mt5_mcp_trading/domain/models.py`) — same
+frozen-dataclass style as `PositionState`/`OrderState`, in the pure `domain/` package (no adapter
+import; `tests/test_architecture.py`'s `PURE_PACKAGES` check covers it automatically and still
+passes). Carries the full real field set confirmed by reading
+`metatrader_client/client_history.py`'s own docstring in Step 4's research (`ticket`, `order`,
+`position_id`, `time`, `type`, `entry`, `symbol`, `volume`, `price`, `profit`, `commission`,
+`swap`, `fee`, `magic`, `comment`) — nothing invented, nothing dropped. Two fields deliberately
+kept less specific than a first pass might reach for, both explained in the class docstring so the
+reasoning travels with the code: `type` stays a raw `str` rather than narrowed to `Side`, since a
+deal can represent a non-trade event (e.g. a balance operation) and no live capture has yet
+confirmed the full value set; `entry` stays a plain `int` rather than a `Literal[0, 1, 2]`, since
+MT5's real `ENUM_DEAL_ENTRY` additionally defines `3=out_by` (a hedging-account concept,
+unconfirmed either way against this project's netting-mode demo account). The docstring also
+carries the two load-bearing caveats from Step 4's research forward onto the type itself, not just
+the checkpoint doc: `position_id` is the confirmed join key back to `LocalOrderRecord.ticket`;
+`magic` is present on the wire but its reliability is UNCONFIRMED and must never be trusted
+directly for attribution — callers must join through `StateStore` by `position_id` instead, same
+as the existing magic-recovery fix does for positions/orders.
+
+**3 new tests** (`tests/unit/test_domain_models.py`): frozen-immutability (matching every other
+model in that file), the `position_id`-as-join-key relationship stated as an executable assertion
+rather than only a comment, and a full-field round-trip proving every field from the real
+`get_deals` shape survives construction unchanged.
+
+```
+pytest -q                        -> 461 passed (458 previously + 3 new Deal tests)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind this entry. `git status` confirms nothing outside
+`src/mt5_mcp_trading/domain/models.py`, `tests/unit/test_domain_models.py`, and this checkpoint
+doc was touched by this increment.
+
+**Files changed this entry**: `src/mt5_mcp_trading/domain/models.py` (modified, +`Deal`),
+`tests/unit/test_domain_models.py` (modified, +3 tests), this checkpoint doc.
+
+**`mt5_adapter/mcp_deal_history.py` reader built and unit tested** — `McpDealHistoryReader.get_deals()`,
+same shape as `McpMarketDataSource`/`McpAccountReader`: only ever calls through `McpClient`
+(`get_deals` already classified `READ_ONLY`, no local server extension needed this time — unlike
+`get_positions_with_magic`/`get_pending_orders_with_magic`, `get_deals` already exists upstream),
+reuses `parse_dataframe_csv()` unchanged, same defensive `int(float(row[...]))` coercion as
+`mcp_account.py`.
+
+**Two real wire-format quirks found by tracing past the docstring into the vendored
+`metatrader_client.history` package's actual source, not guessed — this correction landed BEFORE
+committing anything, since it changes a field the previous `Deal` entry above had gotten wrong**:
+- **`type` is a raw MT5 `ENUM_DEAL_TYPE` int, not a string.** `metatrader_client/history/get_deals.py`
+  calls `deal._asdict()` directly on the raw MT5 `TradeDeal` namedtuple returned by
+  `mt5.history_deals_get()` — no string conversion happens anywhere in the call chain. Confirmed
+  against `client_history.py`'s own local `DealType(Enum)` (`BUY=0`, `SELL=1`, `BALANCE=2`, …).
+  **`Deal.type` corrected from `str` to `int`** before this entry's tests were written (the
+  previous entry's 3 tests and their `_deal()` helper were updated from string literals like
+  `"DEAL_TYPE_SELL"` to the real int codes) — caught by reading one level deeper than Step 4's
+  original research had gone, not by a live call.
+- **`time` is a genuine UTC instant but arrives as a naive datetime string, unlike every other
+  timestamp this codebase parses.** `metatrader_client/history/get_deals_as_dataframe.py` converts
+  MT5's raw epoch-seconds `time` field via `pd.to_datetime(df['time'], unit='s')` — unambiguously
+  UTC by definition (Unix epoch), but pandas attaches no `tzinfo`, and the CSV serialization
+  carries no offset suffix (unlike candles/positions/orders/price, which all carry an explicit
+  `"Z"` or `"+00:00"` — see `metatrader_parsing.py`'s module docstring). `parse_iso_datetime()`
+  would silently return a naive `datetime` here; the reader's new `_parse_deal_time()` helper
+  explicitly attaches `tzinfo=timezone.utc` when the parsed value comes back naive, rather than
+  trust the string to say so — avoiding a domain-layer value that would silently disagree with
+  every other tz-aware datetime elsewhere in this codebase.
+- A third, smaller finding along the way: `get_deals_as_dataframe()`'s `set_index("time")` call
+  means the CSV's leading column is named `"time"` (not blank, unlike candles/positions CSVs) —
+  harmless in practice since `parse_dataframe_csv()` matches by header name regardless, but the
+  test fixture below matches this exact shape rather than the blank-leading-column shape used
+  elsewhere, so a future reader touching this tool isn't misled by copying the wrong sample.
+
+Both corrections are documented directly on `Deal`'s docstring in `domain/models.py`, not only
+here, so the reasoning travels with the type itself.
+
+**9 new tests** (`tests/unit/test_mt5_adapter_mcp_deal_history.py`, same `_StubMcpClient`
+re-implementing `ToolRegistry.authorize_call()` pattern as the market-data tests): real-field
+parsing (including `type`/`entry` staying raw ints), the UTC-attachment behavior proven directly
+(`deal.time.isoformat() == "2026-08-04T10:15:32+00:00"`), extra real MT5 columns
+(`time_msc`/`reason`/`external_id`) ignored without raising, empty history returns `[]`, malformed
+CSV (missing column / non-numeric field) raises `KeyError`/`ValueError`, conditional argument
+passing (`None` args omitted entirely rather than sent as explicit nulls, matching
+`McpAccountReader`'s existing convention), and the same `READ_ONLY`-classification enforcement
+test every other reader has.
+
+```
+pytest -q                        -> 470 passed (461 previously + 9 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind this entry — everything above came from reading
+already-installed package source on disk, same as Step 4's original research.
+
+**Files changed this entry**: `src/mt5_mcp_trading/mt5_adapter/mcp_deal_history.py` (new),
+`tests/unit/test_mt5_adapter_mcp_deal_history.py` (new, +9), this checkpoint doc.
+
+**`monitoring/live_performance.py` built and unit tested** — the pure join/computation layer the
+Design section scoped: `build_closed_trades(closed_records, deals) -> LiveTradeJoinResult` joins
+`StateStore.all_closed()` records to real `Deal`s by `position_id` only (never `deal.magic`),
+constructs genuine `backtest.ledger.ClosedTrade` instances so they feed
+`backtest/metrics.py`'s existing `expectancy_r()`/`max_drawdown_r()`/`has_minimum_sample()`
+completely unchanged, and `realized_pnl_since(deals, since, trusted_position_ids) -> float` — the
+still-missing real input `risk/daily_loss_guard.check_daily_loss_limit()`'s
+`realized_pnl_since_reset` parameter has needed since Step 2. No adapter import, no MCP/MT5 call.
+
+**Design decisions made building it, each because a real edge case forced a choice, not
+guessed ahead of one**:
+- `entry==2` ("inout", a netting reversal in one fill) counts as BOTH an opening and closing leg
+  for volume-weighting — the one fill genuinely did both.
+- `price_open` prefers the volume-weighted price of matched IN-entry deals; falls back to the
+  local record's `executed_price` only when no IN deal is present (e.g. the position opened
+  before the caller's `get_deals` date window). If neither is available, the record is skipped,
+  never fabricated.
+- A record with no matching OUT-entry deal at all (never actually closed on the broker side, or
+  outside the queried window) is skipped, not treated as an error — a caller-supplied date range
+  that doesn't reach far enough back shows up as a skip reason, not a crash.
+- A record whose `requested_sl` equals its resolved `price_open` (risk-per-trade zero, e.g. a
+  `manual_adoption` record, which defaults `requested_sl=0.0`) is skipped rather than raising —
+  deliberately NOT reusing `BacktestLedger.close_position()` for this reason: that method raises
+  on exactly this condition because the backtest engine guarantees non-zero SL by construction,
+  a guarantee live data does not share.
+- **`notional_pnl` on trades built here holds a REAL, broker-confirmed dollar figure**
+  (`profit+commission+swap+fee` summed across every matched deal) — the checkpoint's own
+  Step 4 planning note flagged this as a deliberate divergence from `backtest/ledger.py`'s
+  explicitly-uncalibrated use of the same field; now built and documented directly on this
+  module, not left as a silent mismatch.
+- **`close_reason` is a fixed, honest `"closed"`** for every trade built here — distinguishing a
+  real SL exit from a real TP exit would need MT5's own `ENUM_DEAL_REASON` (a raw `reason` field
+  on the wire, visible in the deal-history reader's own test fixture but not modeled on `Deal`,
+  since Step 4's research scope only covered `client_history.py`'s documented field list). Not
+  resolved here — flagged as a real, open gap rather than guessed at with a fabricated SL/TP
+  label. Doesn't block expectancy/drawdown (neither metric reads `close_reason`), but a future
+  caller wanting a genuine SL-vs-TP breakdown will need `Deal.reason` added first.
+
+**18 new tests** (`tests/unit/test_monitoring_live_performance.py`): BUY/SELL R-multiple
+computation, a direct cross-check against `BacktestLedger.close_position()`'s own formula on
+matching inputs (proving the "same formula" claim rather than only asserting it), real-dollar
+`notional_pnl` summation across both legs, `deal.magic` deliberately ignored in favor of the
+record's own magic, the `executed_price` fallback, the `inout`-counts-as-both-legs case, deals
+for an unrelated position ignored, every skip path (no OUT deal / no open-price source / zero
+risk), multiple records resolving independently, and `realized_pnl_since()`'s own filtering
+(time cutoff, untrusted `position_id`, magic-agnostic summation, naive-`since` rejection).
+
+```
+pytest -q                        -> 488 passed (470 previously + 18 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind this entry.
+
+**Files changed this entry**: `src/mt5_mcp_trading/monitoring/live_performance.py` (new),
+`tests/unit/test_monitoring_live_performance.py` (new, +18), this checkpoint doc.
+
+**`scripts/run_demo_execution_live_performance_monitor.py` written — NOT YET RUN.** Same
+READ-ONLY shape as `run_demo_execution_historical_data_probe.py`: goes through
+`demo_execution_session()`, unpacks `executor` and immediately discards it (never referenced),
+only calls `get_deals` (`McpDealHistoryReader`, `READ_ONLY`-classified). Uses the REAL production
+`StateStore` path (`var/order_state`) deliberately — the whole point is reporting on this
+project's actual recorded history, unlike the historical-data probe's throwaway path.
+
+**Design choices made writing it**:
+- `get_deals`'s `from_date` is derived from the earliest `submitted_at` among the real closed
+  `StateStore` records themselves (midnight UTC of that day), not a hardcoded guess or the
+  tool's own 30-day default — guarantees the query window covers every locally closed record
+  without assuming how far back this project's real history goes. Anything the query still
+  misses (e.g. a deal purged from the terminal's own local history) surfaces honestly as a skip
+  in `build_closed_trades()`'s report, never silently dropped.
+- Reports grid and runner separately by magic (`71101`/`72101`, per the Step 1 locked-parameter
+  table), never blended — matching `backtest/metrics.py`'s own established convention, and flags
+  any matched trade carrying a magic outside that set for visibility rather than silently
+  excluding it.
+- Also prints realized P&L since the most recent UTC daily-reset boundary
+  (`risk.daily_loss_guard.daily_reset_boundary()`) via `realized_pnl_since()` — the real number
+  Step 2's kill-switch has been missing since it was built. **Display only**: this script does
+  NOT call `check_daily_loss_limit()` or feed anything into `pipeline/loop_control.py` — wiring
+  the kill-switch into a live decision remains its own, separate, later, explicitly-approved
+  step, unchanged from Step 3's own scoping.
+
+**Verified without running it**: `py_compile` and a direct `importlib` module load (no `main()`
+call, so no session/connection attempted) both succeed — every import resolves, `STRATEGIES`/
+`STATE_PATH` construct correctly. Full suite re-run for regression safety: still 488 passed
+(unchanged, since nothing under `src/`/`tests/` was touched this entry), architecture tests
+still 13 passed.
+
+**Deliberately not executed.** This script's own one real `get_deals` call is, per this
+checkpoint's Step 4 entry point and the project's standing live-testing-pause rule, its own
+explicit go-ahead moment — writing it is not running it. `git status` confirms only this one new
+file plus the checkpoint doc changed; no live/demo call of any kind was made building it.
+
+**Files changed this entry**: `scripts/run_demo_execution_live_performance_monitor.py` (new),
+this checkpoint doc.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
 kill-switch wired into `pipeline/loop_control.py`'s `should_stop()`, proven end-to-end against a
 real multi-cycle run with `DryRunExecutor`/mocks, deliberately not wired into the live script's
 own call sites yet). 458 passed total, architecture tests still pass, no live/demo call made in
-any of Steps 1–3. **Step 4 IN PROGRESS**: research only (see above) — real `get_deals` CSV shape,
-field list, and the `position_id`-as-join-key confirmed by reading source; nothing built yet, no
-file created or modified in `src/`/`tests/` this entry, no live/demo call made. **Exact next
-smallest step**: build `StateStore.all_closed()` first (the smallest, purely-local piece, no
-adapter/live dependency at all), then the `Deal` domain model and
-`mt5_adapter/mcp_deal_history.py` reader (unit-tested against a stub `McpClient`, same pattern as
-`test_mt5_adapter_mcp_market_data.py` — no live call), then the pure
-`monitoring/live_performance.py` join/computation logic (unit-tested against synthetic
-`StateStore` records + synthetic `Deal` objects — no live call), and only after all of that is
-built and tested, the read-only monitor script itself — whose one real `get_deals` call remains
-its own explicit go-ahead moment, not assumed pre-approved. Live-loop wiring (actually connecting
+any of Steps 1–3. **Step 4 IN PROGRESS**: research done (real `get_deals` CSV shape, field list,
+and the `position_id`-as-join-key confirmed by reading source, later extended with two wire-format
+corrections — `type` is a raw int not a string, `time` needs explicit UTC attachment);
+`StateStore.all_closed()`, the `Deal` domain model, `mt5_adapter/mcp_deal_history.py`'s reader, and
+`monitoring/live_performance.py`'s join/computation logic are all now built and unit tested (see
+above). `scripts/run_demo_execution_live_performance_monitor.py` (the read-only monitor script
+itself) is now WRITTEN but deliberately NOT YET RUN — its one real `get_deals` call remains its
+own explicit go-ahead moment. 488 passed total, architecture tests still pass, no live/demo call
+made anywhere in Step 4's work so far. **Known open gap, not blocking**: `close_reason` on
+live-built `ClosedTrade`s is a fixed `"closed"` — a genuine SL-vs-TP breakdown would need
+`Deal.reason` (MT5's `ENUM_DEAL_REASON`), not modeled yet since it wasn't in
+`client_history.py`'s documented field list; doesn't affect `expectancy_r()`/`max_drawdown_r()`,
+which never read that field. **Exact next smallest step**: get a fresh, explicit go-ahead to
+actually RUN `run_demo_execution_live_performance_monitor.py` against the real demo connection
+(its one real `get_deals` call) — the only remaining piece of Step 4 (and the only live-adjacent
+one). Once run, the report itself may reveal further work (e.g. if `close_reason` or a magic
+mismatch turns out to matter for a real result). Live-loop wiring (actually connecting any of
 this to `scripts/run_demo_execution_pipeline_loop.py`'s `should_stop()` call sites) remains
 deferred regardless — that was never Step 4's job, and stays out of scope until its own
 explicitly-approved step.

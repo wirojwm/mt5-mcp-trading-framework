@@ -247,3 +247,10 @@ class StateStore:
         return tuple(
             r for r in self._load_all().values() if r.status in ("OPEN", "OPEN_UNPROTECTED")
         )
+
+    def all_closed(self) -> tuple[LocalOrderRecord, ...]:
+        # CANCELLED is deliberately excluded -- a cancelled order never filled, so it has no
+        # closed-trade P&L for Phase 9's live performance monitor (this method's first caller)
+        # to join against real deals. Only "CLOSED" represents a filled position that later
+        # closed.
+        return tuple(r for r in self._load_all().values() if r.status == "CLOSED")

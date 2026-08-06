@@ -32,6 +32,7 @@ def _submit(store: StateStore, ticket: int = 123456, strategy: str = "grid", mag
 def test_cold_start_has_no_records(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state")
     assert store.all_open() == ()
+    assert store.all_closed() == ()
     assert store.lookup(123456) is None
 
 
@@ -84,6 +85,8 @@ def test_record_cancelled_transitions_status(tmp_path: Path) -> None:
     assert record.status == "CANCELLED"
     assert record.closed_reason == "smoke test cleanup"
     assert store.all_open() == ()  # no longer open
+    # CANCELLED never filled -- must not be counted as a closed trade
+    assert store.all_closed() == ()
 
 
 def test_record_closed_transitions_status(tmp_path: Path) -> None:
@@ -95,6 +98,8 @@ def test_record_closed_transitions_status(tmp_path: Path) -> None:
     record = store.lookup(123456)
     assert record is not None
     assert record.status == "CLOSED"
+    assert store.all_open() == ()
+    assert store.all_closed() == (record,)
 
 
 def test_record_submission_with_open_unprotected_status(tmp_path: Path) -> None:
@@ -117,6 +122,7 @@ def test_record_submission_with_open_unprotected_status(tmp_path: Path) -> None:
     assert record is not None
     assert record.status == "OPEN_UNPROTECTED"
     assert store.all_open() == (record,)  # counted as open, not excluded
+    assert store.all_closed() == ()  # not closed
 
 
 def test_mark_sl_tp_attached_transitions_open_unprotected_to_open(tmp_path: Path) -> None:
@@ -216,6 +222,7 @@ def test_multiple_tickets_are_independent(tmp_path: Path) -> None:
     assert store.lookup(1).status == "CLOSED"  # type: ignore[union-attr]
     assert store.lookup(2).status == "OPEN"  # type: ignore[union-attr]
     assert {r.ticket for r in store.all_open()} == {2}
+    assert {r.ticket for r in store.all_closed()} == {1}
 
 
 def test_corrupted_ticket_file_raises_state_load_error_only_for_that_ticket(tmp_path: Path) -> None:
@@ -228,6 +235,8 @@ def test_corrupted_ticket_file_raises_state_load_error_only_for_that_ticket(tmp_
         store.lookup(123456)
     with pytest.raises(StateLoadError):
         store.all_open()  # scans every ticket -- one bad file must still hard-stop the whole read
+    with pytest.raises(StateLoadError):
+        store.all_closed()  # same full-directory scan, same hard-stop guarantee
     with pytest.raises(StateLoadError):
         store.record_cancelled(123456, reason="test", closed_at=_now())  # must load before writing
 
@@ -319,6 +328,11 @@ def test_many_tickets_round_trip_correctly_with_mixed_statuses(tmp_path: Path) -
     actual_open_tickets = {r.ticket for r in reloaded.all_open()}
     assert actual_open_tickets == expected_open_tickets
     assert len(reloaded.all_open()) == len(expected_open_tickets)  # no duplicates
+
+    expected_closed_tickets = {t for t, s in expected_status.items() if s == "CLOSED"}
+    actual_closed_tickets = {r.ticket for r in reloaded.all_closed()}
+    assert actual_closed_tickets == expected_closed_tickets
+    assert len(reloaded.all_closed()) == len(expected_closed_tickets)  # no duplicates
 
 
 def test_rapid_sequential_mutations_remain_consistent(tmp_path: Path) -> None:
