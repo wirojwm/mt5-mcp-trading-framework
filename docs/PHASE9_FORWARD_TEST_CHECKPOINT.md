@@ -271,14 +271,92 @@ No order, no live/demo call of any kind this entry.
 **Files changed this entry**: `src/mt5_mcp_trading/risk/daily_loss_guard.py` (new),
 `tests/unit/test_risk_daily_loss_guard.py` (new, +18), this checkpoint doc.
 
+## Step 3 — wire the kill-switch into loop_control.py: done, NOT wired into the live script
+
+**`pipeline/loop_control.py`'s `should_stop()`** gained a new optional
+`daily_loss_decision: Optional[RiskDecision] = None` parameter. Precedence (documented in the
+updated docstring): stop-file first (unchanged — an explicit human request always wins), then a
+daily-loss-limit breach (new — a real-money safety stop, so it outranks the administrative
+`max_cycles`/`max_runtime_seconds` ceilings, though never the stop-file above it), then
+`max_cycles`, then `max_runtime_seconds`. `daily_loss_decision` defaults to `None`, so every
+pre-Step-3 caller is byte-for-bit unaffected unless it explicitly opts in — same convention as
+every other Optional guard field in this codebase.
+
+**Deliberately did NOT touch `scripts/run_demo_execution_pipeline_loop.py` itself.** That script
+has two real `should_stop()` call sites (`main()`'s per-cycle check, `_wait_for_next_cycle()`'s
+during-wait check) — neither was changed, and neither passes `daily_loss_decision`, so the real
+script's live behavior is completely unaffected by this step. This was a deliberate scope
+decision, not an oversight: the script has no real source for `realized_pnl_since_reset` yet
+(flagged as a Step 2 "risk carried forward"), and wiring the call site now would force either a
+fake/stub P&L value (misleading) or building the real `StateStore`-based P&L aggregation out of
+the step table's own order (that's Step 4's job — "live performance/drawdown monitor... computed
+from real `StateStore` + one live account read", the natural place to build the same computation
+the kill-switch will eventually need). Wiring the actual live script's call sites to a real
+decision is deferred to whichever of Step 4/5 first has a real number to supply.
+
+**Unit tests** (`tests/unit/test_pipeline_loop_control.py`, +8): the existing 10 tests are
+unmodified and still pass unchanged (backward-compatibility proof); new tests cover
+`daily_loss_decision=None`/omitted (no behavior change), an approved decision (never stops),
+a breach (stops, with the reason text included), precedence against stop-file/`max_cycles`/
+`max_runtime` in both directions, and one test feeding the REAL
+`risk.daily_loss_guard.check_daily_loss_limit()` output straight into `should_stop()` rather than
+a hand-built `RiskDecision`, proving actual interop, not just type compatibility.
+
+**Integration test** (new `tests/integration/test_pipeline_loop_daily_loss_stop.py`, +4): proves
+the wiring actually halts a real multi-cycle run driven against the live script's own
+`_run_one_cycle()` — not just that the pure function returns the right string in isolation. Reuses
+`test_pipeline_loop_disconnect.py`'s already-proven harness (`_load_loop_module()`,
+`_market_data()`, `_account()`, `_runner_bars()`, `_PoisonExecutor`) rather than duplicating it —
+same `DryRunExecutor`/mock-only shape, no `McpClient`, no subprocess, no MT5, no credentials, no
+`.env`, no live/trading call anywhere. A new `_drive_loop()` test helper mirrors `main()`'s real
+while-loop shape (`should_stop()` checked BEFORE each cycle, cycle counter incremented only after
+that check passes) with `daily_loss_decision` now wired in — a test-only harness proving what the
+real script's future wiring would do, not new production code. Four cases: no breach (all cycles
+run), a mid-run breach (cycles before it run for real against `DryRunExecutor`, a `_PoisonExecutor`
+proves the next cycle's executor is never touched), a breach on the very first check (zero cycles
+run), and the real `check_daily_loss_limit()` feeding a realistic per-cycle P&L sequence into the
+stop decision end-to-end.
+
+**A real fixture bug caught along the way, not shipped**: the integration test's first draft used
+`_grid_bars()` (16 bars) for all cases, which made `run_runner_cycle()` raise
+(`ValueError: runner_signal requires at least 31 bars`) on every single cycle regardless of any
+daily-loss logic — every test "passed" for the wrong reason (`_run_one_cycle()` returning `False`
+from the runner-side exception, not from a loss-limit breach). Caught by checking actual
+`cycles_run` counts against expectations rather than trusting green tests at face value; fixed by
+switching to `_runner_bars()` (40 bars, already used by `test_pipeline_loop_disconnect.py`'s own
+runner-focused tests for the same reason).
+
+```
+pytest -q                        -> 458 passed (446 previously + 8 loop_control + 4 integration)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind this entry. `git status` confirms
+`scripts/run_demo_execution_pipeline_loop.py` was not touched.
+
+**Risks / open items carried forward, not resolved by this step**:
+- The real script still cannot actually stop on a loss breach — only the decision *mechanism* is
+  wired and proven; the live script's own call sites remain unmodified by design (see above).
+- `realized_pnl_since_reset` still has no real computation anywhere — Step 4 is where that gets
+  built, and only once it exists does wiring the live script's call sites become honest to do.
+- The real dollar threshold and `reset_hour_utc` value remain undecided (carried forward from
+  Step 2).
+
+**Files changed this entry**: `src/mt5_mcp_trading/pipeline/loop_control.py` (modified),
+`tests/unit/test_pipeline_loop_control.py` (modified, +8),
+`tests/integration/test_pipeline_loop_daily_loss_stop.py` (new, +4), this checkpoint doc.
+
 ## Status
 
 **Step 1 done.** Locked parameter set documented and verified against the current codebase — the
 single source of truth for the rest of this effort. **Step 2 done.** Loss-based kill-switch guard
-(`risk/daily_loss_guard.py`) built and unit tested (18 new tests, 446 passed total, architecture
-tests still pass) — confirmed NOT wired into the live loop or any pipeline code anywhere. No
-code changed outside `risk/daily_loss_guard.py` and its own test file; no live/demo call made in
-either step. **Next smallest step: Step 3** — wire the kill-switch into the loop
-(`pipeline/loop_control.py`'s `should_stop()` or equivalent), unit + integration tested against
-mocks/`DryRunExecutor` only (still no live call). Needs its own explicit go-ahead before any code
-is written, same standing rule as always.
+(`risk/daily_loss_guard.py`) built and unit tested. **Step 3 done.** The kill-switch is wired into
+`pipeline/loop_control.py`'s `should_stop()` (precedence: stop-file > daily-loss breach >
+max_cycles > max_runtime), proven end-to-end against a real multi-cycle run driven with
+`DryRunExecutor`/mocks — but deliberately NOT wired into
+`scripts/run_demo_execution_pipeline_loop.py`'s own live call sites yet, since no real
+`realized_pnl_since_reset` source exists until Step 4. 458 passed total, architecture tests still
+pass, no live/demo call made in any of Steps 1–3. **Next smallest step: Step 4** — the live
+performance/drawdown monitor (read-only, computed from real `StateStore` + one live account
+read), which is also the natural place to build the real P&L computation this kill-switch still
+needs. Needs its own explicit go-ahead before any code is written, same standing rule as always.

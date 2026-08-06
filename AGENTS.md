@@ -480,7 +480,7 @@ Referenced informally across pipeline-wiring checkpoint entries (`docs/PIPELINE_
 "Remaining roadmap") but never formally defined here until now. Unlike phases 0–7 above (phases of
 *building* this codebase), these are phases of *running and tuning* the strategy once built — a
 different kind of work, each still requiring its own explicit scoping and approval before any code
-is written, per this project's normal workflow. Phase 9 is now scoped, with Steps 1-2 done — see
+is written, per this project's normal workflow. Phase 9 is now scoped, with Steps 1-3 done — see
 `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. Live pilot still has no checkpoint doc, and writing
 detailed entry/exit criteria for it is itself a future, explicitly-approved task — not done here,
 to avoid designing ahead of what's actually been asked for.
@@ -647,7 +647,7 @@ to avoid designing ahead of what's actually been asked for.
   windowing/split strategy), not a repeat threshold search over the same signal/window
   combination. Full detail in `docs/GRID_REGIME_FILTER_CHECKPOINT.md`'s "Effort closed" section.
 - **Phase 9 (locked-parameter demo forward test, performance monitoring, drawdown/risk gates,
-  operational reliability, demo-to-live readiness criteria)**: **scoped, Steps 1-2 done** — full
+  operational reliability, demo-to-live readiness criteria)**: **scoped, Steps 1-3 done** — full
   detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. No automated performance/drawdown monitor
   or demo-to-live readiness gate exists anywhere in this codebase yet. Explicitly framed against
   Phase 8's honest backdrop — both strategies still show negative held-out expectancy, so this
@@ -666,10 +666,27 @@ to avoid designing ahead of what's actually been asked for.
   `pnl <= -limit` comparison misfired on an exact `$0.00` breakeven at `max_daily_loss=0.0`
   (`0.0 <= -0.0` is `True` in floating point) -- fixed by requiring a genuine loss (`< 0`) before
   comparing magnitude. +18 unit tests, all synthetic P&L/datetimes, no adapter or live call
-  anywhere (446 passed total, architecture tests still pass) -- confirmed by repo-wide grep NOT
-  wired into `pipeline/grid_cycle.py`, `runner_cycle.py`, `loop_control.py`, or any script yet.
-  Next: Step 3 (wire it into the loop, unit + integration tested against mocks/`DryRunExecutor`
-  only, still no live call), awaiting explicit go-ahead.
+  anywhere -- confirmed by repo-wide grep NOT wired into `pipeline/grid_cycle.py`,
+  `runner_cycle.py`, `loop_control.py`, or any script yet. **Step 3 (wire it into the loop) done**:
+  `pipeline/loop_control.py`'s `should_stop()` gained an optional `daily_loss_decision` parameter
+  (default `None`, so every pre-Step-3 caller is unaffected); precedence stop-file > daily-loss
+  breach > max_cycles > max_runtime. Deliberately did NOT touch
+  `scripts/run_demo_execution_pipeline_loop.py`'s own two real `should_stop()` call sites --
+  the real script has no `realized_pnl_since_reset` source yet (Step 4's job), so wiring the live
+  call sites now would mean either a fake value or building the real computation out of order;
+  the live script's behavior is completely unchanged by this step. +8 unit tests (including one
+  feeding the real `check_daily_loss_limit()` output straight in, not a hand-built decision), +4
+  integration tests proving a real multi-cycle run (driven against the live script's own
+  `_run_one_cycle()` with `DryRunExecutor`, reusing `test_pipeline_loop_disconnect.py`'s harness)
+  actually halts before touching a further cycle's executor on an injected breach. A real fixture
+  bug was caught along the way: the first draft used 16-bar fixtures, which made
+  `run_runner_cycle()` raise on every cycle regardless of any loss logic, so every test "passed"
+  for the wrong reason -- caught by checking actual cycle counts, fixed by switching to the
+  40-bar `_runner_bars()` fixture already used elsewhere for the same reason. 458 passed total,
+  architecture tests still pass, no live/demo call in any of Steps 1-3.
+  Next: Step 4 (the live performance/drawdown monitor, read-only, computed from real `StateStore`
+  + one live account read -- also the natural place to build the real P&L computation the
+  kill-switch still needs), awaiting explicit go-ahead.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
