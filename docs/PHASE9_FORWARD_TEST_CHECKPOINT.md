@@ -1145,6 +1145,24 @@ pytest -q -> unaffected (var/order_state is git-ignored local data, no src/tests
 `var/order_state/*.json` (35 records transitioned to `CLOSED`, local data only, not tracked by
 git), this checkpoint doc.
 
+### Closed the 3 remaining pending grid orders (2026-08-07, user-requested)
+
+`scripts/run_demo_execution_cancel_20260807_remaining_grid_orders.py` (new, one-off, mirrors
+`run_demo_execution_cancel_pipeline_cycle_orders.py`'s exact shape): cancelled the last 3 genuinely
+live pending grid LIMIT orders left after reconciliation (`171809875`, `171812719`, `171812840`).
+All three verified present before, cancelled with exactly one attempt each (no retry), all three
+retcode `10009`, all three verified absent from live pending orders afterward.
+`McpOrderExecutor.cancel()` wrote local state itself (`status="CANCELLED"`) — no manual
+reconciliation needed. **Account is now fully clean: 0 open positions, 0 pending orders.**
+
+```
+pytest -q -> unaffected (no src/tests/ changed this entry)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_cancel_20260807_remaining_grid_orders.py`
+(new), `var/order_state/*.json` (3 records transitioned to `CANCELLED`, local data only, not
+tracked by git), this checkpoint doc.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
