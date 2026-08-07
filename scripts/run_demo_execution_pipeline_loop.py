@@ -133,15 +133,23 @@ CAPS = ExposureCaps(max_open_lots=0.06, budget_max_lots=0.06)  # same as run_liv
 
 CYCLE_INTERVAL_SECONDS = 300.0   # 5 minutes between cycles
 POLL_INTERVAL_SECONDS = 5.0      # how often to re-check the stop file while waiting
-MAX_CYCLES = 12                  # hard ceiling regardless of runtime
-MAX_RUNTIME_MINUTES = 90.0       # hard ceiling regardless of cycle count
+# Phase 9 Step 7 (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md): first sustained-run attempt, the
+# "modest step-up" scale -- 30 cycles is meaningfully longer than any prior run in this project's
+# history (the longest to date, pipeline-wiring Step 30, got 3 of 12 cycles before a
+# retcode-10016 recurrence stopped it), while still being a bounded, low-commitment first attempt
+# rather than the multi-day scale also considered. 180 minutes gives a ~30-minute buffer over
+# 30 cycles' own 150-minute (30 x CYCLE_INTERVAL_SECONDS) pure cycling time.
+MAX_CYCLES = 30                  # hard ceiling regardless of runtime
+MAX_RUNTIME_MINUTES = 180.0      # hard ceiling regardless of cycle count
 
-# Phase 9 Step 5's kill-switch config (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md). MAX_DAILY_LOSS is
-# now set to a deliberately tiny, easily-crossed SMOKE-TEST value (trips on the first net realized
-# loss of any size) -- NOT a real production threshold; explicitly approved for one live trigger
-# test (see checkpoint doc, Step 5). RESET_HOUR_UTC kept at Step 2's default (0, UTC midnight) --
-# reviewed and confirmed fine for a single short smoke-test run.
-MAX_DAILY_LOSS: float | None = 0.01
+# Phase 9 Step 5/7's kill-switch config (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md). MAX_DAILY_LOSS
+# is now a real, deliberately-chosen production value (Step 7 scoping, 2026-08-07) -- derived
+# from real $ risk-per-trade observed in live orders (~$0.55-0.60/trade grid, ~$0.85-0.90/trade
+# runner at current 0.01-lot sizing) scaled by Phase 8's held-out backtested max-drawdown figures
+# (grid 14.240 R, runner 62.999 R) for a combined (not per-strategy) kill-switch total -- a
+# judgment call in the derived $40-60 range, not a precise answer; still adjustable. RESET_HOUR_UTC
+# kept at Step 2's default (0, UTC midnight) -- no operational reason found yet to pick otherwise.
+MAX_DAILY_LOSS: float | None = 50.0
 RESET_HOUR_UTC = 0
 DAILY_LOSS_CONFIG = DailyLossLimitConfig(max_daily_loss=MAX_DAILY_LOSS, reset_hour_utc=RESET_HOUR_UTC)
 

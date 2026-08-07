@@ -23,6 +23,24 @@ history goes. Any record the query genuinely still misses (e.g. a deal purged fr
 terminal's own local history) shows up honestly as a skip in the report below, never silently
 dropped -- see monitoring/live_performance.py's build_closed_trades().
 
+`to_date` is now explicit (`now + 1 day`) -- Phase 9 Step 7 scoping (2026-08-07) found this
+script had the SAME bug Step 5's kill-switch had before its own fix: no explicit `to_date` meant
+the vendored client's `to_date=None -> datetime.now()` default, combined with `Deal.time`'s
+confirmed UTC mislabel (see monitoring/live_performance.py's module docstring), silently narrowed
+the window and missed same-day recent closes -- live-confirmed: this script reported byte-for-bit
+the same numbers as the 2026-08-06 read even after 35 real, deal-confirmed closes from Step 5's
+smoke tests. Fixed the same tested way: a wide-margin fetch plus `infer_deal_time_offset()`
+correction, applied to both the trade-matching read below and the kill-switch-preview section.
+
+**Known remaining caveat, NOT fixed here, distinct from the above**: `build_closed_trades()`
+still only ever sees `state_store.all_closed()` (status=="CLOSED" locally) -- a real close via
+broker-side SL/TP that hasn't yet been explicitly reconciled (via a separate reconciliation
+script, `record_closed()`'s only path outside `McpOrderExecutor.close_position()`) stays
+invisible to this monitor's trade count, same root cause as the kill-switch's second bug
+(`all_records()` vs `all_closed()`) but a materially different fix (`build_closed_trades()`'s own
+contract is specifically about already-`CLOSED` records) -- not changed here. Run a reconciliation
+pass first if the trade count looks lower than expected.
+
 Also reports realized P&L since the most recent UTC daily-reset boundary
 (risk/daily_loss_guard.daily_reset_boundary()) -- the real number Step 2's kill-switch has been
 missing since it was built (its own "risks carried forward" note). This script only DISPLAYS
@@ -41,7 +59,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -54,7 +72,11 @@ from mt5_mcp_trading.backtest.metrics import (
 )
 from mt5_mcp_trading.config.settings import ExecutionMode, load_settings
 from mt5_mcp_trading.execution.composition import demo_execution_session
-from mt5_mcp_trading.monitoring.live_performance import build_closed_trades, realized_pnl_since
+from mt5_mcp_trading.monitoring.live_performance import (
+    build_closed_trades,
+    infer_deal_time_offset,
+    realized_pnl_since,
+)
 from mt5_mcp_trading.monitoring.logging_setup import configure_logging, get_logger
 from mt5_mcp_trading.mt5_adapter.mcp_deal_history import McpDealHistoryReader
 from mt5_mcp_trading.risk.daily_loss_guard import daily_reset_boundary
@@ -91,14 +113,19 @@ async def main() -> None:
 
         earliest_submitted = min(r.submitted_at for r in closed_records)
         from_date = earliest_submitted.strftime("%Y-%m-%d")
+        now = datetime.now(timezone.utc)
+        to_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
         _logger.info(
-            "Found %d locally closed record(s); requesting real deal history from %s ...",
-            len(closed_records), from_date,
+            "Found %d locally closed record(s); requesting real deal history from %s to %s ...",
+            len(closed_records), from_date, to_date,
         )
 
         deal_reader = McpDealHistoryReader(client)
-        deals = await deal_reader.get_deals(from_date=from_date)
+        deals = await deal_reader.get_deals(from_date=from_date, to_date=to_date)
         _logger.info("Got %d real deal(s) from get_deals.", len(deals))
+        all_records = state_store.all_records()
+        deal_time_offset = infer_deal_time_offset(all_records, deals) or timedelta(0)
+        _logger.info("inferred deal_time_offset=%s", deal_time_offset)
 
     result = build_closed_trades(closed_records, deals)
 
@@ -129,10 +156,14 @@ async def main() -> None:
         for skip in result.skipped:
             print(f"  ticket={skip.ticket}: {skip.reason}")
 
-    trusted_position_ids = {r.ticket for r in closed_records}
-    reset_boundary = daily_reset_boundary(datetime.now(timezone.utc), reset_hour_utc=0)
-    since_reset = realized_pnl_since(deals, since=reset_boundary, trusted_position_ids=trusted_position_ids)
-    print(f"\n--- kill-switch preview (Step 2's still-unwired real input) ---")
+    # all_records(), not all_closed() -- mirrors the real kill-switch wiring's own fix (Step 5's
+    # second bug): a same-session SL/TP close stays locally "OPEN" until reconciled, and must
+    # still count here, same "never trust a stale local status field" reasoning.
+    trusted_position_ids = {r.ticket for r in all_records}
+    reset_boundary = daily_reset_boundary(now, reset_hour_utc=0)
+    since_reset = realized_pnl_since(deals, since=reset_boundary, trusted_position_ids=trusted_position_ids,
+                                      deal_time_offset=deal_time_offset)
+    print(f"\n--- kill-switch preview (mirrors the real wiring in run_demo_execution_pipeline_loop.py) ---")
     print(f"  realized P&L since {reset_boundary.isoformat()}: {since_reset:+.2f}")
     print("  (display only -- not fed into check_daily_loss_limit() or loop_control.py here)")
     print("=====================================================================\n")

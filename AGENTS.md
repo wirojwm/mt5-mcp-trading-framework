@@ -470,8 +470,8 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/PIPELINE_WIRING_CHECKPOINT.md`, Phase 8 in
 `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, the grid regime filter (a new, separately-scoped
 effort motivated by Phase 8's Step 7 finding, **CLOSED as a negative result**) in
-`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, Phase 9 (**Steps 1-6 done, Step 5 live-verified,
-Step 6's demo-to-live readiness checklist done, both 2026-08-07**) in
+`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, Phase 9 (**Steps 1-6 done, Step 7 scoped and sized
+(MAX_DAILY_LOSS=50.0, MAX_CYCLES=30) but NOT yet run live, all 2026-08-07**) in
 `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md` (see also `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`),
 and operational reliability hardening (a new, separately-scoped effort named by Phase 9's own
 Design section and the readiness checklist's rows 8-9, **scoped and decided 2026-08-07: both

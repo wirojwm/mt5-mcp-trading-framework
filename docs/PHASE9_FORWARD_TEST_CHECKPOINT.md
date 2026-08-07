@@ -1193,6 +1193,119 @@ pytest -q -> unaffected (pure documentation, no src/tests/ changed)
 **Files changed this entry**: `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` (new), this checkpoint
 doc, `AGENTS.md`.
 
+## Step 7 — the sustained forward-test run: proposal, not yet started
+
+Per the Proposed Steps table's own row 7: *"The actual sustained forward-test run itself,
+monitored per Step 4, bounded by Step 2–3's kill-switch."* Entry criteria (Step 6 done) are now
+met. **Nothing in this section has been built or run. This is the proposal, for review before any
+code or live call**, same discipline as every step before it — Step 7 explicitly is not
+pre-authorized by the original proposal doc alone.
+
+### A real, concrete prerequisite found while scoping this (not guessed)
+
+Re-ran `scripts/run_demo_execution_live_performance_monitor.py` (read-only, live) to get a current
+baseline before proposing a duration. **It reported the exact same numbers as the 2026-08-06
+read** (grid 19 trades, runner 13 trades) — none of today's 35 real, deal-confirmed closes (from
+the Step 5 smoke tests) were picked up, even though they're real and already reconciled in
+`StateStore`. Root cause, confirmed by reading the script directly: it calls
+`deal_reader.get_deals(from_date=from_date)` with **no `to_date`** — the exact same bug Step 5's
+kill-switch had before today's fix (the vendored client's `to_date=None -> datetime.now()` default
+combined with `Deal.time`'s confirmed UTC mislabel silently narrows the window and misses recent
+closes). This script was never patched when the kill-switch was fixed. Since Step 7 is explicitly
+scoped to be "monitored per Step 4" — i.e., via this exact script — running Step 7 before fixing
+this would mean its own performance reporting is silently incomplete near real-time, precisely the
+kind of gap this whole effort exists to catch. **Proposed: fix this the same way
+(`monitoring/live_performance.py`'s existing `infer_deal_time_offset()` + a wide-margin fetch),
+before Step 7 runs** — small, same tested pattern already built and proven today.
+
+### Sizing the run — real evidence, not a guess, but genuinely a judgment call
+
+**MAX_DAILY_LOSS must be set to a real, deliberately-chosen production value first** — running
+Step 7 at Step 5's smoke-test `0.01` would halt before cycle 1, same as today's third smoke-test
+attempt, defeating the point entirely. Deriving one from real data (Step 5's own design point 3,
+never resolved with an actual number): today's real submitted orders give real $ risk-per-trade at
+current sizing (0.01 lot) — grid ≈ \$0.55–0.60/trade (e.g. `171809333`: price 64295.94, sl
+64237.57 → \$58.37/lot → \$0.58 at 0.01 lot), runner ≈ \$0.85–0.90/trade (wider SL,
+`sl_atr_mult=3.0`) — both strategies' realized P&L is summed into ONE combined kill-switch number
+(not split by magic), so the relevant total should account for both. Scaled by the held-out
+backtested max-drawdown figures already measured in Phase 8 (grid 14.240 R, runner 62.999 R):
+roughly \$8 (grid alone) to \$55 (runner alone) — **a proposed starting combined threshold in the
+\$40–60 range**, still explicitly a judgment call and adjustable, not a precise answer (per capita
+$ risk varies with real-time BTCUSD volatility/ATR, this is an estimate from today's specific
+orders, not a fixed constant).
+
+**Duration/cycle count**: Step 1 deliberately left `MAX_CYCLES`/`MAX_RUNTIME_MINUTES` unlocked for
+exactly this moment ("likely much larger values sized to whatever duration gets separately
+approved"). Real, relevant history: no live run in this project's entire history has ever
+completed more than 12 cycles without either finishing that bound or being stopped early (Step 30
+of the pipeline-wiring effort, the longest attempt to date, got 3 of 12 cycles before a
+retcode-10016 recurrence stopped it). That bug has now recurred **5 times** across this project's
+live history — real, always caught correctly, zero unmanaged risk each time, but it DOES stop the
+whole loop every time it hits (decision 3's "no error tolerance"). A genuinely "sustained" run at
+meaningfully larger scale than 12 cycles has a real, non-trivial chance of being cut short by an
+already-understood, already-safe bug — worth setting expectations that Step 7 may need more than
+one attempt, not a design flaw if it does.
+
+Three candidate scales, increasing commitment:
+- **Modest step-up**: 30 cycles / ~2.5 hours (`CYCLE_INTERVAL_SECONDS=300` unchanged) — meaningfully
+  longer than any prior run, low commitment, a reasonable first sustained-run attempt.
+- **One trading day**: ~100 cycles / ~8 hours — closer to what "sustained" implies, still bounded
+  to a single session.
+- **Multi-day**: 300+ cycles / 24h+ — the longest live-adjacent exposure this project would ever
+  run; explicitly named in the original proposal as needing its own separate go-ahead beyond just
+  Step 7's own.
+
+### What "done" looks like
+
+Per the Proposed Steps table's own exit criteria: *"An honest report: real forward performance vs.
+backtested expectations, any incidents, readiness-criteria scorecard."* Concretely: re-run the
+(fixed) live-performance monitor to get real post-run expectancy/drawdown for both strategies,
+update `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` rows 3–7 with the real outcome (whether or not
+the 30-trade minimum was reached, whether or not any `OPEN_UNPROTECTED` incident occurred, whether
+the kill-switch tripped for real this time), and report honestly — a negative or incomplete result
+is still a valid, useful Step 7 outcome per this whole effort's own stated purpose, not a failure
+to hide.
+
+### Decisions made and built (2026-08-07) — NOT yet run live
+
+All three open points from the proposal above were decided the same day, then built and verified:
+
+1. **Monitor script fixed**: `run_demo_execution_live_performance_monitor.py` now fetches with an
+   explicit wide-margin `to_date` and applies `infer_deal_time_offset()` (same tested pattern as
+   the kill-switch), and its "kill-switch preview" section now sources trusted tickets from
+   `state_store.all_records()` instead of `all_closed()` (mirroring the real wiring's second fix
+   too, since that preview section exists specifically to mirror it). **Live-verified the fix
+   immediately**: re-ran it — real deal count jumped from 164 to 232, matched trades from 37 to
+   72. **Grid now clears the 30-trade minimum for the first time: 46 trades, −0.557 R expectancy,
+   26.425 R drawdown.** Runner still below it: 21 trades, −0.672 R expectancy, 18.895 R drawdown.
+   One known, distinct, NOT-fixed caveat documented directly in the script: `build_closed_trades()`
+   still only sees `all_closed()` for its own trade-matching (a different fix shape than the
+   window bug), so a real close that hasn't been explicitly reconciled yet will still undercount
+   here — same root cause as the kill-switch's second bug, not the same fix.
+2. **`MAX_DAILY_LOSS=50.0`** (`scripts/run_demo_execution_pipeline_loop.py`) — the middle of the
+   derived \$40–60 range, a real production value replacing Step 5's `0.01` smoke-test placeholder.
+   Confirmed via the fixed monitor's kill-switch preview that today's real realized P&L since
+   reset (`-10.89`) does NOT already breach this — unlike Step 5's `0.01`, this threshold would
+   let Step 7 actually run cycles rather than trip immediately.
+3. **`MAX_CYCLES=30`/`MAX_RUNTIME_MINUTES=180.0`** (same file) — the "modest step-up" scale,
+   replacing the `12`/`90.0` values every prior live run in this project has used.
+
+513 tests still pass (no test-suite changes needed — these are constant-value changes plus a
+utility-script fix, no new production logic beyond what Step 5 already built and tested).
+`docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` row 3 updated to reflect grid's real, current status.
+
+**Not yet done**: actually running Step 7 live — its own separate, explicit go-ahead, same
+discipline as every live-adjacent step in this project, not assumed from deciding the sizing.
+
+```
+pytest -q -> 513 passed (unchanged -- constants + one utility-script fix, no new test surface)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_live_performance_monitor.py` (modified,
+get_deals window + trusted-ticket fixes), `scripts/run_demo_execution_pipeline_loop.py` (modified,
+`MAX_CYCLES`/`MAX_RUNTIME_MINUTES`/`MAX_DAILY_LOSS` set for Step 7), this checkpoint doc,
+`docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
