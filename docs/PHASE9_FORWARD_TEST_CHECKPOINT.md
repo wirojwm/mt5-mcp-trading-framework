@@ -1343,6 +1343,88 @@ same discipline as every live-adjacent step — not implied by this entry.
 **Files changed this entry**: none (live run only); `var/order_state/*.json` (4 new local
 records, not tracked by git), this checkpoint doc.
 
+### Live run #2 (resumed same day, 2026-08-07): killed abruptly at cycle 11 — root-caused as an operational/tooling constraint, not a project bug
+
+Resumed per explicit go-ahead. Pre-flight (read-only): stop-file present (expected, deleted before
+relaunch), zero orphan `python.exe` processes, but the account was found **flat (0 open positions,
+0 pending orders)** — different from the 1 position + 4 orders left at the lunch-break stop,
+meaning something closed/expired on its own during the break (ordinary SL/TP or grid-order
+lifecycle behavior, not investigated further, not a problem).
+
+Relaunched with the same sizing (`MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`,
+`MAX_DAILY_LOSS=50.0`) via the same Bash-tool-backgrounded pattern used throughout this project.
+Ran cycles 1–11 for real (14 real tickets submitted: `171822336`–`171822338`, `171822591`–
+`171822592`, `171822757`–`171822758`, `171822856`–`171822858`, `171822986`–`171822988`,
+`171823070`–`171823072`), then was **killed with no clean shutdown log line** (no "Stopping"/
+"Done.") — the loop's own log simply stops mid-run.
+
+**Root-caused, not left as "unexplained" this time**: checked Windows System/Application event
+logs around the kill window — zero power/sleep/hibernate events, zero application-crash event for
+`python.exe`, zero orphan process afterward (a clean termination, not a hang or crash). Account
+was safe throughout (1 protected position + 5 pending grid orders, 0.06 lots, at the cap, nothing
+unprotected). **The real finding**: this is the same shape as Step 5's earlier "re-run #2" abrupt
+kill, and both died at nearly the identical point — **cycle 11, ~50 minutes runtime** — on two
+separate live runs, different days. That precision rules out a broker/network/OS coincidence and
+points instead to a **duration cap on backgrounded Bash-tool tasks in this tool session**
+(unrelated to the trading script's own logic, MT5, or the broker) — an operational/tooling
+constraint on how this assistant launches long-running processes, not a codebase bug. No code
+change needed or made; flagged here since it directly affects how any future sustained run must be
+launched.
+
+### Live run #3 (same day): relaunched as a fully detached OS process — confirms the fix, stopped cleanly at end of day
+
+To test the hypothesis above, relaunched via `Start-Process` (PowerShell), fully detached from the
+Bash tool's background-task tracking (own log file, no parent dependency on the tool session) —
+PID `8356`. **Ran cleanly from 14:58:37 to a user-requested end-of-day stop at 16:15:25 (~77
+minutes, well past the ~50-minute point that killed both prior abrupt-kill incidents)**, reaching
+**16 of 30 cycles**, zero errors/tracebacks in either its stdout or stderr log. 14 more real tickets
+submitted (`171823868`, `171823991`–`171823992`, `171824086`–`171824088`, `171824289`–`171824291`,
+`171824729`–`171824730`, `171825638`, `171826373`, `171826472`). **Confirms the root cause above**:
+a detached process launched outside the Bash tool's own background-task lifecycle does not hit
+whatever cap killed the two backgrounded-Bash attempts. **Operational conclusion for future
+sessions**: any Step 7 attempt expected to run longer than ~45–50 minutes should be launched as a
+detached process (`Start-Process`/equivalent), not via the Bash tool's `run_in_background`, when
+launched from within a Claude Code tool session.
+
+**Stopped safely at end-of-day, per explicit instruction** — the project's own stop-file mechanism
+(`var/STOP_PIPELINE_LOOP`), not a kill: log confirms `Stop requested during inter-cycle wait: stop
+file present`, then `Done. 16 cycle(s) run. No cleanup performed...`. `tasklist` confirmed zero
+`python.exe` processes remaining afterward.
+
+**Kill-switch status**: never had a real chance to trip this session — cumulative real P&L across
+today's Step 7 attempts never approached the `$50.0` threshold. Still unobserved at Step 7 scale
+(only ever observed live at Step 5's much smaller smoke-test scale, 2026-08-07 morning).
+
+**Final reconciliation (read-only, end of day)**: live account = 1 open runner position
+(`171826472`, BUY, SL/TP protected: sl=64481.8/tp=64730.1) + 5 pending grid LIMIT orders
+(`171822591`, `171823991`, `171824086`, `171824289`, `171824729`), **0.06 lots total, exactly at
+(not over) `max_open_lots=0.06`, nothing unprotected**. Cross-checked against local `StateStore`:
+all 6 live-confirmed tickets are correctly present as `OPEN` locally; zero `OPEN_UNPROTECTED`
+records anywhere in the store (82 total local `OPEN`/`OPEN_UNPROTECTED` records, most of which —
+including 22 of today's own 28 submitted tickets — are stale-but-harmless local state whose real
+positions/orders already closed without being reconciled, the same already-documented,
+already-accepted staleness property from Steps 25/29/Step 5, now larger in scale again; not
+fixed, per the same prior reasoning: no live safety decision ever trusts a stale local `status`
+field). **Left exactly as-is, no cleanup performed, per explicit end-of-day instruction.**
+
+```
+pytest -q -> unaffected (no src/tests/ changed this entry — live runs only)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_check_20260807_pre_step7_resume_state.py`
+(new, read-only diagnostic), `var/order_state/*.json` (28 new local records across both runs, not
+tracked by git), `var/step7_live_run2_*.log`/`var/step7_live_run3_*.log` (new, not tracked by
+git), this checkpoint doc.
+
+**Exact next step when resumed**: Step 7 has not yet completed a single unbroken 30-cycle/~2.5-hour
+window — today's 16-cycle detached run is the longest continuous stretch reached so far, but it
+followed an 11-cycle run with a gap, so cycles don't carry forward (`MAX_CYCLES` counts from zero
+each launch, per the same convention noted after run #1). A fresh continuation should: launch via
+the detached-process pattern proven above (not backgrounded Bash), decide whether to manage the
+5 open pending grid orders / 1 open runner position first or let them ride into the next attempt,
+and needs its own fresh, explicit go-ahead per this project's standing live-testing-pause rule —
+not implied by this entry.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
@@ -1433,3 +1515,27 @@ chance to trip at Step 7's scale — only observed at Step 5's much smaller smok
 Step 7 attempt (a fresh relaunch — the stopped run's 4 cycles don't carry forward, `MAX_CYCLES`
 counts from zero each launch) or manage the currently-live exposure first — each its own explicit
 decision, not assumed.
+
+**Same day, resumed after the lunch break: two more live attempts, a real operational finding, and
+an end-of-day safe stop (2026-08-07).** Live run #2 (relaunched via the same backgrounded-Bash
+pattern used throughout this project) ran cycles 1–11 (~50 minutes) then was **killed abruptly** —
+root-caused this time, not left unexplained: Windows event logs show zero power/crash events, zero
+orphan process, and the exact same cycle-11/~50-minute death point as Step 5's earlier "re-run #2"
+kill. Two independent live runs dying at the identical point is strong evidence of a **duration cap
+on Bash-tool-backgrounded tasks in this tool session** — an operational/tooling constraint, not a
+project bug. Live run #3 tested the fix: launched as a **fully detached OS process**
+(`Start-Process`, independent of the Bash tool's background-task tracking), ran cleanly for ~77
+minutes / 16 of 30 cycles with zero errors — confirming the hypothesis. **Operational conclusion
+for future sessions: launch any Step 7 attempt expected to run past ~45–50 minutes as a detached
+process, not via the Bash tool's `run_in_background`.** Stopped safely at end-of-day via the
+project's own stop-file mechanism (not a kill) at cycle 16 — `Stop requested during inter-cycle
+wait`, `Done. 16 cycle(s) run.`, zero orphan process confirmed after. **Final reconciled state**: 1
+open runner position (protected) + 5 pending grid orders, 0.06 lots (exactly at the cap, nothing
+unprotected), zero `OPEN_UNPROTECTED` anywhere in `StateStore` — left exactly as-is per explicit
+instruction. **The kill-switch still has not had a real chance to trip at Step 7 scale** —
+cumulative real P&L across today's attempts never approached `$50.0`. **Step 7 has still not
+completed a single unbroken 30-cycle window** — 16 cycles (this detached run) is the longest
+continuous stretch reached so far, but it followed an unrelated 11-cycle run with a gap in between,
+so cycle counts don't carry forward across launches. No code changed today building or diagnosing
+any of this — one new read-only diagnostic script only. Next continuation: relaunch via the
+detached-process pattern now proven safe, with its own fresh, explicit go-ahead.

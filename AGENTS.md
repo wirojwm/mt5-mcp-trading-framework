@@ -471,9 +471,15 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, the grid regime filter (a new, separately-scoped
 effort motivated by Phase 8's Step 7 finding, **CLOSED as a negative result**) in
 `docs/GRID_REGIME_FILTER_CHECKPOINT.md`, Phase 9 (**Steps 1-6 done, Step 7 scoped/sized
-(MAX_DAILY_LOSS=50.0, MAX_CYCLES=30) and its first live attempt IN PROGRESS -- ran 4/30 cycles,
-paused mid-run for a lunch break via the stop-file, account left with 1 open position + 4 pending
-grid orders (protected, 0.05 lots), all 2026-08-07**) in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`
+(MAX_DAILY_LOSS=50.0, MAX_CYCLES=30), two more live attempts made 2026-08-07 after the lunch break:
+run #2 (backgrounded-Bash launch) was killed abruptly at cycle 11/~50min -- root-caused as a
+duration cap on Bash-tool-backgrounded tasks in this tool session (not a project bug, no orphan
+process, account safe); run #3 (relaunched as a fully detached OS process) confirmed the fix,
+running cleanly to 16/30 cycles before a clean end-of-day stop via the stop-file. Still no
+unbroken 30-cycle window completed, kill-switch still unobserved at Step 7 scale. Account left at
+1 open protected position + 5 pending grid orders, 0.06 lots, zero OPEN_UNPROTECTED. Future Step 7
+attempts should launch via the detached-process pattern, not backgrounded Bash.**) in
+`docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`
 (see also `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`), and operational reliability hardening (a
 new, separately-scoped effort named by Phase 9's own Design section and the readiness checklist's
 rows 8-9, **scoped and decided 2026-08-07: both items left as-is, no code changes needed for
