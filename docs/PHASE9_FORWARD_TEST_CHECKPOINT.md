@@ -1163,6 +1163,36 @@ pytest -q -> unaffected (no src/tests/ changed this entry)
 (new), `var/order_state/*.json` (3 records transitioned to `CANCELLED`, local data only, not
 tracked by git), this checkpoint doc.
 
+## Step 6 — demo-to-live readiness checklist: done (2026-08-07)
+
+Pure documentation, no code, no live/demo call of any kind. New
+`docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` — 11 criteria, each traced to a specific real finding
+from this project's own history (not generic best-practice boilerplate): the kill-switch's
+still-placeholder threshold, the 30-trade minimum sample not yet reached, Step 7 not yet run, the
+connection-model and `all_open()`-cost decisions still deferred, the retcode-10016 pattern, and the
+credential-exposure fix already made. Each row states its current status as of today plus its
+evidence source, so the table is checkable, not just aspirational.
+
+**One explicit design decision made scoping it, per the user's own call**: the checklist does
+**not** gate Live pilot scoping on demonstrated positive edge — it requires real forward
+expectancy/drawdown to be measured and honestly reported (row 3/4), but a negative result doesn't
+itself block scoping; matches Phase 9's own stated framing that this was never a
+"run-it-forward-and-hope-it's-profitable" exercise. Whether to proceed despite a negative edge is
+left as an explicit, informed decision for the future, separately-scoped Live pilot proposal
+itself.
+
+**Currently, most rows are NOT MET** — that's expected and honest, not a problem: this checklist
+defines what "ready" looks like, it doesn't claim readiness now. Step 7 (the actual sustained
+forward-test run) hasn't happened yet, and the kill-switch threshold is still Step 5's smoke-test
+placeholder.
+
+```
+pytest -q -> unaffected (pure documentation, no src/tests/ changed)
+```
+
+**Files changed this entry**: `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` (new), this checkpoint
+doc, `AGENTS.md`.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
@@ -1219,11 +1249,23 @@ one real observed trigger event (`Stopping before cycle 1: daily loss limit brea
 halted, verified via a live re-read, zero leftover unmanaged risk. 513 passed total (+9 across both
 fixes), architecture tests still pass. Full session detail, including the abrupt (unexplained, not
 chased further per the user's own call) kill of the second live attempt, in this doc's own Step 5
-entries above. **Not done**: Step 6 (demo-to-live readiness criteria) and the unscoped "operational
-reliability hardening" design item — each its own separate, later, explicit go-ahead/scoping. Real
-account state as of this entry: 1 open runner position + 4 pending grid orders left over from the
-abruptly-killed second attempt (all protected, all already reported), plus whatever remains from
-earlier in the day — not reconciled or touched by Step 5 itself, since managing leftover exposure
-was never in this step's scope. **Exact next smallest step, whenever resumed**: decide whether to
-reconcile/manage the leftover open positions/orders first, then scope Step 6 or the operational-
-reliability-hardening item — no code work should start until one of those is chosen.
+entries above. Leftover exposure from Step 5's live attempts has since been fully resolved
+(same-day follow-ups, user-requested): 35 stale local records reconciled to `CLOSED` (no MCP
+call), and the 3 remaining genuinely-live pending grid orders explicitly cancelled (retcode
+`10009` each, verified absent). **Account is fully clean: 0 open positions, 0 pending orders.**
+
+**Step 6 is now DONE (2026-08-07)**: `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` — an 11-row,
+evidence-traced checklist (not generic boilerplate) covering the kill-switch's still-placeholder
+threshold, the not-yet-reached 30-trade minimum sample, Step 7 not yet run, the deferred
+connection-model/`all_open()`-cost decisions, the retcode-10016 pattern, and the credential fix
+already made. Explicitly does **not** gate Live pilot scoping on positive edge, per the user's own
+call — requires the forward-vs-backtest drift to be honestly measured and reported either way, not
+hidden or required positive. Most rows currently read NOT MET, which is the honest, expected state
+before Step 7 has ever run — this checklist defines readiness, it doesn't claim it.
+
+**Not done**: the unscoped "operational reliability hardening" design item (the connection-model
+and `StateStore.all_open()`-cost decisions the checklist itself flags as still open), Step 7 (the
+actual sustained forward-test run), and the Live pilot proposal itself — each its own separate,
+later, explicit go-ahead/scoping, per this checklist's own stated boundaries. **Exact next smallest
+step, whenever resumed**: pick one of those three to scope next, informed by the readiness
+checklist's own NOT MET rows rather than guessed at fresh.
