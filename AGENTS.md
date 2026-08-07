@@ -470,14 +470,15 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/PIPELINE_WIRING_CHECKPOINT.md`, Phase 8 in
 `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, the grid regime filter (a new, separately-scoped
 effort motivated by Phase 8's Step 7 finding, **CLOSED as a negative result**) in
-`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, Phase 9 (**Steps 1-6 done, Step 7 scoped and sized
-(MAX_DAILY_LOSS=50.0, MAX_CYCLES=30) but NOT yet run live, all 2026-08-07**) in
-`docs/PHASE9_FORWARD_TEST_CHECKPOINT.md` (see also `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`),
-and operational reliability hardening (a new, separately-scoped effort named by Phase 9's own
-Design section and the readiness checklist's rows 8-9, **scoped and decided 2026-08-07: both
-items left as-is, no code changes needed for now**) in
-`docs/OPERATIONAL_RELIABILITY_HARDENING_CHECKPOINT.md` — read whichever is relevant before
-continuing that work in a new session.
+`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, Phase 9 (**Steps 1-6 done, Step 7 scoped/sized
+(MAX_DAILY_LOSS=50.0, MAX_CYCLES=30) and its first live attempt IN PROGRESS -- ran 4/30 cycles,
+paused mid-run for a lunch break via the stop-file, account left with 1 open position + 4 pending
+grid orders (protected, 0.05 lots), all 2026-08-07**) in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`
+(see also `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`), and operational reliability hardening (a
+new, separately-scoped effort named by Phase 9's own Design section and the readiness checklist's
+rows 8-9, **scoped and decided 2026-08-07: both items left as-is, no code changes needed for
+now**) in `docs/OPERATIONAL_RELIABILITY_HARDENING_CHECKPOINT.md` — read whichever is relevant
+before continuing that work in a new session.
 
 ## Forward phases (named, not yet scoped)
 

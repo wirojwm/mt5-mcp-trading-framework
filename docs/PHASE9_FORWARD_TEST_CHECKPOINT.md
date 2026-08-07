@@ -1294,9 +1294,6 @@ All three open points from the proposal above were decided the same day, then bu
 utility-script fix, no new production logic beyond what Step 5 already built and tested).
 `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` row 3 updated to reflect grid's real, current status.
 
-**Not yet done**: actually running Step 7 live — its own separate, explicit go-ahead, same
-discipline as every live-adjacent step in this project, not assumed from deciding the sizing.
-
 ```
 pytest -q -> 513 passed (unchanged -- constants + one utility-script fix, no new test surface)
 ```
@@ -1305,6 +1302,46 @@ pytest -q -> 513 passed (unchanged -- constants + one utility-script fix, no new
 get_deals window + trusted-ticket fixes), `scripts/run_demo_execution_pipeline_loop.py` (modified,
 `MAX_CYCLES`/`MAX_RUNTIME_MINUTES`/`MAX_DAILY_LOSS` set for Step 7), this checkpoint doc,
 `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`.
+
+### Live run #1: started, ran 4 of 30 cycles, safely stopped for a lunch break (2026-08-07, explicit go-ahead given, then explicit stop instruction given)
+
+Launched for real (`max_cycles=30`, `max_runtime_minutes=180.0`, `max_daily_loss=50.0`,
+`mode=DEMO_EXECUTION`/`trading_enabled=True`/`mt5_account_kind='DEMO'` confirmed). Ran 4 cycles
+over ~17 minutes before an explicit stop instruction arrived mid-run — stopped via the project's
+own stop-file mechanism (`var/STOP_PIPELINE_LOOP`), the same safe path documented in the script's
+own header, not a hard kill. Log confirms a clean exit: `Stop requested during inter-cycle wait:
+stop file present`, then `Done. 4 cycle(s) run.` `tasklist` confirmed zero `python.exe` processes
+remaining afterward — no orphan MCP subprocess.
+
+**Real activity across the 4 cycles**: cycle 1 — grid BUY/SELL LIMIT pair (`171816389`/`171816390`)
++ runner SELL MARKET (`171816391`, SL/TP attached and verified); cycle 2 — another grid pair
+(`171816498`/`171816499`), runner correctly rejected (`symbol.position_limit`, 1 already open);
+cycle 3 — another grid pair (`171816699`/`171816700`), runner rejected again; cycle 4 — both
+strategies correctly rejected (grid: `portfolio.max_open_lots`, runner: `symbol.position_limit`) —
+nothing submitted, guards working as designed. The kill-switch itself never had a real chance to
+trip in this short a window (`max_daily_loss=50.0` is far from crossed by 4 cycles of new
+activity) — that remains unobserved at this scale, expected for a run this short.
+
+**Real state at the stop, verified live (read-only) immediately after**: 1 open runner position
+(`171816391`, protected) + 4 pending grid orders (`171816390`, `171816498`, `171816499`,
+`171816700`) — `171816699` (cycle 3's grid BUY) is no longer present in either live positions or
+pending orders, meaning it filled and closed again within the ~7 minutes before the check, ordinary
+SL/TP behavior, not investigated further (consistent with everything else observed this session).
+Total exposure 0.05 lots, under the 0.06 cap, nothing unprotected. **Left exactly as-is per
+explicit instruction — no cleanup, no reconciliation performed this entry**, matching the script's
+own no-cleanup design; a later, separate decision.
+
+```
+pytest -q -> 513 passed (unaffected -- no code changed this entry, a live run only)
+```
+
+No code changed this entry. **Not done**: Step 7 has not yet completed a meaningful sustained
+window, and the kill-switch has not been observed to trip against real Step 7 activity (only
+against Step 5's much smaller smoke-test scale). Resuming is its own separate, explicit go-ahead,
+same discipline as every live-adjacent step — not implied by this entry.
+
+**Files changed this entry**: none (live run only); `var/order_state/*.json` (4 new local
+records, not tracked by git), this checkpoint doc.
 
 ## Status
 
@@ -1376,9 +1413,23 @@ call — requires the forward-vs-backtest drift to be honestly measured and repo
 hidden or required positive. Most rows currently read NOT MET, which is the honest, expected state
 before Step 7 has ever run — this checklist defines readiness, it doesn't claim it.
 
-**Not done**: the unscoped "operational reliability hardening" design item (the connection-model
-and `StateStore.all_open()`-cost decisions the checklist itself flags as still open), Step 7 (the
-actual sustained forward-test run), and the Live pilot proposal itself — each its own separate,
-later, explicit go-ahead/scoping, per this checklist's own stated boundaries. **Exact next smallest
-step, whenever resumed**: pick one of those three to scope next, informed by the readiness
-checklist's own NOT MET rows rather than guessed at fresh.
+**Operational reliability hardening is now DECIDED (2026-08-07)**:
+`docs/OPERATIONAL_RELIABILITY_HARDENING_CHECKPOINT.md` — both items (StateStore scan cost,
+connection-drop reconnect) explicitly left as-is for now, no code changes, both re-affirmed
+decisions rather than open questions. Readiness checklist rows 8-9 updated accordingly.
+
+**Step 7 is scoped, sized, and its first live attempt is IN PROGRESS, paused mid-run
+(2026-08-07)**. Sizing decided with real evidence: `MAX_DAILY_LOSS=50.0` (replacing Step 5's
+`0.01` placeholder), `MAX_CYCLES=30`/`MAX_RUNTIME_MINUTES=180.0` (the "modest step-up" scale). A
+second real bug found and fixed along the way: `run_demo_execution_live_performance_monitor.py`
+had the identical `get_deals` window bug the kill-switch had — fixed the same way, and grid now
+clears the 30-trade minimum for the first time (46 trades) once refetched correctly. **Live run
+#1 launched, ran 4 of 30 cycles (~17 minutes), then stopped safely via the stop-file mechanism on
+explicit instruction (a lunch break) — clean shutdown confirmed (`Done. 4 cycle(s) run.`), zero
+orphan processes, real state verified (1 open runner position + 4 pending grid orders, 0.05 lots,
+all protected, left as-is on explicit instruction).** The kill-switch has not yet had a real
+chance to trip at Step 7's scale — only observed at Step 5's much smaller smoke-test scale so far.
+**Exact next smallest step, whenever resumed**: decide whether to continue toward a full 30-cycle
+Step 7 attempt (a fresh relaunch — the stopped run's 4 cycles don't carry forward, `MAX_CYCLES`
+counts from zero each launch) or manage the currently-live exposure first — each its own explicit
+decision, not assumed.
