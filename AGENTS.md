@@ -470,8 +470,8 @@ Full session-by-session detail for the "wire real adapters" step (now fully comp
 `docs/PIPELINE_WIRING_CHECKPOINT.md`, Phase 8 in
 `docs/PHASE8_STRATEGY_RESEARCH_CHECKPOINT.md`, the grid regime filter (a new, separately-scoped
 effort motivated by Phase 8's Step 7 finding, **CLOSED as a negative result**) in
-`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, and Phase 9 (**Steps 1-4 done, Step 5 wiring built but
-NOT live-run**) in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md` — read whichever is relevant before
+`docs/GRID_REGIME_FILTER_CHECKPOINT.md`, and Phase 9 (**Steps 1-5 done, Step 5 live-verified
+2026-08-07**) in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md` — read whichever is relevant before
 continuing that work in a new session.
 
 ## Forward phases (named, not yet scoped)
@@ -480,9 +480,9 @@ Referenced informally across pipeline-wiring checkpoint entries (`docs/PIPELINE_
 "Remaining roadmap") but never formally defined here until now. Unlike phases 0–7 above (phases of
 *building* this codebase), these are phases of *running and tuning* the strategy once built — a
 different kind of work, each still requiring its own explicit scoping and approval before any code
-is written, per this project's normal workflow. Phase 9 is now scoped, with Steps 1-4 done and
-Step 5's wiring built (not yet live-run) — see `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. Live
-pilot still has no checkpoint doc, and writing
+is written, per this project's normal workflow. Phase 9 is now scoped, with Steps 1-5 done — the
+kill-switch is built, wired, and live-verified (2026-08-07) — see
+`docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. Live pilot still has no checkpoint doc, and writing
 detailed entry/exit criteria for it is itself a future, explicitly-approved task — not done here,
 to avoid designing ahead of what's actually been asked for.
 

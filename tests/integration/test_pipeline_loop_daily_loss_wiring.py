@@ -149,6 +149,28 @@ def test_untracked_ticket_deals_are_never_matched(tmp_path: Path) -> None:
     assert decision.approved is True
 
 
+def test_fetches_with_a_wide_margin_on_both_ends(tmp_path: Path) -> None:
+    # Root-cause regression (2026-08-07 live smoke test, docs/PHASE9_FORWARD_TEST_CHECKPOINT.md):
+    # the ORIGINAL version of this call passed from_date=boundary only (to_date defaulted deep
+    # inside the vendored client), and Deal.time's +3h UTC mislabel made that narrow window miss
+    # every real deal across a full 12-cycle live run. Proves the real call site now asks for a
+    # full-day margin on both ends of the true reset window, not exactly the boundary.
+    module = _load_loop_module()
+    state_store = StateStore(tmp_path / "order_state")
+    _submit_closed_record(state_store, ticket=1)
+    client = _StubMcpClient({"get_deals": _DEALS_CSV_HEADER})
+    config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=0)
+
+    asyncio.run(module._compute_daily_loss_decision(client, state_store, config))
+
+    assert len(client.calls) == 1
+    name, args = client.calls[0]
+    assert name == "get_deals"
+    from_date = datetime.strptime(args["from_date"], "%Y-%m-%d")
+    to_date = datetime.strptime(args["to_date"], "%Y-%m-%d")
+    assert (to_date - from_date).days >= 2  # at least a full day of margin on each end
+
+
 def test_raises_when_get_deals_fails(tmp_path: Path) -> None:
     module = _load_loop_module()
     state_store = StateStore(tmp_path / "order_state")

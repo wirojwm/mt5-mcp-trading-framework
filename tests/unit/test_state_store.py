@@ -33,6 +33,7 @@ def test_cold_start_has_no_records(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state")
     assert store.all_open() == ()
     assert store.all_closed() == ()
+    assert store.all_records() == ()
     assert store.lookup(123456) is None
 
 
@@ -223,6 +224,7 @@ def test_multiple_tickets_are_independent(tmp_path: Path) -> None:
     assert store.lookup(2).status == "OPEN"  # type: ignore[union-attr]
     assert {r.ticket for r in store.all_open()} == {2}
     assert {r.ticket for r in store.all_closed()} == {1}
+    assert {r.ticket for r in store.all_records()} == {1, 2}  # regardless of status
 
 
 def test_corrupted_ticket_file_raises_state_load_error_only_for_that_ticket(tmp_path: Path) -> None:
@@ -237,6 +239,8 @@ def test_corrupted_ticket_file_raises_state_load_error_only_for_that_ticket(tmp_
         store.all_open()  # scans every ticket -- one bad file must still hard-stop the whole read
     with pytest.raises(StateLoadError):
         store.all_closed()  # same full-directory scan, same hard-stop guarantee
+    with pytest.raises(StateLoadError):
+        store.all_records()  # same full-directory scan, same hard-stop guarantee
     with pytest.raises(StateLoadError):
         store.record_cancelled(123456, reason="test", closed_at=_now())  # must load before writing
 
@@ -333,6 +337,10 @@ def test_many_tickets_round_trip_correctly_with_mixed_statuses(tmp_path: Path) -
     actual_closed_tickets = {r.ticket for r in reloaded.all_closed()}
     assert actual_closed_tickets == expected_closed_tickets
     assert len(reloaded.all_closed()) == len(expected_closed_tickets)  # no duplicates
+
+    actual_all_tickets = {r.ticket for r in reloaded.all_records()}
+    assert actual_all_tickets == set(tickets)  # every ticket, regardless of status
+    assert len(reloaded.all_records()) == len(tickets)  # no duplicates
 
 
 def test_rapid_sequential_mutations_remain_consistent(tmp_path: Path) -> None:

@@ -881,6 +881,270 @@ kill-switch wiring), `tests/unit/test_monitoring_live_performance.py` (modified,
 `tests/integration/test_pipeline_loop_daily_loss_wiring.py` (new, +10), this checkpoint doc,
 `AGENTS.md`.
 
+### Live smoke test run (2026-08-07, explicit go-ahead given) — kill-switch did NOT trip; a real gap found, not fixed
+
+Open design points resolved first: `MAX_DAILY_LOSS=0.01` (trips on the first net realized loss of
+any size — sidesteps needing real commission-magnitude data, which isn't recorded anywhere in this
+repo), `RESET_HOUR_UTC=0` (kept Step 2's default). Both wired into
+`scripts/run_demo_execution_pipeline_loop.py`'s existing constants.
+
+**Ran live, for real, for the full 12 cycles / ~56 minutes** (`mode=DEMO_EXECUTION`,
+`trading_enabled=True`, `mt5_account_kind='DEMO'` confirmed) — stopped by `max cycles (12) reached`,
+**not** by the kill-switch. `_daily_loss_decision_for_cycle()` never raised (no fail-closed path
+exercised) and never rejected — every cycle's `get_deals` call returned **zero deals**, so
+`realized_pnl_since_reset` was `0.0` throughout and `check_daily_loss_limit()` had nothing to react
+to. **This is not evidence that no losses occurred** — real evidence says otherwise (see below) —
+so Step 5's exit criteria ("one real observed trigger event, loop halted") is **NOT met**, and not
+because the threshold was wrong.
+
+**Real trades did close during the run, confirmed independently of `get_deals`**: 4 separate real
+runner (magic=72101) MARKET positions were opened across the run (tickets `171809336` cycle 1,
+`171809814` cycle 6, `171809876` cycle 7, `171809948` cycle 8) despite
+`max_concurrent_positions=1` — only possible if the previous one had genuinely closed by the time
+the next cycle's `check_position_limit()` ran (that guard reads real live positions cross-referenced
+against `StateStore`-trusted tickets, the same magic-recovery-fix pattern already proven correct
+elsewhere in this project — not the broken raw magic filter, so its "0 open" reads are trustworthy).
+A post-run read-only diagnostic (`scripts/run_demo_execution_check_step5_smoke_test_state.py`, new,
+no `executor` reference) confirms the account's real current open positions are only 4 total —
+`171809948` (the run's last runner position) plus 3 grid SELL LIMIT orders that filled into real
+positions (`171811195`, `171809947`, `171809984`) — `171809336`/`171809814`/`171809876` are absent,
+meaning all three genuinely closed (SL/TP, matching this project's established pattern throughout).
+
+**Yet `get_deals(from_date='2026-08-07')` queried fresh, in a brand-new session, well after the run
+ended, still returns zero deals** — including zero for any of those three confirmed-closed
+tickets. Root-caused precisely with a follow-up probe
+(`scripts/run_demo_execution_probe_get_deals_gap.py`, new, read-only, no `executor` reference):
+querying with an explicit `to_date='2026-08-08'` (next calendar day) finds all 6 deals for the 3
+target tickets immediately. Comparing their reported `Deal.time` against the SAME tickets' true UTC
+fill time (independently known from the run's own log, generated via `datetime.now(timezone.utc)`)
+found an **exact, repeated +3:00:00 offset**, confirmed three separate times (each within 2 seconds
+of precision):
+
+| Ticket | True UTC fill time (run's own log) | `Deal.time` reported | Offset |
+|---|---|---|---|
+| 171809336 | 01:49:02 UTC | 04:49:00 | +3:00:00 |
+| 171809814 | 02:14:11 UTC | 05:14:09 | +3:00:00 |
+| 171809876 | 02:19:14 UTC | 05:19:12 | +3:00:00 |
+
+**This is not a sync-lag gap — it's a real, previously-shipped labeling bug.** `Deal.time` is not
+actually UTC; it's the broker's server time (UTC+3), and `mt5_adapter/mcp_deal_history.py`'s
+`_parse_deal_time()` mislabels it as UTC (`tzinfo=timezone.utc` attached directly, no offset
+correction). Step 4's own docstring claim ("time is a genuine UTC instant... converted from MT5's
+epoch-seconds field") was reasoned from the conversion code path, never cross-checked against a
+real known-true-UTC event until this probe — the first time this project has had independent
+ground truth (the run's own log timestamps) to check a `Deal.time` value against. Every deal
+`McpDealHistoryReader` has ever returned (including the 2026-08-06 monitor run's 162 deals) carries
+this same +3h mislabel. The Aug 6 run's expectancy/drawdown numbers are unaffected (multi-day
+windows, time-of-day-independent math), but any window-boundary-sensitive computation is —
+`_compute_daily_loss_decision()`'s `to_date=None -> datetime.now()` default is exactly that: a
+3-hour mislabel is enough to push genuinely-recent deals outside the comparison window, which is
+the precise mechanism behind this run's zero-deals-every-cycle result. **Not fixed this entry** —
+flagged with a confirmed, precise root cause rather than a guess, ready for its own scoped fix.
+
+**Practical consequence**: as currently wired, `MAX_DAILY_LOSS` is effectively inert for real-time
+monitoring regardless of its value — `realized_pnl_since_reset` reads `0.0` against real, closed,
+real-money-adjacent losses whenever the true window boundary falls within roughly 3 hours of "now"
+(exactly the smoke test's own scenario). A safety-relevant finding about the kill-switch's real
+reliability, surfaced by the smoke test exactly as a smoke test should — not a wasted run.
+
+**Real current account state left behind** (no cleanup, matching this script's established design):
+4 open positions (`171809948` runner SELL, `171811195`/`171809947`/`171809984` grid SELL — all
+protected, SL/TP confirmed at submission) + 2 pending grid orders (`171809875` SELL LIMIT,
+`171811194` BUY LIMIT) — total exposure exactly at `max_open_lots=0.06`. Nothing unprotected;
+"leftover" here means open, not unmanaged. Separately noted, not new: local
+`StateStore.all_open()` now shows 71 tickets marked `OPEN` (up from the 39/57 previously quantified)
+— the same already-accepted, not-fixed staleness property (Steps 25/29's "not fixing it now"
+decision), now larger in scale; still harmless per the same reasoning (`determine_posture()`/
+`MANAGE_ONLY` gate/magic-recovery fix all read live state fresh, never trust a stale local
+`status` field for a safety decision).
+
+**Not decided in this entry**: how to fix `_parse_deal_time()`'s UTC mislabeling (hardcoding +3h is
+fragile — broker server offsets can shift with daylight saving depending on the specific broker's
+convention; a robust fix should derive the real offset rather than assume this session's measured
+value holds forever), whether to manage (close/cancel or leave) the 4 open positions + 2 pending
+orders, and whether the already-large stale-`StateStore` count changes the prior "not fixing it
+now" call. Each is its own next decision, not assumed here.
+
+```
+pytest -q -> unaffected (no src/ changed this entry — MAX_DAILY_LOSS/RESET_HOUR_UTC are constant
+             value changes already covered by existing tests; new scripts are one-off diagnostics,
+             not part of the test suite, matching every other one-off diagnostic in this project)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_pipeline_loop.py` (modified,
+`MAX_DAILY_LOSS`/`RESET_HOUR_UTC` set for the live run),
+`scripts/run_demo_execution_check_step5_smoke_test_state.py` (new, read-only diagnostic),
+`scripts/run_demo_execution_probe_get_deals_gap.py` (new, read-only diagnostic, root-caused the
+`Deal.time` UTC mislabel), this checkpoint doc.
+
+### `Deal.time` offset fix: built, unit + integration tested, NOT re-run live
+
+User's choice from the two flagged options (hardcode +3h vs. derive live vs. leave unfixed): derive
+the real offset live each session, not hardcode a value that could go stale (e.g. across a daylight-
+saving boundary).
+
+**`monitoring/live_performance.infer_deal_time_offset(closed_records, deals) -> Optional[timedelta]`**
+(new, pure): derives the real correction from data already available every session, no new adapter
+call needed. For each `CLOSED` **MARKET**-order `LocalOrderRecord` (LIMIT orders deliberately
+excluded — a LIMIT fill can happen long after `submitted_at`, corrupting the comparison; a MARKET
+fill is essentially simultaneous with `submitted_at`, which is real, locally-recorded true UTC —
+see `mcp_order_executor.py`), diffs its own IN-entry `Deal.time` (mislabeled) against
+`record.submitted_at` (true UTC). Takes the **median** across every available reference (robust to
+one outlier) and rounds to the nearest **15 minutes** (real broker server offsets are always round
+numbers, never an arbitrary number of minutes — filters ordinary network/processing-latency noise).
+Returns `None` when no MARKET-order reference exists yet (e.g. a fresh `StateStore`, or a run that
+has only ever placed LIMIT orders) — callers decide their own fallback; this function never
+fabricates a value it can't derive.
+
+**`realized_pnl_since()`/`compute_daily_loss_decision()`** both gained an optional
+`deal_time_offset: timedelta = timedelta(0)` parameter (default preserves every existing caller's
+exact prior behavior — same Optional-defaults-to-off convention as every other guard field in this
+codebase), subtracted from `deal.time` before comparing against `since`, so the reset-boundary
+filter compares against each deal's real true-UTC instant, not its mislabeled one.
+
+**`scripts/run_demo_execution_pipeline_loop.py`'s `_compute_daily_loss_decision()`** now does two
+things differently, both necessary — confirmed by working through the actual failure mechanism, not
+guessed:
+1. **Fetches with a full-day margin on both ends** (`from_date = boundary - 1 day`,
+   `to_date = now + 1 day`) instead of `from_date=boundary` only with no `to_date` — this is what
+   actually caused the 2026-08-07 run to find zero deals every cycle (the vendored client's
+   `to_date=None -> datetime.now()` default, combined with the mislabel, produced a window that
+   excluded the run's own recent closes). A generous, fixed margin sidesteps needing to know the
+   exact offset just to fetch safely — no real deal is missed regardless of the mislabel's
+   direction or magnitude.
+2. **Infers the real offset from `state_store.all_closed()` + the fetched deals** via
+   `infer_deal_time_offset()`, falling back to `timedelta(0)` (no correction) when no MARKET-order
+   reference is available yet, and passes it into `compute_daily_loss_decision()` — this is what
+   makes the reset-boundary *filter* itself correct, not just the fetch window wide enough.
+
+**9 new tests**: 5 unit tests for `infer_deal_time_offset()` (no records, LIMIT-order exclusion,
+basic derivation, 15-minute rounding, median-ignores-an-outlier), 2 unit tests for
+`realized_pnl_since()`/`compute_daily_loss_decision()`'s new `deal_time_offset` parameter (the
+`compute_daily_loss_decision` one directly reproduces the confirmed bug's sign: a loss that
+genuinely happened before today's reset boundary must not be misattributed to today just because
+the +3h mislabel pushes its apparent timestamp past the boundary — wrongly counted as a breach
+(`approved=False`) without correction, correctly excluded (`approved=True`) once corrected), and 1 new
+integration test proving the real script's call site now asks for a full-day margin on each end
+(replacing the narrow `from_date=boundary`-only call that caused the live failure). All 5 pre-
+existing integration tests in `test_pipeline_loop_daily_loss_wiring.py` pass completely unchanged
+(their stub `_submit_closed_record()` always used `order_type="LIMIT"`, so `infer_deal_time_offset`
+correctly returns `None` for them and the `timedelta(0)` fallback preserves their exact original
+expected behavior — confirms the fix is additive, not a silent behavior change for already-tested
+paths).
+
+```
+pytest -q                        -> 513 passed (504 previously + 9 new)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+No order, no live/demo call of any kind building or testing this fix — purely a code fix informed
+by the read-only diagnostics above. **Not re-run live this entry** — Step 5's own "two separate
+go-aheads" rule applies again: this is new, safety-relevant code touching the kill-switch's real
+computation, so re-attempting the live smoke test needs its own fresh, explicit go-ahead, not
+assumed carried forward from building the fix.
+
+**Files changed this entry**: `src/mt5_mcp_trading/monitoring/live_performance.py` (modified,
++`infer_deal_time_offset()`, +`deal_time_offset` param on 2 functions),
+`scripts/run_demo_execution_pipeline_loop.py` (modified, wide-margin fetch + offset correction),
+`tests/unit/test_monitoring_live_performance.py` (modified, +8),
+`tests/integration/test_pipeline_loop_daily_loss_wiring.py` (modified, +1), this checkpoint doc.
+
+### Re-run #2: abrupt kill (unexplained), which surfaced a SECOND real gap, fixed — then Step 5's exit criteria finally met (2026-08-07, explicit go-aheads given throughout)
+
+**Re-run #2** (same `MAX_DAILY_LOSS=0.01`, with the `Deal.time` fix in place): ran live, submitted
+real orders through cycle 11 (~50 minutes), then was **killed abruptly** — no "Stop requested"/
+"Done." log line, not a clean shutdown via the script's own stop-file/`KeyboardInterrupt` paths.
+Cause unknown; the user had no context either. Checked immediately, read-only: **no orphan Python
+process** (`tasklist` found none), and the real account was safe — 1 open runner position
+(`171814431`, SL/TP-protected) + 4 pending grid orders, 0.05 lots total, under the 0.06 cap.
+Nothing corrupted, nothing unprotected. If this recurs on a future run, worth investigating then;
+not chased further here per the user's own call.
+
+**A second, deeper, independent gap found by checking whether the live re-run's own real close was
+actually detected** (`scripts/run_demo_execution_check_rerun_kill_switch_correctness.py`, new,
+read-only): `realized_pnl_since()` computed `0.0` despite a real position from this exact run
+having closed. Root cause: `_compute_daily_loss_decision()` sourced its trusted ticket set from
+`state_store.all_closed()` — but `record_closed()` is **only ever called by
+`McpOrderExecutor.close_position()`**, confirmed by `grep`, never by anything that notices a
+broker-side SL/TP close on its own. Since the overwhelming majority of real closes throughout this
+entire project's history have happened via broker-side SL/TP (not an explicit `close_position()`
+call), `all_closed()` essentially never contains a same-session close — the kill-switch, even with
+the `Deal.time` fix, could only ever react to a loss this project explicitly closed itself. This is
+independent of the first bug and would have kept the kill-switch silently inert on its own.
+
+**Fixed**: new `StateStore.all_records()` (`state/store.py`) — every locally recorded ticket
+regardless of status, unlike `all_open()`/`all_closed()`'s status filters. Same
+"never trust a stale local status field for a safety decision" discipline `determine_posture()`/
+the `MANAGE_ONLY` gate/the magic-recovery fix already apply elsewhere — the deal data itself
+(an OUT-entry deal existing) is what actually proves a close, not the local `status` field.
+`_compute_daily_loss_decision()` now sources both `trusted_ids` and `infer_deal_time_offset()`'s
+input from `all_records()` instead of `all_closed()`. **3 new assertions in existing `StateStore`
+tests** (cold-start, multi-ticket independence, the 200-ticket at-scale sweep, and the corrupted-
+file hard-stop test) — no new test functions, matching every scenario already having an
+`all_open()`/`all_closed()`-checking test in place to extend, same pattern Step 4 used adding
+`all_closed()` itself.
+
+```
+pytest -q                        -> 513 passed (unchanged count -- new assertions in existing tests)
+pytest tests/test_architecture.py -q -> 13 passed
+```
+
+**Verified directly against real live data before attempting a third live run**
+(`scripts/run_demo_execution_verify_kill_switch_fix.py`, new, read-only — calls the REAL wired
+`_compute_daily_loss_decision()` via `importlib`, not a hand-rolled mirror): `approved=False`,
+`realized_pnl_since_reset=-10.41` breaching `max_daily_loss=0.01` — both fixes together correctly
+compute today's real accumulated loss for the first time. Flagged to the user before the third
+attempt: today's real P&L was already in breach, so launching the loop would trip the kill-switch
+**before cycle 1 even starts** — a different shape than "runs a few cycles, then trips", but still
+a real, live-verified trigger with zero incremental risk (no new cycle would run at all). User
+chose to proceed on that basis.
+
+**Third live attempt: Step 5's exit criteria finally met.** Ran with the same `MAX_DAILY_LOSS=0.01`
+— real log: `Stopping before cycle 1: daily loss limit breached
+(realized_pnl_since_reset=-10.41 breaches max_daily_loss=0.01)`, then `Done. 0 cycle(s) run.`, clean
+disconnect. **One real observed trigger event, loop halted, verified via a live re-read (the
+`get_deals` call driving the decision), zero leftover unmanaged risk (0 cycles run, nothing new
+submitted).** This is the exit criteria the Proposed Steps table specified verbatim. Leftover
+exposure on the account is unchanged from re-run #2's abrupt-kill state (1 open runner position +
+4 pending grid orders, all already reported, all protected) — not touched by this entry, since 0
+cycles ran.
+
+No order, no live/demo call of any kind while building either fix — only the explicitly-approved
+live re-run and verification calls themselves touched the demo account, and all were read-only or
+(for the loop itself) correctly refused to submit anything.
+
+**Files changed this entry**: `src/mt5_mcp_trading/state/store.py` (modified, +`all_records()`),
+`tests/unit/test_state_store.py` (modified, +3 assertions in existing tests),
+`scripts/run_demo_execution_pipeline_loop.py` (modified, sources `all_records()` instead of
+`all_closed()`), `scripts/run_demo_execution_check_rerun_kill_switch_correctness.py` (new, read-
+only diagnostic), `scripts/run_demo_execution_verify_kill_switch_fix.py` (new, read-only
+diagnostic), this checkpoint doc.
+
+### Leftover reconciliation (2026-08-07, user-requested)
+
+`scripts/run_demo_execution_reconcile_20260807_leftovers.py` (new, one-off): found 38 local
+records from today's three live attempts still marked `OPEN`/`OPEN_UNPROTECTED`. Fresh live reads
+(`get_positions`/`get_orders`/`get_deals`, all read-only) found real current state had already
+moved on since the last check — 0 open positions (the last runner position, `171814431`, had since
+closed via its own broker-side SL/TP), 3 pending grid orders still genuinely live
+(`171809875`/`171812719`/`171812840`, all within the `0.06`-lot cap, left untouched). The other 35
+tickets were reconciled purely locally (`record_closed()`/`record_cancelled()`, no MCP call): all
+35 had a matching real `Deal`, so all reconciled to `CLOSED` (0 needed `CANCELLED` — every grid
+LIMIT order from today either filled and later closed, or is still genuinely pending; none were
+simply cancelled unfilled). `closed_at` for each uses the real OUT-entry deal's time, corrected by
+a freshly re-derived `infer_deal_time_offset()` (`3:00:00` — consistent with the earlier confirmed
++3h finding, a good cross-check that the fix holds) rather than storing the raw mislabeled
+timestamp into local history. Verified after: `var/order_state` now shows exactly 3 `OPEN` + 35
+`CLOSED` + 0 `CANCELLED` for today's tickets, matching the script's own reported counts exactly.
+
+```
+pytest -q -> unaffected (var/order_state is git-ignored local data, no src/tests/ changed)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_reconcile_20260807_leftovers.py` (new),
+`var/order_state/*.json` (35 records transitioned to `CLOSED`, local data only, not tracked by
+git), this checkpoint doc.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
@@ -916,11 +1180,32 @@ BUILT** (2026-08-06, explicit go-ahead for the wiring, NOT for a live run): `sho
 wired into `scripts/run_demo_execution_pipeline_loop.py`'s two real call sites via a real,
 fail-closed `_daily_loss_decision_for_cycle()`; `MAX_DAILY_LOSS` defaults to `None` (kill-switch
 present but inert) since the real smoke-test threshold remains an open design point. 504 passed
-total, architecture tests still pass, no live/demo call anywhere in building this. **Explicitly
-NOT done**: the live smoke test itself, the real threshold value, and Step 6 (demo-to-live
-readiness criteria) — each its own separate, later, explicit go-ahead. **Session paused here for
-the day (2026-08-06), per explicit instruction, before any of those.** **Exact next smallest
-step, whenever resumed**: decide Step 5's open design points (the smoke-test threshold value
-above all) and get explicit go-ahead for the live run itself — or, if priorities have shifted,
-scope Step 6 or the unscoped "operational reliability hardening" design item instead. No code
-work should start until one of those is chosen.
+total, architecture tests still pass, no live/demo call anywhere in building this.
+
+**Step 5 is now DONE, live-verified, exit criteria met (2026-08-07).** Open design points
+resolved: `MAX_DAILY_LOSS=0.01` (trips on the first net realized loss of any size — sidesteps
+needing real commission-magnitude data), `RESET_HOUR_UTC=0` (kept Step 2's default). First live
+attempt ran the full 12 cycles without tripping — not because nothing went wrong, but because of a
+real, previously-unknown bug: `Deal.time` is broker server time (confirmed UTC+3) mislabeled as
+UTC, root-caused precisely (sub-2-second precision, three independent cross-checks) via a read-only
+follow-up probe. Fixed with a live-derived (not hardcoded) offset — `infer_deal_time_offset()` —
+plus a wide-margin `get_deals` fetch window. A second live re-run surfaced a SECOND, independent
+gap: the trusted-ticket set was sourced from `StateStore.all_closed()`, which only reflects tickets
+this project explicitly closed itself (`record_closed()`'s only caller) — never a broker-side SL/TP
+close, which is how the overwhelming majority of real closes happen. Fixed via new
+`StateStore.all_records()` (every locally recorded ticket regardless of status), matching this
+project's existing "never trust a stale local status field for a safety decision" discipline. Both
+fixes verified directly against real live data (`realized_pnl_since_reset=-10.41`, correctly
+breaching the threshold) before a third live attempt, which **met Step 5's exit criteria verbatim**:
+one real observed trigger event (`Stopping before cycle 1: daily loss limit breached...`), loop
+halted, verified via a live re-read, zero leftover unmanaged risk. 513 passed total (+9 across both
+fixes), architecture tests still pass. Full session detail, including the abrupt (unexplained, not
+chased further per the user's own call) kill of the second live attempt, in this doc's own Step 5
+entries above. **Not done**: Step 6 (demo-to-live readiness criteria) and the unscoped "operational
+reliability hardening" design item — each its own separate, later, explicit go-ahead/scoping. Real
+account state as of this entry: 1 open runner position + 4 pending grid orders left over from the
+abruptly-killed second attempt (all protected, all already reported), plus whatever remains from
+earlier in the day — not reconciled or touched by Step 5 itself, since managing leftover exposure
+was never in this step's scope. **Exact next smallest step, whenever resumed**: decide whether to
+reconcile/manage the leftover open positions/orders first, then scope Step 6 or the operational-
+reliability-hardening item — no code work should start until one of those is chosen.

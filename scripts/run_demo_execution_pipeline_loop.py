@@ -87,7 +87,7 @@ import dataclasses
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -95,7 +95,10 @@ from dotenv import load_dotenv
 from mt5_mcp_trading.config.settings import ExecutionMode, load_settings
 from mt5_mcp_trading.domain.models import RiskDecision
 from mt5_mcp_trading.execution.composition import demo_execution_session
-from mt5_mcp_trading.monitoring.live_performance import compute_daily_loss_decision
+from mt5_mcp_trading.monitoring.live_performance import (
+    compute_daily_loss_decision,
+    infer_deal_time_offset,
+)
 from mt5_mcp_trading.monitoring.logging_setup import configure_logging, get_logger
 from mt5_mcp_trading.mt5_adapter.mcp_deal_history import McpDealHistoryReader
 from mt5_mcp_trading.mt5_adapter.mcp_market_data import McpMarketDataSource
@@ -133,12 +136,12 @@ POLL_INTERVAL_SECONDS = 5.0      # how often to re-check the stop file while wai
 MAX_CYCLES = 12                  # hard ceiling regardless of runtime
 MAX_RUNTIME_MINUTES = 90.0       # hard ceiling regardless of cycle count
 
-# Phase 9 Step 5's kill-switch config (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md). MAX_DAILY_LOSS
-# deliberately defaults to None -- off, per every other Optional guard field in this codebase --
-# until a real smoke-test threshold is explicitly decided and approved as its own separate step;
-# building this wiring does not itself authorize running a live trigger test. RESET_HOUR_UTC is
-# still Step 2's unreviewed placeholder default, carried forward unresolved.
-MAX_DAILY_LOSS: float | None = None
+# Phase 9 Step 5's kill-switch config (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md). MAX_DAILY_LOSS is
+# now set to a deliberately tiny, easily-crossed SMOKE-TEST value (trips on the first net realized
+# loss of any size) -- NOT a real production threshold; explicitly approved for one live trigger
+# test (see checkpoint doc, Step 5). RESET_HOUR_UTC kept at Step 2's default (0, UTC midnight) --
+# reviewed and confirmed fine for a single short smoke-test run.
+MAX_DAILY_LOSS: float | None = 0.01
 RESET_HOUR_UTC = 0
 DAILY_LOSS_CONFIG = DailyLossLimitConfig(max_daily_loss=MAX_DAILY_LOSS, reset_hour_utc=RESET_HOUR_UTC)
 
@@ -211,14 +214,43 @@ async def _compute_daily_loss_decision(
     callers must not treat this as safe to call unguarded. Short-circuits to zero real MCP calls
     when config.max_daily_loss is None (check_daily_loss_limit() always approves in that case
     regardless of the P&L figure -- see risk/daily_loss_guard.py), so leaving the kill-switch off
-    costs nothing extra per cycle."""
+    costs nothing extra per cycle.
+
+    Deal.time is NOT true UTC -- it's broker server time mislabeled as UTC (root-caused live,
+    2026-08-07, see monitoring/live_performance.py's module docstring and
+    docs/PHASE9_FORWARD_TEST_CHECKPOINT.md's Step 5 entry: the ORIGINAL version of this function,
+    which queried from_date=boundary only with no to_date, found ZERO deals across a full 12-cycle
+    live run despite 3 real, confirmed closes -- because the mislabel pushed them outside the
+    comparison window). Fetches with a full-day margin on both ends of the true window so no real
+    deal is ever missed regardless of the mislabel's direction, then infers the real offset from
+    whatever MARKET-order history is already available and applies it precisely via
+    compute_daily_loss_decision()'s deal_time_offset -- never hardcoded, since broker server-time
+    conventions aren't assumed fixed forever (e.g. daylight saving).
+
+    A SECOND real gap found the same day, same live re-run, after the first fix above: the
+    trusted ticket set must come from state_store.all_records() (every locally recorded ticket,
+    regardless of status), NOT all_closed(). record_closed() is only ever called by
+    McpOrderExecutor.close_position() -- nothing in this codebase reconciles a broker-side
+    SL/TP close to local status="CLOSED" automatically, and that's how the overwhelming majority
+    of real closes happen. Sourcing trusted tickets from all_closed() alone meant the kill-switch
+    could only ever see a loss this project explicitly closed itself -- effectively never, for
+    grid/runner's normal operation -- confirmed live: a real re-run's own SL/TP-driven close was
+    completely invisible to realized_pnl_since() even after the Deal.time fix, because its ticket
+    was still locally "OPEN". all_records() sidesteps needing local status to be accurate at
+    all -- exactly the same "never trust a stale local status field for a safety decision"
+    discipline determine_posture()/the MANAGE_ONLY gate/the magic-recovery fix already apply
+    elsewhere."""
     if config.max_daily_loss is None:
         return check_daily_loss_limit(0.0, config)
     now = datetime.now(timezone.utc)
     boundary = daily_reset_boundary(now, config.reset_hour_utc)
-    deals = await McpDealHistoryReader(client).get_deals(from_date=boundary.strftime("%Y-%m-%d"))
-    trusted_ids = {r.ticket for r in state_store.all_closed()}
-    return compute_daily_loss_decision(deals, trusted_ids, now, config)
+    fetch_from = (boundary - timedelta(days=1)).strftime("%Y-%m-%d")
+    fetch_to = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    deals = await McpDealHistoryReader(client).get_deals(from_date=fetch_from, to_date=fetch_to)
+    all_records = state_store.all_records()
+    trusted_ids = {r.ticket for r in all_records}
+    offset = infer_deal_time_offset(all_records, deals) or timedelta(0)
+    return compute_daily_loss_decision(deals, trusted_ids, now, config, deal_time_offset=offset)
 
 
 async def _daily_loss_decision_for_cycle(

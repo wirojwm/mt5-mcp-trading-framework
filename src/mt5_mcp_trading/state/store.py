@@ -254,3 +254,18 @@ class StateStore:
         # to join against real deals. Only "CLOSED" represents a filled position that later
         # closed.
         return tuple(r for r in self._load_all().values() if r.status == "CLOSED")
+
+    def all_records(self) -> tuple[LocalOrderRecord, ...]:
+        """Every locally recorded ticket regardless of status -- unlike all_open()/all_closed(),
+        which filter by the local `status` field. Needed wherever a caller must not rely on
+        local status having been kept up to date -- e.g. a real close via broker-side SL/TP,
+        which NOTHING in this codebase reconciles automatically (record_closed() is only ever
+        called by McpOrderExecutor.close_position(), never by anything that notices a broker-
+        side close on its own). Root-caused live, 2026-08-07
+        (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md): sourcing the daily-loss kill-switch's trusted
+        ticket set from all_closed() alone silently missed every same-session SL/TP close, since
+        those tickets stay locally "OPEN" until a later, separate reconciliation step runs --
+        exactly the stale-status trap determine_posture()/the MANAGE_ONLY gate/the magic-recovery
+        fix have always avoided by reading live state fresh rather than trusting local `status`
+        for a safety decision."""
+        return tuple(self._load_all().values())

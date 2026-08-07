@@ -7,7 +7,7 @@ anywhere in this file, per Phase 9 Step 4/5's own discipline
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,6 +16,7 @@ from mt5_mcp_trading.domain.models import Deal
 from mt5_mcp_trading.monitoring.live_performance import (
     build_closed_trades,
     compute_daily_loss_decision,
+    infer_deal_time_offset,
     realized_pnl_since,
 )
 from mt5_mcp_trading.risk.daily_loss_guard import DailyLossLimitConfig
@@ -192,6 +193,47 @@ def test_multiple_records_each_resolve_independently() -> None:
     assert {s.ticket for s in result.skipped} == {2}
 
 
+# ---------- infer_deal_time_offset ----------
+
+def test_infer_deal_time_offset_returns_none_with_no_records() -> None:
+    assert infer_deal_time_offset([], []) is None
+
+
+def test_infer_deal_time_offset_ignores_limit_orders() -> None:
+    # Only a LIMIT record exists -- submitted_at may not be close to the real fill instant for a
+    # LIMIT order (it can fill much later), so this must never be used as a reference.
+    record = _record(order_type="LIMIT", submitted_at=T0)
+    deals = [_deal(entry=0, time=T0 + timedelta(hours=5))]  # would imply a bogus +5h if trusted
+    assert infer_deal_time_offset([record], deals) is None
+
+
+def test_infer_deal_time_offset_derives_offset_from_a_market_order() -> None:
+    record = _record(order_type="MARKET", submitted_at=T0)
+    deals = [_deal(entry=0, time=T0 + timedelta(hours=3))]  # mislabeled +3h, like the real bug
+    assert infer_deal_time_offset([record], deals) == timedelta(hours=3)
+
+
+def test_infer_deal_time_offset_rounds_to_the_nearest_15_minutes() -> None:
+    record = _record(order_type="MARKET", submitted_at=T0)
+    # 3h07m of raw noise -- closer to 3h00m than 3h15m on a 15-minute grid.
+    deals = [_deal(entry=0, time=T0 + timedelta(hours=3, minutes=7))]
+    assert infer_deal_time_offset([record], deals) == timedelta(hours=3)
+
+
+def test_infer_deal_time_offset_uses_median_to_ignore_an_outlier() -> None:
+    records = [
+        _record(ticket=1, order_type="MARKET", submitted_at=T0),
+        _record(ticket=2, order_type="MARKET", submitted_at=T0),
+        _record(ticket=3, order_type="MARKET", submitted_at=T0),
+    ]
+    deals = [
+        _deal(position_id=1, entry=0, time=T0 + timedelta(hours=3)),
+        _deal(position_id=2, entry=0, time=T0 + timedelta(hours=3)),
+        _deal(position_id=3, entry=0, time=T0 + timedelta(hours=9)),  # a single wild outlier
+    ]
+    assert infer_deal_time_offset(records, deals) == timedelta(hours=3)
+
+
 # ---------- realized_pnl_since ----------
 
 def test_realized_pnl_since_sums_matching_deals_at_or_after_since() -> None:
@@ -227,6 +269,27 @@ def test_realized_pnl_since_never_filters_by_deal_magic() -> None:
 def test_realized_pnl_since_rejects_naive_since() -> None:
     with pytest.raises(ValueError):
         realized_pnl_since([], since=datetime(2026, 8, 4), trusted_position_ids=set())
+
+
+def test_realized_pnl_since_defaults_to_zero_offset_unchanged_behavior() -> None:
+    deals = [_deal(position_id=1, time=T0, profit=10.0, commission=0.0, swap=0.0, fee=0.0)]
+    total = realized_pnl_since(deals, since=T0, trusted_position_ids={1})
+    assert total == pytest.approx(10.0)
+
+
+def test_realized_pnl_since_applies_deal_time_offset_before_filtering() -> None:
+    # deal.time (mislabeled) is 5 minutes BEFORE `since` -- excluded without correction. Its real
+    # instant (deal.time - offset) is 5 minutes AFTER `since` -- must be included once corrected.
+    since = T0
+    deal_time = T0 - timedelta(minutes=5)
+    offset = timedelta(minutes=-10)  # true_time = deal_time - offset = deal_time + 10min
+    deals = [_deal(position_id=1, time=deal_time, profit=10.0, commission=0.0, swap=0.0, fee=0.0)]
+
+    excluded = realized_pnl_since(deals, since=since, trusted_position_ids={1})
+    included = realized_pnl_since(deals, since=since, trusted_position_ids={1}, deal_time_offset=offset)
+
+    assert excluded == pytest.approx(0.0)
+    assert included == pytest.approx(10.0)
 
 
 # ---------- compute_daily_loss_decision ----------
@@ -273,3 +336,28 @@ def test_compute_daily_loss_decision_rejects_naive_now() -> None:
     config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=0)
     with pytest.raises(ValueError):
         compute_daily_loss_decision([], set(), now=datetime(2026, 8, 4), config=config)
+
+
+def test_compute_daily_loss_decision_applies_deal_time_offset() -> None:
+    # Given the real bug's confirmed sign (Deal.time mislabeled +3h ahead, see
+    # monitoring/live_performance.py's module docstring), a loss that genuinely happened BEFORE
+    # today's reset boundary (yesterday's window) must not be misattributed to today just
+    # because the +3h mislabel pushes its apparent timestamp past the boundary.
+    reset_hour_utc = 0
+    now = datetime(2026, 8, 7, 2, 0, 0, tzinfo=timezone.utc)
+    boundary = datetime(2026, 8, 7, 0, 0, 0, tzinfo=timezone.utc)
+    true_deal_time = boundary - timedelta(minutes=30)  # genuinely YESTERDAY, before the boundary
+    mislabeled_deal_time = true_deal_time + timedelta(hours=3)  # +3h mislabel, like the real bug
+    assert mislabeled_deal_time > boundary  # would look like "today" without correction
+
+    deals = [_deal(position_id=1, time=mislabeled_deal_time, profit=-600.0,
+                    commission=0.0, swap=0.0, fee=0.0)]
+    config = DailyLossLimitConfig(max_daily_loss=500.0, reset_hour_utc=reset_hour_utc)
+
+    uncorrected = compute_daily_loss_decision(deals, {1}, now=now, config=config)
+    corrected = compute_daily_loss_decision(
+        deals, {1}, now=now, config=config, deal_time_offset=timedelta(hours=3),
+    )
+
+    assert uncorrected.approved is False  # wrongly counts yesterday's loss as today's
+    assert corrected.approved is True  # correctly excluded once the real offset is applied

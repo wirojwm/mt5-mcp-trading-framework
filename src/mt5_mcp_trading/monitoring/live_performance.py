@@ -28,13 +28,45 @@ compute_daily_loss_decision() (Phase 9 Step 5) is the single function a live cal
 cycle to get a real daily-loss-limit RiskDecision -- combines realized_pnl_since() above with
 risk.daily_loss_guard.check_daily_loss_limit(). Still pure/no adapter access: callers fetch
 `deals` themselves (scoped to the current reset window) before calling this.
+
+infer_deal_time_offset()/deal_time_offset (Phase 9 Step 5, live smoke test root-cause, 2026-08-07):
+Deal.time is NOT true UTC despite its own docstring's tzinfo=timezone.utc attachment -- confirmed
+live, precisely, by cross-checking three deals' reported times against the same tickets'
+independently-known true-UTC fill instants (this project's own log timestamps): an exact, repeated
++3:00:00 offset. MT5's deal/order history 'time' field is broker/terminal SERVER time, not literal
+epoch/UTC, unlike tick/candle data (confirmed by reading the vendored client's own conversion code:
+get_symbol_price.py/get_candles_latest.py both correctly do `tz=timezone.utc`/`utc=True` on a
+genuine epoch value; get_deals_as_dataframe.py's `pd.to_datetime(..., unit='s')` omits `utc=True`
+entirely -- consistent with a value that isn't genuine epoch in the first place, needing a real
+correction rather than just a missing flag). A 3-hour mislabel is exactly wide enough to push
+recently-closed deals outside a same-day reset-boundary window, which is the precise mechanism
+behind the 2026-08-07 smoke test finding zero deals every cycle despite 3 real, confirmed closes.
+
+Since the real offset is a property of the connected broker/server (unknown in advance, and not
+assumed to be a fixed constant since broker server-time conventions can shift with daylight
+saving), infer_deal_time_offset() derives it live each session from data already available: any
+CLOSED, MARKET-order LocalOrderRecord's own `submitted_at` (true UTC, recorded locally via
+`datetime.now(timezone.utc)` at the moment of submission -- see mcp_order_executor.py) is, for a
+MARKET order specifically, essentially simultaneous with the real fill instant (unlike a LIMIT
+order, which may fill much later and would corrupt the comparison -- deliberately excluded via
+`order_type == "MARKET"`). Diffing that against the matching IN-entry Deal's own (mislabeled) time
+recovers the real offset directly, no guessing. Rounded to the nearest 15 minutes (real broker
+server offsets are always round numbers, never an arbitrary number of minutes) and taken as the
+median across every available MARKET-order reference, to filter out ordinary
+network/processing-latency noise and any single-record outlier.
+
+realized_pnl_since()/compute_daily_loss_decision() both take an optional `deal_time_offset`
+(default `timedelta(0)`, i.e. no correction -- byte-for-bit unchanged behavior for every existing
+caller/test) and subtract it from `deal.time` before comparing against `since`, so the reset-
+boundary filter compares against the deal's REAL true-UTC instant, not its mislabeled one.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from statistics import median
 from typing import AbstractSet, Optional, Sequence
 
 from mt5_mcp_trading.backtest.ledger import ClosedTrade
@@ -138,24 +170,56 @@ def build_closed_trades(
     return LiveTradeJoinResult(trades=tuple(trades), skipped=tuple(skipped))
 
 
+def infer_deal_time_offset(
+    closed_records: Sequence[LocalOrderRecord], deals: Sequence[Deal],
+) -> Optional[timedelta]:
+    """Derives the real correction for Deal.time's UTC mislabel (see this module's docstring) --
+    live, from whatever CLOSED MARKET-order records/deals are already available, no guessing and
+    no hardcoded constant. Returns None when no usable MARKET-order reference exists yet (e.g. a
+    fresh StateStore, or a run that has only ever placed LIMIT orders) -- callers decide their own
+    fallback; this function never fabricates a value it can't derive."""
+    by_position: dict[int, list[Deal]] = defaultdict(list)
+    for deal in deals:
+        by_position[deal.position_id].append(deal)
+
+    raw_diffs: list[timedelta] = []
+    for record in closed_records:
+        if record.order_type != "MARKET":
+            continue
+        ins = [d for d in by_position.get(record.ticket, []) if d.entry in (0, 2)]
+        if not ins:
+            continue
+        raw_diffs.append(min(d.time for d in ins) - record.submitted_at)
+
+    if not raw_diffs:
+        return None
+
+    quarter_hour = timedelta(minutes=15)
+    rounded_quarters = round(median(raw_diffs) / quarter_hour)
+    return rounded_quarters * quarter_hour
+
+
 def realized_pnl_since(
     deals: Sequence[Deal], since: datetime, trusted_position_ids: AbstractSet[int],
+    deal_time_offset: timedelta = timedelta(0),
 ) -> float:
     """The real `realized_pnl_since_reset` input risk.daily_loss_guard.check_daily_loss_limit()
     still has no source for (Step 2/3's carried-forward risk). Sums profit+commission+swap+fee
     across every deal whose position_id is in `trusted_position_ids` (StateStore-derived --
-    never deal.magic, see Deal's own docstring) and whose time is at or after `since`.
+    never deal.magic, see Deal's own docstring) and whose CORRECTED time
+    (deal.time - deal_time_offset -- see this module's docstring) is at or after `since`.
 
     `since` must be timezone-aware, matching daily_loss_guard.daily_reset_boundary()'s own
     requirement (its return value is this function's natural `since` argument) -- rejected
-    rather than silently compared against Deal.time's guaranteed-aware value."""
+    rather than silently compared against Deal.time's guaranteed-aware value. `deal_time_offset`
+    defaults to zero (no correction), matching every existing caller's prior behavior exactly."""
     if since.tzinfo is None:
         raise ValueError("realized_pnl_since() requires a timezone-aware `since`")
 
     return sum(
         deal.profit + deal.commission + deal.swap + deal.fee
         for deal in deals
-        if deal.position_id in trusted_position_ids and deal.time >= since
+        if deal.position_id in trusted_position_ids and (deal.time - deal_time_offset) >= since
     )
 
 
@@ -164,6 +228,7 @@ def compute_daily_loss_decision(
     trusted_position_ids: AbstractSet[int],
     now: datetime,
     config: DailyLossLimitConfig,
+    deal_time_offset: timedelta = timedelta(0),
 ) -> RiskDecision:
     """Phase 9 Step 5: the single function a live caller needs each cycle to get a real
     daily-loss-limit decision -- derives the current reset boundary, sums realized P&L since it
@@ -172,7 +237,12 @@ def compute_daily_loss_decision(
     (daily_reset_boundary()'s own requirement). `deals` is expected to already cover at least
     the current reset window -- callers fetch it via
     McpDealHistoryReader.get_deals(from_date=...) scoped to
-    daily_reset_boundary(now, config.reset_hour_utc)."""
+    daily_reset_boundary(now, config.reset_hour_utc), WIDENED by a safety margin on both ends to
+    tolerate Deal.time's UTC mislabel (see this module's docstring) -- narrowing it to exactly the
+    reset boundary, as the pre-2026-08-07 caller did, is what caused that day's live smoke test to
+    silently miss every real deal. `deal_time_offset` defaults to zero (no correction), matching
+    every existing caller's prior behavior exactly."""
     boundary = daily_reset_boundary(now, config.reset_hour_utc)
-    pnl = realized_pnl_since(deals, since=boundary, trusted_position_ids=trusted_position_ids)
+    pnl = realized_pnl_since(deals, since=boundary, trusted_position_ids=trusted_position_ids,
+                              deal_time_offset=deal_time_offset)
     return check_daily_loss_limit(pnl, config)
