@@ -1425,6 +1425,370 @@ the detached-process pattern proven above (not backgrounded Bash), decide whethe
 and needs its own fresh, explicit go-ahead per this project's standing live-testing-pause rule —
 not implied by this entry.
 
+### Live run #4 (2026-08-10): a new incident type — MANAGE_ONLY reconciliation trip at cycle 10, root-caused, reconciled
+
+Resumed per explicit go-ahead. Pre-flight (read-only): stop-file present (expected), zero orphan
+`python.exe` processes, account found **flat** (0 positions, 0 pending orders) — everything left
+open at the end of run #3 (2026-08-07) had closed on its own overnight, same "no leftover exposure
+to manage" pattern seen before. Relaunched as a fresh detached process (PID `12276`, `Start-Process`,
+same params: `MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`, `MAX_DAILY_LOSS=50.0`).
+
+Ran cycles 1–9 cleanly. **Cycle 10 stopped the loop on a genuinely new condition, not the duration
+cap or the kill-switch**: the grid cycle's SELL leg and the whole runner cycle were both refused
+with `ExecutionBlockedError: execution posture is MANAGE_ONLY`, triggered by
+`reconcile()` finding `unknown_real=(171909600,)` — a real MT5-side ticket with no matching local
+`StateStore` record. Per the script's "no error tolerance" design, this correctly halted the whole
+loop rather than keep trading blind to an unrecognized live ticket. Clean exit confirmed (no orphan
+process); 17 cycles across runs #1–#4 combined by this point, 10 of them this run.
+
+**Root-caused via a dedicated read-only investigation**
+(`scripts/run_demo_execution_investigate_ticket_171909600.py`, new, account-wide
+`get_all_positions`/`get_all_pending_orders`/`get_orders`-history/`get_deals`-history reads, no
+`executor` reference, no order of any kind): `171909600` is **MT5's own auto-generated order that
+executed the stop-loss on an already-tracked local grid position (`171908077`)**, not a foreign
+trade. Evidence cross-referenced directly: `get_orders` history shows `171909600` as a BUY order,
+state=FILLED, `time_setup`→`time_done` exactly 1 second apart, comment `"[sl 65087.71]"`;
+`get_deals` history shows deal `99944397` (order=`171909600`, `position_id=171908077`, entry=OUT,
+profit=−0.6, same `"[sl 65087.71]"` comment); the local record for `171908077` (grid SELL LIMIT,
+magic `71101`) has `requested_sl=65087.71` — an exact match. `171909599` (the cycle's own new grid
+BUY, placed successfully moments earlier) is unrelated to `171909600` except by coincidental
+ticket-number adjacency (both assigned by the broker within the same one-second burst).
+
+**Why local state didn't recognize it**: `StateStore` only ever writes a record when this
+project's own executor submits an order (`origin: "system_owned"`) — it never records a ticket MT5
+generates internally to execute a stop-loss/take-profit against a position already being tracked.
+`reconcile()` matches purely by ticket number against a live, account-wide snapshot with no
+concept of "this ticket closes a position I already know about," so a transient (~1-second-lived)
+SL-execution artifact looked identical to a truly foreign ticket for the single instant the SELL
+leg's own `reconcile()` call happened to catch it still listed as a live pending order. **Structural
+finding, flagged not fixed**: the reconciliation policy cannot currently distinguish a genuinely
+foreign ticket from this kind of transient artifact on an already-tracked position — both trip
+`MANAGE_ONLY` identically. A future improvement is possible (e.g. special-casing short-lived
+orders whose comment matches `"[sl ...]"`/`"[tp ...]"` and whose closed position is already locally
+known) but is its own scoped design change, not built ad hoc here.
+
+`171908077`'s stale local record (still `OPEN`) reconciled to `CLOSED` via a new, narrowly-scoped
+one-off script (`scripts/run_demo_execution_reconcile_171908077.py`, same pattern as every prior
+single-ticket reconcile script in this project) — re-verified live-absent immediately before
+writing, one `StateStore.record_closed()` call citing deal `99944397` directly, no MCP order call
+of any kind. Verified `PASSED` (`status='CLOSED'`) immediately after.
+
+```
+pytest -q -> unaffected (no src/tests/ changed this entry -- live run, one diagnostic script, one reconcile script)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_investigate_ticket_171909600.py` (new,
+read-only diagnostic), `scripts/run_demo_execution_reconcile_171908077.py` (new, one-off
+reconcile), `var/order_state/171908077.json` (status→`CLOSED`, not tracked by git), new local
+records from run #4's 9 real cycles (not tracked by git), this checkpoint doc.
+
+### Live run #5 (2026-08-10, same day): 17 cycles, stopped safely for a lunch break via the stop-file
+
+Relaunched immediately after `171908077`'s reconciliation, per explicit go-ahead — fresh detached
+process (PID `2008`, `Start-Process`), same params (`MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`,
+`MAX_DAILY_LOSS=50.0`). With a 12:00 lunch break approaching and ~38 minutes of runway left at the
+check-in point (cycle 9 of 30, on pace to finish around 13:04 — well past noon), three options were
+evaluated: shorten to finish before noon, stop at noon and resume in the afternoon, or run through
+lunch unsupervised. **Decision: stop at noon via the stop-file** — technically the run is safe to
+leave unattended (detached process, kill-switch armed, position caps enforced, proven
+no-error-tolerance auto-halt), but every prior Step 7 live attempt has deliberately stopped before
+an unsupervised gap (both the 2026-08-07 lunch break and its end-of-day stop) rather than run
+unwatched, and this session kept that same discipline rather than deviate.
+
+Ran cycles 1–17 cleanly — **zero errors, zero `MANAGE_ONLY` trips, zero kill-switch triggers
+anywhere in this run's log**, cadence a steady ~5.03 min/cycle (301–302s each, matching the
+configured 300s interval plus small overhead). Stop-file created at **12:00:41 local**; loop noticed
+it during its next inter-cycle poll and logged `Stop requested during inter-cycle wait: stop file
+present` at 12:00:45, then `Done. 17 cycle(s) run.` at 12:00:47 — a clean stop-file exit, not a
+kill, well within the `POLL_INTERVAL_SECONDS=5.0` design. Zero orphan `python.exe` processes
+confirmed immediately after.
+
+**Final read-only live-state snapshot** (`get_positions`/`get_orders`, BTCUSD): 1 open runner
+position (`171912060`, SELL, sl=65057.37/tp=64865.76, magic=72101 locally) + 6 pending grid orders
+(`171906918`, `171913521`, `171913562`, `171913862`, `171914188`, `171914190`, all magic=71101
+locally) — every live ticket matched a local record this time (no repeat of run #4's `unknown_real`
+condition). **Total live exposure 0.07 lots**, slightly above the nominal `max_open_lots=0.06`
+cap — not investigated further this entry (flagged as an observation, not a chase): each individual
+submission is checked against the cap using the live data available at that cycle's own reconcile
+call, so a small transient overshoot can accumulate across cycles as fills/SL-replacements happen
+between checks; the guard itself is confirmed still working (it explicitly rejected a grid SELL
+earlier this same run for exactly this reason — see cycle 9's log). Left exactly as-is, no cleanup
+performed, per explicit instruction.
+
+```
+pytest -q -> unaffected (no src/tests/ changed this entry -- live run only)
+```
+
+**Files changed this entry**: none in `src`/`tests`; `var/order_state/*.json` (new local records
+from run #5's 17 cycles, not tracked by git); `var/step7_live_run5_*.log` (new, not tracked by
+git), this checkpoint doc.
+
+**Exact next step when resumed (afternoon, same day)**: launch a fresh detached process via the
+same `Start-Process` pattern proven safe across runs #3–#5. Cycle counts do **not** carry forward —
+`MAX_CYCLES` resets to zero on every new launch (no resume-from-N capability exists in the script
+today) — but this is loop-bookkeeping only: all real trades, `StateStore` records, and eventual
+live-performance-monitor numbers accumulate across launches regardless (same pattern already
+established across runs #1–#5). The 1 open runner position + 6 pending grid orders left at this
+stop can either ride into the next launch or be reviewed first — its own explicit decision, not
+implied by this entry. Needs its own fresh, explicit go-ahead per this project's standing
+live-testing-pause rule.
+
+### Afternoon pre-flight (2026-08-10): manual close/cancel confirmed, 36 stale local records reconciled, Step 7 not yet relaunched
+
+Before resuming, user manually closed/cancelled all remaining demo positions and pending orders
+(the 1 open runner position + 6 pending grid orders left at run #5's stop) directly, outside this
+project's own code. Read-only reconciliation performed per explicit instruction, **no order of any
+kind placed, modified, cancelled, or closed by this session**:
+
+- New read-only diagnostic (`scripts/run_demo_execution_check_20260810_afternoon_preflight.py`):
+  confirmed **0 live positions, 0 live pending orders** on BTCUSD (0.00 lots total) — the manual
+  close/cancel is fully reflected in real MT5 state. Also flagged every local `StateStore` record
+  dated 2026-08-10 still `OPEN`/`OPEN_UNPROTECTED` (36 of them, spanning runs #4 and #5) as stale
+  relative to that live snapshot.
+- Zero orphan `python.exe`/`pythonw.exe` processes (`Get-CimInstance Win32_Process`, empty result).
+- Stop-file (`var/STOP_PIPELINE_LOOP`) still present, timestamped `12:00:41` — exactly the state
+  left by run #5's clean stop-file exit; not yet deleted (deletion deferred to the actual relaunch
+  step, not part of this read-only pass).
+- New one-off reconciliation (`scripts/run_demo_execution_reconcile_20260810_afternoon_leftovers.py`,
+  same classify-by-deal-history pattern as the 2026-08-07 leftovers script, scoped to today's date):
+  all 36 stale 2026-08-10 records reconciled — **0 still genuinely live** (matching the flat
+  snapshot above, so nothing was left untouched as "still live"), **31 reconciled to `CLOSED`**
+  (matching OUT-entry deal found — includes both real SL/TP/manual-close fills during the runs and
+  the manual closes done before lunch), **5 reconciled to `CANCELLED`** (no deal found — grid LIMIT
+  orders that never filled, cancelled manually or by the runs themselves). Re-verified with the
+  same read-only diagnostic immediately after: zero 2026-08-10 records remain stale.
+- Note, not investigated further (pre-existing, unrelated to today): 82 older local records from
+  2026-08-03/04/07 are also still `OPEN` — out of scope for this pass, left exactly as found.
+- The morning run's 17-cycle history (runs #1–#3, 2026-08-07 and earlier) is untouched by any of
+  this — this pass only reconciled records dated `2026-08-10`, and reconciliation is a local-only
+  `StateStore` write keyed by ticket, never a deletion or rewrite of past entries; it remains
+  intact as historical evidence exactly as previously checkpointed.
+
+```
+pytest -q -> unaffected (no src/tests/ changed this entry -- one read-only diagnostic script, one
+local-write-only reconciliation script)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_check_20260810_afternoon_preflight.py`
+(new, read-only diagnostic), `scripts/run_demo_execution_reconcile_20260810_afternoon_leftovers.py`
+(new, one-off reconciliation), `var/order_state/*.json` (36 records updated to `CLOSED`/
+`CANCELLED`, not tracked by git), this checkpoint doc.
+
+**Step 7 has NOT been relaunched by this entry.** Account and local state (for today's records) are
+now mutually consistent and flat; still waiting on a fresh, explicit go-ahead per this project's
+standing live-testing-pause rule before the next detached-process launch.
+
+### Live run #6 (2026-08-10 afternoon): launched, per explicit go-ahead
+
+Stop-file (`var/STOP_PIPELINE_LOOP`) deleted first (the residue from run #5's lunch stop), then
+relaunched as a fresh, fully detached process via the same `Start-Process` pattern proven safe
+across runs #3–#5 — PID `7676`, same params (`MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`,
+`MAX_DAILY_LOSS=50.0`), stdout/stderr redirected to
+`var/step7_live_run6_20260810_140253_{stdout,stderr}.log`, plus the script's own
+`var/logs/pipeline_loop_20260810T070257Z.log`. Cycle 1 confirmed clean within ~15s of launch: grid
+BUY/SELL LIMIT orders placed (`171920075`, `171920076`), runner MARKET BUY filled and SL/TP-verified
+(`171920077`), zero errors, process alive and responding.
+
+**Check-in (~50 minutes later): ran cycles 1–10 cleanly, then cycle 11 tripped `MANAGE_ONLY` again**
+— the same incident TYPE as run #4 (`unknown_real=(171922069,)`), not the duration cap or the
+kill-switch. Loop stopped itself per its "no error tolerance" design (`Done. 11 cycle(s) run.`);
+process confirmed exited cleanly, zero orphan `python.exe`/`pythonw.exe` processes immediately
+after.
+
+**Root-caused via a dedicated read-only investigation**
+(`scripts/run_demo_execution_investigate_ticket_171922069.py`, same account-wide read-only pattern
+as the 171909600 investigation): `171922069` is again **MT5's own auto-generated stop-loss-execution
+order**, this time closing `171920424` (a grid position opened earlier this same run) for a real
+`-0.28` loss — order history shows state `4` (DONE), comment `[sl 65152.39]`, `time_setup`→
+`time_done` exactly 1 second apart; deal history confirms `deal=99952627`, `order=171922069`,
+`position_id=171920424`, same SL price. **Confirms this is the same structural gap flagged (not
+fixed) after run #4**, not a new bug — `reconcile()` still cannot distinguish a genuinely foreign
+ticket from a transient (~1-second-lived) SL/TP-execution artifact on an already-tracked position;
+both trip `MANAGE_ONLY` identically. Separately noted in the same investigation: runner position
+`171920077` had already been closed by its own SL (order `171922020`, `-0.53`) about 90 seconds
+*before* the incident ticket, without tripping anything — the trip only happens when reconcile()'s
+specific call instant lands inside that ~1-second window, which is inherently intermittent.
+
+**Re-checked full live state after the halt: the account had already gone fully flat again on its
+own** (0 positions, 0 pending orders, BTCUSD) — all 13 of run #6's real tickets across its 11
+cycles had already filled and subsequently closed (SL/TP) by the time of the check, none left
+genuinely open or merely cancelled-unfilled. Reconciled via a new one-off script
+(`scripts/run_demo_execution_reconcile_run6_leftovers.py`, same classify-by-deal-history pattern):
+all 13 → `CLOSED`, 0 still live, 0 cancelled-unfilled. Re-verified: zero run #6 records remain
+stale.
+
+```
+pytest -q -> unaffected (no src/tests/ changed this entry -- live run, two new read-only/
+reconciliation scripts)
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_investigate_ticket_171922069.py` (new,
+read-only diagnostic), `scripts/run_demo_execution_reconcile_run6_leftovers.py` (new, one-off
+reconciliation), `var/order_state/*.json` (13 records updated to `CLOSED`, not tracked by git),
+`var/step7_live_run6_*.log` (new, not tracked by git), this checkpoint doc.
+
+**Step 7 still has not completed a single unbroken 30-cycle/180-minute window** — 17 cycles (run
+#5) remains the longest continuous stretch reached in a single launch; run #6 reached 11. The
+`unknown_real`-on-transient-SL-artifact gap has now tripped **twice** (runs #4 and #6) — worth
+treating as a real, recurring operational cost of Step 7's current scale, not a one-off; the
+already-flagged structural fix (special-case short-lived orders whose comment matches
+`"[sl ...]"`/`"[tp ...]"` and whose closed position is already locally known) would likely prevent
+both observed instances, but remains its own scoped design change, not built ad hoc here. Account
+and local state are both flat and mutually consistent again. Next continuation: relaunch via the
+same detached-process pattern, its own fresh explicit go-ahead.
+
+### Live run #7 (2026-08-10, same afternoon): launched as-is, per explicit go-ahead
+
+User's explicit choice, offered after run #6's second occurrence of the SL-artifact `MANAGE_ONLY`
+trip: relaunch as-is rather than build the structural fix first or stop for the day — accepting
+another such trip as a plausible outcome, to be investigated/reconciled the same way if it recurs.
+Stop-file/orphan-process pre-flight repeated first (both clean). Relaunched — PID `6536`, same
+params (`MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`, `MAX_DAILY_LOSS=50.0`), stdout/stderr to
+`var/step7_live_run7_20260810_152152_{stdout,stderr}.log`, script's own log at
+`var/logs/pipeline_loop_20260810T082159Z.log`. Cycle 1 confirmed clean: grid BUY/SELL LIMIT orders
+placed (`171922884`, `171922885`), runner MARKET BUY filled and SL/TP-verified (`171922886`), zero
+errors, process alive and responding.
+
+### Stop-work order, root-cause fix, and regression tests for the recurring unknown_real/SL-artifact gap (2026-08-10, same afternoon)
+
+**Explicit instruction: stop all Step 7 live testing, do not relaunch until this is properly
+fixed and verified.** Run #7 (cycle 3, in progress) stopped cleanly via the stop-file at
+15:35:00 local (`Done. 3 cycle(s) run.`); PID `6536` confirmed exited; zero orphan
+`python.exe`/`pythonw.exe` processes; stop-file left present (correct "stopped" state). No order
+of any kind was placed, modified, cancelled, or closed during the fix work below — every script
+run was either read-only or local-only (StateStore file writes), and the full test suite runs
+entirely against mocks/stubs, never a live MCP connection.
+
+**Root cause.** MT5 briefly (~1 second, confirmed live twice: run #4's `171909600`/`171908077`,
+run #6's `171922069`/`171920424`) surfaces its own auto-generated SL/TP-close order as a live
+PENDING order while executing a position's stop, before the fill settles into history.
+`McpOrderExecutor._current_posture()`'s `reconcile()` call is deliberately ticket-only (see
+`state/reconcile.py`'s own docstring — never matches by symbol/side/price/timing, exactly to
+avoid guessing ownership) and has no local record for this transient ticket, since this project
+never places it. If a `submit()`/`cancel()`/`close_position()` call's reconciliation happens to
+land inside that ~1-second window, the ticket reconciles as `unknown_real`, correctly tripping
+`MANAGE_ONLY` per `state/policy.py`'s "cannot be matched safely" contract and halting the whole
+loop (decision 3's "no error tolerance", `pipeline_loop.py`). This is a VALID safety response to
+a real gap in what `reconcile()` can see, not a bug in `reconcile()`/`determine_posture()`
+themselves — both are unchanged by this fix. The actual gap is that nothing previously existed
+to supply reconcile() with the ADDITIONAL evidence (real deal history) that would let a human —
+or code, on the same evidence a human already used manually after runs #4 and #6 — recognize
+this specific, narrow case.
+
+**Design decision.** A conservative, additive, second-pass classifier, run only against
+`reconcile()`'s own `unknown_real` output, never touching `reconcile()`/`determine_posture()`
+themselves. New pure module `src/mt5_mcp_trading/state/sl_tp_artifact.py`
+(`classify_unknown_real_tickets()`) excludes a ticket from `unknown_real` only when ALL of the
+following hold (any missing/ambiguous signal, or any failure gathering the evidence at all,
+leaves it `unknown_real` — fail closed, the unconditional fallback):
+
+1. Exactly one real `Deal` whose `order` field equals the candidate ticket and whose `entry`
+   marks a closing leg (1=out, 2=inout) — direct order→deal linkage; zero or multiple such deals
+   is ambiguous evidence, not strong evidence.
+2. That deal's `position_id` matches a `LocalOrderRecord` ticket currently in `local_open`
+   (`StateStore.all_open()` at the time of the check) — the ONE hard ownership requirement: only
+   a real link to an ALREADY locally-known, still-open position, never invented.
+3. Symbol match, volume match (executed or requested), and side match (the deal must be on the
+   CLOSING side of the position — a BUY position only closes via a SELL deal and vice versa).
+4. The deal's own `comment` explicitly names an SL or TP execution (`^\[(sl|tp)\b`,
+   case-insensitive — the exact shape confirmed live in both incidents).
+5. The deal's price is consistent with the SAME field the comment names (an `"[sl ...]"` comment
+   must match `requested_sl`, `"[tp ...]"` must match `requested_tp`), within a tolerance scaled
+   off the reference price (not a fixed constant) — run #6's own real data proved this must be a
+   tolerance, not an exact match: the comment/configured stop was `65152.39`, the real fill was
+   `65152.03` (real stop-order slippage).
+6. Timestamp sanity: the deal's (offset-corrected, via the same `infer_deal_time_offset()` every
+   other `Deal.time` consumer in this codebase already uses) time is not before the position's
+   own `submitted_at`.
+
+**Why this does not weaken the safety model**: magic is never used anywhere in this module (MT5-
+side magic is always 0 on tickets this project places, and `Deal.magic` is separately
+unconfirmed for deal history too — see `domain/models.py`'s `Deal` docstring). No new StateStore
+record is ever written for the artifact ticket itself — it is never "adopted" as a system-owned
+order. `reconcile()` and `determine_posture()` are byte-for-bit unchanged; a ticket only stops
+being `unknown_real` after clearing every evidence check above, and any ticket that doesn't
+(including a `get_deals()` call that raises) trips `MANAGE_ONLY` exactly as it did before this
+fix existed — the fallback IS the pre-fix behavior, not a new, weaker one.
+
+**Implementation**: `McpOrderExecutor._explain_unknown_real()`
+(`mt5_adapter/mcp_order_executor.py`) wires the classifier into `_current_posture()` — makes ONE
+extra real `get_deals()` read (a wide `now±1 day` window, same established pattern as
+`_compute_daily_loss_decision()`), but ONLY when `report.unknown_real` is non-empty AND
+`local_open` is non-empty (zero added cost on every normal cycle, and mathematically zero missed
+evidence — an empty `local_open` means no candidate position could ever be linked to anything).
+For each ticket the classifier explains, the underlying position IS reconciled to `CLOSED`
+automatically (`StateStore.record_closed()`, local-write only, no MCP call, `closed_at` taken
+from the deal's own offset-corrected time) — the exact same reconciliation this project has
+always performed manually after an incident of this shape (see runs #4/#6's own leftover-
+reconciliation entries above), now automatic and evidence-backed instead of a separate later
+step. Any exception anywhere in the evidence-gathering path is caught, logged, and leaves the
+original report completely unchanged.
+
+**Tests added** (536 passed total, up from 513; architecture tests still pass):
+- `tests/unit/test_state_sl_tp_artifact.py` (18 new, pure, no I/O): both real incidents
+  (`171909600`/`171908077` from run #4, `171922069`/`171920424` from run #6, including the real
+  slippage case) reconstructed as fixtures and correctly explained; a synthetic TP-close case
+  (both BUY- and SELL-position variants — no live TP incident has actually been observed yet,
+  labeled as such); a genuinely foreign ticket (no deal at all); a deal linking to no known local
+  position; missing/ambiguous comment; multiple candidate deals for one order; price far from
+  the reference; comment/price field mismatch (comment says TP, price matches SL); wrong closing
+  side; symbol mismatch; volume mismatch; a deal timestamped before the position's own
+  submission; `deal_time_offset` correction actually changing the outcome; confirms the artifact
+  ticket is never conflated with the position ticket it closes; confirms pure-function
+  idempotency; confirms independent per-ticket classification in a mixed explained/unexplained
+  batch.
+- `tests/unit/test_mt5_adapter_mcp_order_executor.py` (5 new integration tests, full wiring
+  through a stub `McpClient`): a known SL artifact unblocks an unrelated `submit()` AND
+  reconciles its position to `CLOSED` AND never adopts the artifact ticket; same for a known TP
+  artifact; real-but-insufficient deal evidence (right ticket, wrong side) still trips
+  `MANAGE_ONLY`, distinguishing "no evidence" from "evidence present but not strong enough"; a
+  raised exception from `get_deals()` during evidence-gathering still trips `MANAGE_ONLY`
+  (fail-closed on the evidence-gathering step itself, not just on the evidence's content);
+  `StateStore.record_closed()` idempotency at the exact call site this fix uses (safe to call
+  twice for the same ticket). 4 pre-existing MANAGE_ONLY tests were updated (not weakened) to
+  account for the new, expected extra `get_deals()` read their scenarios now trigger — their
+  original intent (no mutating call happens when blocked; the matched-ticket path still succeeds
+  when not) is preserved and asserted explicitly.
+
+**Remaining uncertainty, not resolved by this fix**:
+- No live TP-close incident has ever actually been observed — the TP path is exercised by
+  synthetic-but-structurally-identical tests only, not live evidence. The next live run finding
+  one would be the first real confirmation.
+- The price tolerance (0.2% of the reference sl/tp price) is derived from exactly one real
+  slippage data point (run #6's `65152.39` vs `65152.03`) — reasonable and generous, but not
+  statistically validated across many fills. A future live run producing a legitimately-explained
+  artifact whose slippage exceeds this tolerance would surface as a renewed `MANAGE_ONLY` trip
+  (safe — fails closed exactly as intended — but would mean the tolerance needs revisiting, not a
+  silent miss).
+- This fix targets exactly the transient-order-visibility race observed live; it does not attempt
+  to eliminate the race itself (e.g. by having `reconcile()` re-check a suspicious ticket a moment
+  later before deciding) — evidence-based explanation was judged the more directly evidenced
+  approach given what was actually observed.
+- Neither incident's underlying position needed correcting beyond `CLOSED` (no partial fills,
+  no re-opened positions under the same ticket) — that broader class of scenario is unexercised.
+
+**Criteria required before Step 7 may be relaunched** (per the explicit instruction this fix
+responds to): this fix is merged and its own tests pass — necessary but NOT sufficient. Still
+required, unchanged from this project's standing rule: a fresh, explicit go-ahead for the live
+relaunch itself, plus the same standard read-only pre-flight already established (stop-file
+state, orphan/background process check, live MT5 state, local StateStore state) immediately
+before that relaunch. This fix closes the specific reconciliation gap that stopped runs #4 and
+#6 early; it does not change anything else about Step 7's scope, parameters, or safety guards
+(`MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`, `MAX_DAILY_LOSS=50.0` all unchanged).
+
+```
+pytest -q -> 536 passed (up from 513: +18 tests/unit/test_state_sl_tp_artifact.py, +5
+tests/unit/test_mt5_adapter_mcp_order_executor.py); tests/test_architecture.py -> 13 passed
+(new state/sl_tp_artifact.py imports only domain.models/state.models, no adapter import)
+```
+
+**Files changed this entry**: `src/mt5_mcp_trading/state/sl_tp_artifact.py` (new),
+`src/mt5_mcp_trading/mt5_adapter/mcp_order_executor.py` (modified — `_explain_unknown_real()`
+added, wired into `_current_posture()`), `tests/unit/test_state_sl_tp_artifact.py` (new, +18),
+`tests/unit/test_mt5_adapter_mcp_order_executor.py` (modified — +5 new tests, 4 existing
+MANAGE_ONLY tests updated for the new expected `get_deals()` call), `AGENTS.md`, this checkpoint
+doc. No live/demo MCP call anywhere in this entry.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;
@@ -1539,3 +1903,35 @@ continuous stretch reached so far, but it followed an unrelated 11-cycle run wit
 so cycle counts don't carry forward across launches. No code changed today building or diagnosing
 any of this — one new read-only diagnostic script only. Next continuation: relaunch via the
 detached-process pattern now proven safe, with its own fresh, explicit go-ahead.
+
+**Next day, two more live attempts, a new incident type root-caused, and a clean midday stop
+(2026-08-10).** Pre-flight found the account flat (everything from run #3 had closed overnight).
+**Live run #4** (detached, PID `12276`, same params) ran cycles 1–9 cleanly, then **cycle 10
+tripped a genuinely new condition** — `ExecutionBlockedError: execution posture is MANAGE_ONLY`
+from `reconcile()` finding `unknown_real=(171909600,)`, correctly halting the whole loop per its
+"no error tolerance" design (not the duration cap, not the kill-switch — a first-ever observation
+of this particular safety path). Root-caused via a dedicated read-only investigation, not left
+unexplained: `171909600` was MT5's own auto-generated stop-loss-execution order closing an
+already-tracked local grid position (`171908077`) — confirmed by cross-referencing `get_orders`/
+`get_deals` history against the local record's exact `requested_sl` value. **Structural finding
+flagged, not fixed**: the reconciliation policy can't yet distinguish a truly foreign ticket from
+this kind of transient (~1-second-lived) SL-execution artifact on a position already being
+tracked — both trip `MANAGE_ONLY` identically. `171908077`'s now-stale local record was reconciled
+to `CLOSED` (re-verified live-absent first, one `record_closed()` call, no MCP order call).
+
+**Live run #5** (detached, PID `2008`, same params) relaunched immediately after, ran cycles 1–17
+with **zero errors, zero `MANAGE_ONLY` trips, zero kill-switch triggers**, then was **stopped
+safely at 12:00:41 local via the stop-file** ahead of a lunch break — a deliberate choice (the run
+is technically safe to leave unattended, but every prior Step 7 attempt has stopped before an
+unsupervised gap rather than run unwatched, and this session kept that discipline) over shortening
+the run artificially or letting it continue unsupervised. Clean exit confirmed
+(`Done. 17 cycle(s) run.`, zero orphan processes). Final read-only snapshot: 1 open runner position
++ 6 pending grid orders, all matched to local records (no repeat of run #4's `unknown_real`
+condition), 0.07 lots total — a small, unchased transient overshoot of the nominal 0.06 cap,
+consistent with the cap being checked per-submission against a point-in-time snapshot rather than
+enforced atomically. **Step 7 still has not completed a single unbroken 30-cycle/180-minute
+window** — 17 cycles (run #5) is the longest continuous stretch reached in a single launch so far;
+cycle counts still don't carry forward across launches, though all real trade/state evidence
+accumulates regardless. The kill-switch still has not had a real chance to trip at Step 7 scale.
+Next continuation: relaunch via the same proven detached-process pattern, its own fresh explicit
+go-ahead, this afternoon.

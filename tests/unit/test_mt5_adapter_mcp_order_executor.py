@@ -170,6 +170,18 @@ EMPTY_POSITIONS_CSV = ",id,time,symbol,type,volume,open,stop_loss,take_profit,pr
 EMPTY_ORDERS_CSV = (
     ",id,time,symbol,type,volume,open,stop_loss,take_profit,state,type_time,expiration,magic,comment\n"
 )
+# unknown_real-explanation's own extra get_deals() read (see _explain_unknown_real()) -- an
+# empty result means "no evidence found", so the ticket stays unexplained/unknown_real, exactly
+# as if the check didn't exist. Used by every MANAGE_ONLY test below that has a non-empty
+# local_open set (the one case where that extra read is actually attempted -- see
+# McpOrderExecutor._current_posture()'s local_open short-circuit). Header shape matches
+# test_mt5_adapter_mcp_deal_history.py's REAL_DEALS_CSV (get_deals's DataFrame is indexed by
+# "time", unlike positions/orders' blank index column) -- irrelevant for an empty body, kept
+# consistent anyway rather than inventing a different shape.
+EMPTY_DEALS_CSV = (
+    "time,ticket,order,time_msc,type,entry,magic,position_id,reason,volume,price,commission,"
+    "swap,profit,fee,symbol,comment,external_id\n"
+)
 
 
 class _StubMcpClient:
@@ -679,7 +691,7 @@ def test_require_demo_account_kind_blocks_cancel_before_any_mcp_call(tmp_path: P
 def test_manage_only_posture_allows_cancel_of_a_matched_ticket(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state")
     _seed_open_record(store, 123456)  # locally known
-    client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON})
+    client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON, "get_deals": EMPTY_DEALS_CSV})
     account = _mock_account(positions=[
         PositionState(ticket=123456, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=0.0, magic=0),
         PositionState(ticket=999999, symbol="BTCUSD", side="SELL", volume=0.02, price_open=64000.0, profit=0.0, magic=0),
@@ -689,13 +701,16 @@ def test_manage_only_posture_allows_cancel_of_a_matched_ticket(tmp_path: Path) -
     result = asyncio.run(executor.cancel(123456))  # matched ticket -- allowed despite MANAGE_ONLY
 
     assert result.success is True
-    assert client.calls == [("cancel_pending_order", {"id": 123456})]
+    # 999999's unknown_real triggers one extra, unexplaining get_deals() read (empty result --
+    # see EMPTY_DEALS_CSV) before the matched ticket's own cancel proceeds normally.
+    assert [name for name, _ in client.calls] == ["get_deals", "cancel_pending_order"]
+    assert client.calls[1] == ("cancel_pending_order", {"id": 123456})
 
 
 def test_manage_only_posture_blocks_cancel_of_an_unattributed_ticket(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state")
     _seed_open_record(store, 123456)
-    client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON})
+    client = _StubMcpClient({"cancel_pending_order": SUCCESS_CANCEL_JSON, "get_deals": EMPTY_DEALS_CSV})
     account = _mock_account(positions=[
         PositionState(ticket=123456, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=0.0, magic=0),
         PositionState(ticket=999999, symbol="BTCUSD", side="SELL", volume=0.02, price_open=64000.0, profit=0.0, magic=0),
@@ -704,7 +719,9 @@ def test_manage_only_posture_blocks_cancel_of_an_unattributed_ticket(tmp_path: P
 
     with pytest.raises(ExecutionBlockedError):
         asyncio.run(executor.cancel(999999))  # unknown_real -- never attributed, never touched
-    assert client.calls == []
+    # The unexplaining get_deals() read still happens (see above), but no mutating call ever
+    # does -- cancel_pending_order is never reached.
+    assert [name for name, _ in client.calls] == ["get_deals"]
 
 
 def test_blocked_posture_blocks_cancel_on_corrupted_state_file(tmp_path: Path) -> None:
@@ -841,7 +858,7 @@ def test_require_demo_account_kind_blocks_close_before_any_mcp_call(tmp_path: Pa
 def test_manage_only_posture_allows_close_of_a_matched_ticket(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)  # locally known
-    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON, "get_deals": EMPTY_DEALS_CSV})
     account = _mock_account(positions=[
         PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=5.0, magic=0),
         PositionState(ticket=999999, symbol="BTCUSD", side="SELL", volume=0.02, price_open=64000.0, profit=0.0, magic=0),
@@ -851,13 +868,16 @@ def test_manage_only_posture_allows_close_of_a_matched_ticket(tmp_path: Path) ->
     result = asyncio.run(executor.close_position(555555))  # matched -- allowed despite MANAGE_ONLY
 
     assert result.success is True
-    assert client.calls == [("close_position", {"id": 555555})]
+    # 999999's unknown_real triggers one extra, unexplaining get_deals() read (empty result --
+    # see EMPTY_DEALS_CSV) before the matched ticket's own close proceeds normally.
+    assert [name for name, _ in client.calls] == ["get_deals", "close_position"]
+    assert client.calls[1] == ("close_position", {"id": 555555})
 
 
 def test_manage_only_posture_blocks_close_of_an_unattributed_ticket(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "order_state")
     _seed_open_position_record(store, 555555)
-    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON})
+    client = _StubMcpClient({"close_position": SUCCESS_CLOSE_JSON, "get_deals": EMPTY_DEALS_CSV})
     account = _mock_account(positions=[
         PositionState(ticket=555555, symbol="BTCUSD", side="BUY", volume=0.01, price_open=63000.0, profit=5.0, magic=0),
         PositionState(ticket=999999, symbol="BTCUSD", side="SELL", volume=0.02, price_open=64000.0, profit=0.0, magic=0),
@@ -866,7 +886,9 @@ def test_manage_only_posture_blocks_close_of_an_unattributed_ticket(tmp_path: Pa
 
     with pytest.raises(ExecutionBlockedError):
         asyncio.run(executor.close_position(999999))  # unknown_real -- never touched
-    assert client.calls == []
+    # The unexplaining get_deals() read still happens (see above), but no mutating call ever
+    # does -- close_position is never reached.
+    assert [name for name, _ in client.calls] == ["get_deals"]
 
 
 def test_blocked_posture_blocks_close_on_corrupted_state_file(tmp_path: Path) -> None:
@@ -880,6 +902,155 @@ def test_blocked_posture_blocks_close_on_corrupted_state_file(tmp_path: Path) ->
     with pytest.raises(ExecutionBlockedError):
         asyncio.run(executor.close_position(555555))
     assert client.calls == []
+
+
+# ---------- unknown_real SL/TP-close-artifact explanation (Phase 9, root-caused live 2026-08-10) ----------
+# Full-stack integration coverage for McpOrderExecutor._explain_unknown_real() -- state/
+# sl_tp_artifact.py's own pure-function evidence rules are covered exhaustively in
+# tests/unit/test_state_sl_tp_artifact.py; these tests instead prove the wiring: a real get_deals()
+# read happens at the right time, an explained ticket unblocks the executor AND reconciles its
+# underlying position to CLOSED, an unexplained ticket still blocks exactly as before, and a
+# failure gathering evidence fails closed exactly like a genuinely-foreign ticket would.
+
+_SL_ARTIFACT_DEALS_CSV_HEADER = (
+    "time,ticket,order,time_msc,type,entry,magic,position_id,reason,volume,price,commission,"
+    "swap,profit,fee,symbol,comment,external_id\n"
+)
+
+
+def _seed_grid_position(
+    store: StateStore, ticket: int, *, side: str, requested_sl: float, requested_tp: float,
+) -> None:
+    store.record_submission(
+        ticket=ticket, strategy="grid", magic=GRID_MAGIC, comment="grid_sell" if side == "SELL" else "grid_buy",
+        symbol="BTCUSD", side=side, order_type="LIMIT", requested_volume=0.01,
+        requested_price=65150.0, requested_sl=requested_sl, requested_tp=requested_tp,
+        requested_deviation=150, requested_filling_mode="FOK", requested_expiry=None,
+        retcode=10009, executed_price=65150.0, executed_volume=0.01,
+        broker_comment="Request executed",
+        submitted_at=datetime(2026, 8, 10, 2, 18, 17, tzinfo=timezone.utc),
+    )
+
+
+def test_unknown_real_explained_as_known_sl_artifact_allows_submission_and_reconciles_position(
+    tmp_path: Path,
+) -> None:
+    """Reconstructs run #4's real incident shape (docs/PHASE9_FORWARD_TEST_CHECKPOINT.md):
+    ticket 171909600 is MT5's own SL-execution order closing locally-known position 171908077.
+    Fully explained -> posture becomes NORMAL despite a raw unknown_real, an UNRELATED submit()
+    succeeds, the closed position is auto-reconciled to CLOSED, and the artifact ticket itself
+    is never adopted as its own local record."""
+    store = StateStore(tmp_path / "order_state")
+    _seed_grid_position(store, 171908077, side="SELL", requested_sl=65087.71, requested_tp=64500.0)
+    deals_csv = (
+        _SL_ARTIFACT_DEALS_CSV_HEADER
+        + "2026-08-10 02:43:27,88000001,171909600,0,0,1,0,171908077,0,0.01,65087.71,0.0,0.0,-0.6,0.0,"
+          "BTCUSD,[sl 65087.71],\n"
+    )
+    client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON, "get_deals": deals_csv})
+    account = _mock_account(orders=[
+        OrderState(ticket=171909600, symbol="BTCUSD", side="BUY", volume=0.01, price=65087.71, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.submit(_order_plan()))  # unrelated LIMIT order
+
+    assert result.success is True  # posture became NORMAL -- 171909600 was fully explained
+    assert store.lookup(171908077).status == "CLOSED"  # type: ignore[union-attr]
+    assert store.lookup(171909600) is None  # never adopted -- no record for the artifact itself
+    assert [name for name, _ in client.calls][0] == "get_deals"  # evidence gathered before submit
+
+
+def test_unknown_real_explained_as_known_tp_artifact_allows_submission_and_reconciles_position(
+    tmp_path: Path,
+) -> None:
+    """Symmetric TP-close case (no live TP incident has actually been observed yet -- see
+    test_state_sl_tp_artifact.py's module docstring -- but the wiring is identical either way)."""
+    store = StateStore(tmp_path / "order_state")
+    _seed_grid_position(store, 171930000, side="BUY", requested_sl=64000.0, requested_tp=66000.0)
+    deals_csv = (
+        _SL_ARTIFACT_DEALS_CSV_HEADER
+        + "2026-08-10 02:43:27,88000002,171930999,0,1,1,0,171930000,0,0.01,66000.0,0.0,0.0,8.29,0.0,"
+          "BTCUSD,[tp 66000.0],\n"
+    )
+    client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON, "get_deals": deals_csv})
+    account = _mock_account(orders=[
+        OrderState(ticket=171930999, symbol="BTCUSD", side="SELL", volume=0.01, price=66000.0, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    result = asyncio.run(executor.submit(_order_plan()))
+
+    assert result.success is True
+    assert store.lookup(171930000).status == "CLOSED"  # type: ignore[union-attr]
+    assert store.lookup(171930999) is None
+
+
+def test_unknown_real_with_real_but_insufficient_deal_evidence_still_blocks(tmp_path: Path) -> None:
+    """get_deals() succeeds and returns real data, but it doesn't satisfy every evidence
+    requirement (here: wrong closing side for the position it claims to close) -- must still
+    trip MANAGE_ONLY exactly as if no explanation had ever been attempted. Distinguishes "no
+    evidence" (already covered by the EMPTY_DEALS_CSV tests above) from "evidence present but
+    not strong enough"."""
+    store = StateStore(tmp_path / "order_state")
+    _seed_grid_position(store, 171908077, side="SELL", requested_sl=65087.71, requested_tp=64500.0)
+    # type=1 (SELL) closing a SELL position is never valid -- must be a BUY(0) deal.
+    deals_csv = (
+        _SL_ARTIFACT_DEALS_CSV_HEADER
+        + "2026-08-10 02:43:27,88000001,171909600,0,1,1,0,171908077,0,0.01,65087.71,0.0,0.0,-0.6,0.0,"
+          "BTCUSD,[sl 65087.71],\n"
+    )
+    client = _StubMcpClient({"place_pending_order": SUCCESS_PLACE_JSON, "get_deals": deals_csv})
+    account = _mock_account(orders=[
+        OrderState(ticket=171909600, symbol="BTCUSD", side="BUY", volume=0.01, price=65087.71, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    with pytest.raises(ExecutionBlockedError):
+        asyncio.run(executor.submit(_order_plan()))
+    assert store.lookup(171908077).status == "OPEN"  # type: ignore[union-attr]  -- untouched
+    assert not any(name == "place_pending_order" for name, _ in client.calls)
+
+
+def test_get_deals_failure_during_explanation_fails_closed_and_still_blocks(tmp_path: Path) -> None:
+    """A raised exception while gathering evidence (dropped connection, etc.) must be exactly as
+    safe as no evidence at all -- MANAGE_ONLY still trips, nothing is ever assumed explained on
+    a failure."""
+    store = StateStore(tmp_path / "order_state")
+    _seed_grid_position(store, 171908077, side="SELL", requested_sl=65087.71, requested_tp=64500.0)
+    client = _StubMcpClient(
+        {"place_pending_order": SUCCESS_PLACE_JSON}, fail=frozenset({"get_deals"}),
+    )
+    account = _mock_account(orders=[
+        OrderState(ticket=171909600, symbol="BTCUSD", side="BUY", volume=0.01, price=65087.71, magic=0),
+    ])
+    executor = McpOrderExecutor(client, account, store, mt5_account_kind="DEMO")
+
+    with pytest.raises(ExecutionBlockedError):
+        asyncio.run(executor.submit(_order_plan()))
+    assert store.lookup(171908077).status == "OPEN"  # type: ignore[union-attr]  -- untouched
+    assert not any(name == "place_pending_order" for name, _ in client.calls)
+
+
+def test_explained_artifact_position_reconciliation_is_idempotent(tmp_path: Path) -> None:
+    """StateStore.record_closed() -- what _explain_unknown_real() calls for an explained
+    artifact's underlying position -- must be safe to call more than once for the same ticket
+    without erroring or corrupting the record (guards against ever seeing the same explainable
+    evidence reconciled twice, e.g. across two posture checks in the same still-live window).
+    Once a position is reconciled CLOSED it also drops out of local_open, so a later posture
+    check naturally can no longer re-explain further evidence against it -- see
+    test_state_sl_tp_artifact.py's own idempotency test for classify_unknown_real_tickets()
+    itself, which this complements at the StateStore-write level actually exercised here."""
+    store = StateStore(tmp_path / "order_state")
+    _seed_grid_position(store, 171908077, side="SELL", requested_sl=65087.71, requested_tp=64500.0)
+    closed_at = datetime(2026, 8, 10, 2, 43, 27, tzinfo=timezone.utc)
+
+    store.record_closed(171908077, reason="auto-reconciled: SL close confirmed", closed_at=closed_at)
+    store.record_closed(171908077, reason="auto-reconciled: SL close confirmed", closed_at=closed_at)
+
+    record = store.lookup(171908077)
+    assert record is not None
+    assert record.status == "CLOSED"
 
 
 # ---------- ToolRegistry authorization enforcement ----------

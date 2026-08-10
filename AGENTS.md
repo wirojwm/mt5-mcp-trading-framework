@@ -738,6 +738,42 @@ to avoid designing ahead of what's actually been asked for.
   actual live smoke test run, the real threshold value, and Step 6 (demo-to-live readiness
   criteria) -- each needs its own separate, explicit go-ahead per this project's standing
   live-testing-pause rule. Full detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
+  **Step 6 (demo-to-live readiness checklist) and Step 7 (sustained forward-test run, live,
+  explicit go-aheads given throughout) both under way** -- full run-by-run detail in
+  `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`, not duplicated here. Step 7 has repeatedly (runs #4
+  and #6, both 2026-08-10) been stopped short of its 30-cycle target by a real, twice-observed
+  reconciliation gap, root-caused and STRUCTURALLY FIXED (not worked around) in this increment:
+  MT5 briefly (~1 second) surfaces its own auto-generated SL/TP-close order as a live pending
+  order while executing a position's stop, and `reconcile()`'s deliberately ticket-only matching
+  (unchanged -- see `state/reconcile.py`'s own docstring) correctly has no way to tell that
+  apart from a genuinely foreign ticket, so it trips `unknown_real` -> `MANAGE_ONLY` and halts
+  the loop, exactly as designed. New `state/sl_tp_artifact.py`
+  (`classify_unknown_real_tickets()`, pure, no I/O) adds a SEPARATE, second-pass evidence check
+  run only against `reconcile()`'s own `unknown_real` output: a ticket is excluded only on a
+  full conjunction of strong evidence (direct order->deal->position_id linkage to a position
+  still in `local_open`, matching symbol/side/volume, an explicit `[sl ...]`/`[tp ...]` deal
+  comment, and a price match against that position's own recorded sl/tp) -- any missing or
+  ambiguous signal, or any failure gathering the evidence at all (e.g. a raised `get_deals()`
+  call), leaves the ticket `unknown_real` and `MANAGE_ONLY` still trips, fail-closed, exactly as
+  before. `McpOrderExecutor._explain_unknown_real()` wires this into `_current_posture()`,
+  making ONE extra real `get_deals()` read, but ONLY when `unknown_real` is non-empty AND at
+  least one locally-open position exists to possibly link to -- zero added cost on every normal
+  cycle. An explained ticket is never adopted (no StateStore record is ever written for the
+  artifact ticket itself); its underlying, already-locally-owned position IS reconciled to
+  `CLOSED` automatically (`record_closed()`, local-write only, no MCP call) -- the same
+  reconciliation this project always did manually after an incident of this shape, now automatic
+  and evidence-backed. Reconstructed real fixtures from both incidents (tickets `171909600`/
+  `171908077` from run #4, `171922069`/`171920424` from run #6 -- the latter also proving the
+  price check must tolerate real stop-order fill slippage, not require an exact match) plus 18
+  pure-function edge-case tests (foreign ticket, ambiguous/multiple deals, wrong side, wrong
+  symbol, wrong volume, price mismatch, comment/field mismatch, pre-submission timestamp,
+  `deal_time_offset` correction, idempotency) and 5 executor-level integration tests (known SL
+  artifact unblocks + reconciles, known TP artifact unblocks + reconciles, real-but-insufficient
+  evidence still blocks, `get_deals` failure still blocks, `record_closed()` idempotency) were
+  added -- 536 passed total, architecture tests still pass. **Step 7 is PAUSED again pending this
+  fix's own verification and a fresh, explicit go-ahead** -- per this project's standing
+  live-testing-pause rule, this fix being merged is not itself authorization to relaunch. Full
+  incident and fix detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin

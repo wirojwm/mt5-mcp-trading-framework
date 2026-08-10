@@ -61,7 +61,13 @@ Every mutating call:
 3. A FRESH reconciliation against real MT5 state before every `submit()` (never cached from
    construction time) -- refuses new orders unless ExecutionPosture is NORMAL. `cancel()`
    additionally refuses to touch a ticket it can't attribute to a local record when posture is
-   MANAGE_ONLY. See state/policy.py.
+   MANAGE_ONLY. See state/policy.py. When reconcile() itself finds unknown_real tickets,
+   `_explain_unknown_real()` (Phase 9, root-caused live 2026-08-10 -- see
+   docs/PHASE9_FORWARD_TEST_CHECKPOINT.md runs #4/#6) makes ONE extra real get_deals() read to
+   check whether any of them are explainable as MT5's own transient SL/TP-close artifact on an
+   already-tracked position (state/sl_tp_artifact.py) -- reconcile()'s own ticket-only logic is
+   unchanged, and any ticket that isn't fully evidenced this way still trips MANAGE_ONLY exactly
+   as before (fail closed, including on any error while gathering this extra evidence).
 4. Reads `retcode` out of the raw response via `metatrader_retcodes.parse_trade_response()` --
    never trusts the tool's own `error`/`success` field (Known Issues item 7).
 5. Records the true submitted intent (magic/comment/deviation/etc, which MT5 itself will not
@@ -72,19 +78,23 @@ Every mutating call:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Sequence
 
 from mt5_mcp_trading.domain.models import ExecutionResult, OrderPlan
 from mt5_mcp_trading.mcp_adapter.client import McpClient
+from mt5_mcp_trading.monitoring.live_performance import infer_deal_time_offset
 from mt5_mcp_trading.monitoring.logging_setup import get_logger
 from mt5_mcp_trading.mt5_adapter.interfaces import AccountReader
+from mt5_mcp_trading.mt5_adapter.mcp_deal_history import McpDealHistoryReader
 from mt5_mcp_trading.mt5_adapter.metatrader_retcodes import parse_trade_response
 from mt5_mcp_trading.mt5_adapter.safety import NotDemoAccountError, require_demo_account, require_demo_account_kind
-from mt5_mcp_trading.state.models import ReconciliationReport
+from mt5_mcp_trading.state.models import LocalOrderRecord, ReconciliationReport
 from mt5_mcp_trading.state.policy import ExecutionPosture, determine_posture
 from mt5_mcp_trading.state.reconcile import reconcile
+from mt5_mcp_trading.state.sl_tp_artifact import classify_unknown_real_tickets
 from mt5_mcp_trading.state.store import StateLoadError, StateStore
 from mt5_mcp_trading.state.strategy_registry import strategy_name_for_magic
 
@@ -206,7 +216,71 @@ class McpOrderExecutor:
         positions = await self._account.get_positions()
         orders = await self._account.get_orders()
         report = reconcile(local_open, positions, orders)
+
+        if report.unknown_real and local_open:
+            # local_open empty => no candidate position any deal could possibly link to, so
+            # skip the extra real call entirely rather than pay for a check that cannot
+            # possibly explain anything (see state/sl_tp_artifact.py's linkage requirement).
+            report = await self._explain_unknown_real(report, local_open)
+
         return _PostureCheck(determine_posture(report, None), report, None)
+
+    async def _explain_unknown_real(
+        self, report: ReconciliationReport, local_open: Sequence[LocalOrderRecord],
+    ) -> ReconciliationReport:
+        """Second-pass, evidence-based check over report.unknown_real ONLY -- reconcile()'s own
+        ticket-only result is never modified, this builds a narrower report from it. See
+        state/sl_tp_artifact.py's module docstring for exactly what evidence is required before
+        a ticket is excluded. Any failure gathering that evidence (a raised exception from the
+        get_deals() call, parsing, anything) leaves `report` completely unchanged -- fails
+        closed, exactly like every other safety-critical computation in this codebase that
+        can't confirm its own inputs (see e.g. _daily_loss_decision_for_cycle() in
+        scripts/run_demo_execution_pipeline_loop.py for the same pattern).
+
+        A ticket classified `explained` here is never adopted -- no StateStore record is ever
+        written for the artifact ticket itself. Its underlying, already-locally-owned position
+        IS reconciled to CLOSED (record_closed(), a local-only write, no MCP call) using the
+        gathered evidence -- the same reconciliation this project has always done manually after
+        an incident of this shape (see e.g. the 2026-08-10 checkpoint entries), now automatic
+        and evidence-backed instead of a separate later step."""
+        try:
+            all_records = self._state_store.all_records()
+            now = datetime.now(timezone.utc)
+            fetch_from = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+            fetch_to = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+            deals = await McpDealHistoryReader(self._client).get_deals(
+                from_date=fetch_from, to_date=fetch_to,
+            )
+            offset = infer_deal_time_offset(all_records, deals) or timedelta(0)
+            classification = classify_unknown_real_tickets(
+                report.unknown_real, local_open, deals, deal_time_offset=offset,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "Could not evaluate unknown_real=%r for known SL/TP-close artifacts -- leaving "
+                "posture unchanged (fail closed): %r", report.unknown_real, exc,
+            )
+            return report
+
+        for ev in classification.evidence:
+            _logger.info(
+                "unknown_real ticket=%d explained as a %s-close artifact of locally-known "
+                "position=%d (deal=%d, price=%s matches requested_%s=%s) -- reconciling "
+                "position=%d to CLOSED, excluding artifact ticket from unknown_real",
+                ev.ticket, ev.kind, ev.position_ticket, ev.deal_ticket, ev.price, ev.kind,
+                ev.reference_price, ev.position_ticket,
+            )
+            self._state_store.record_closed(
+                ev.position_ticket,
+                reason=(
+                    f"auto-reconciled: {ev.kind.upper()} close confirmed via deal={ev.deal_ticket} "
+                    f"(order={ev.order_ticket}), price={ev.price} matches requested_{ev.kind}="
+                    f"{ev.reference_price}"
+                ),
+                closed_at=ev.time,
+            )
+
+        return dataclasses.replace(report, unknown_real=classification.unexplained)
 
     async def submit(self, order_plan: OrderPlan) -> ExecutionResult:
         await self._gate()
