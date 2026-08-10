@@ -1789,6 +1789,99 @@ added, wired into `_current_posture()`), `tests/unit/test_state_sl_tp_artifact.p
 MANAGE_ONLY tests updated for the new expected `get_deals()` call), `AGENTS.md`, this checkpoint
 doc. No live/demo MCP call anywhere in this entry.
 
+### End-of-day: run #7 reconciled, design reviewed, one diagnostic-only improvement added (2026-08-10, same day)
+
+**Safe-state confirmation (read-only)**: zero `python.exe`/`pythonw.exe` processes; stop-file
+present (expected — matches run #7's clean stop-file exit); live account flat (0 positions, 0
+pending orders, BTCUSD, 0.00 lots). Run #7's 7 real tickets across its 3 cycles (halted by this
+session's explicit stop-work order, not a crash) were still locally `OPEN` — reconciled via a new
+one-off script (`scripts/run_demo_execution_reconcile_run7_leftovers.py`, same classify-by-deal-
+history pattern as every prior leftover-reconciliation script this project has used): 5 → `CLOSED`
+(real deal found), 2 → `CANCELLED` (never filled), 0 still live. Re-verified: zero stale
+2026-08-10 records remain.
+
+**Design review, focused specifically on false-positive ownership risk** (requested before
+relaunch, no code assumed correct without re-reading it): traced `_explain_one()`'s actual control
+flow line by line rather than re-describing the docstring. Confirmed:
+- **Mandatory (hard, exact) conditions**: exactly one closing (`entry` in out/inout) deal linked
+  by `deal.order == ticket`; `deal.position_id` resolves to an EXACT dict-key match against a
+  ticket already in `local_open` (the one true ownership anchor — a foreign/unrelated ticket's
+  `position_id` was never written to local state by anything, since nothing in this codebase adopts
+  an unattributed ticket); symbol equality; closing-side correctness (2-valued exact enum);
+  `[sl ...]`/`[tp ...]` comment-shape match; timestamp ordering.
+- **Heuristic/tolerance-based**: only the price check (±0.2% of the reference sl/tp) and,
+  indirectly, `deal_time_offset` (median-derived, falls back to `timedelta(0)` with no reference
+  data yet).
+- **No single weak signal can classify a ticket alone** — `_explain_one()` is a strict AND-chain,
+  every check an unconditional early-exit; the only soft signal (price) is evaluated only after
+  every hard check already passed, and the comment's claimed kind (`sl`/`tp`) selects WHICH
+  reference field the price must match, so a stray match on the wrong field doesn't count.
+- **A genuinely foreign ticket cannot pass**: ownership is established entirely by two exact
+  matches against this project's OWN real MT5 deal history and its OWN local records
+  (`deal.order == ticket`, `deal.position_id` in `local_open`) — never by similarity, timing
+  proximity, or magic (magic is never read anywhere in this module).
+- **Residual, lower-severity findings** (documented, not code bugs): (1) a human manually closing
+  one of THIS project's own already-open positions near its configured stop, with a comment that
+  happened to match the `[sl ...]`/`[tp ...]` shape, would be labeled an SL/TP artifact rather than
+  a manual close — the position genuinely IS closed either way, so this is a `closed_reason`
+  labeling risk, not an ownership/adoption risk, since ownership was already established via the
+  exact `local_open` link before the label is ever considered; (2) `deal_time_offset` defaulting to
+  zero when no `CLOSED` `MARKET`-order reference exists yet leaves the timestamp sanity check
+  running on uncorrected `Deal.time` — a sanity check layered ON TOP of the exact ownership link,
+  so it can't itself cause a false ownership match, only a slightly looser sanity bound until a
+  real reference point exists this session.
+
+**One safe, defensive improvement implemented** (diagnostics only — verified to change ZERO
+accept/reject outcomes, confirmed by every pre-existing test still passing byte-for-bit unchanged):
+`_explain_one()` now returns a specific rejection reason string alongside every `unexplained`
+ticket (new `SlTpArtifactRejection` dataclass, new `SlTpArtifactClassification.rejections` field),
+and `McpOrderExecutor._explain_unknown_real()` logs one `WARNING` line per still-unexplained ticket
+naming exactly which check failed. Motivation: every prior incident (runs #4/#6) required manually
+re-deriving the failure reason after the fact against a fresh `get_deals()` read — this makes a
+future `MANAGE_ONLY` trip (if the fix's own tolerance/evidence requirements ever prove too strict
+for a real case) immediately diagnosable from the log alone. **Deliberately NOT changed**: nothing
+about which tickets get explained, no new tolerance, no relaxed check, no new adoption path — this
+is purely additive observability. +1 new test asserting the explained/unexplained-vs-evidence/
+rejections partition is exhaustive and mutually exclusive; the 9 existing "stays unknown_real"
+tests were each extended with an assertion on the specific rejection reason text, directly proving
+the logged reason matches the actual failing condition (a regression net against the reason drifting
+out of sync with the real check if either is ever edited independently).
+
+```
+pytest -q -> 537 passed (up from 536: +1 new test plus 9 existing tests extended with reason
+assertions, no test removed/weakened); tests/test_architecture.py -> 13 passed
+```
+
+**Files changed this entry**: `src/mt5_mcp_trading/state/sl_tp_artifact.py` (modified —
+`SlTpArtifactRejection` added, `_explain_one()`/`classify_unknown_real_tickets()` now return
+rejection reasons), `src/mt5_mcp_trading/mt5_adapter/mcp_order_executor.py` (modified — logs
+rejection reasons), `tests/unit/test_state_sl_tp_artifact.py` (modified, +1 test, 9 extended),
+`scripts/run_demo_execution_reconcile_run7_leftovers.py` (new, one-off), `AGENTS.md`, this
+checkpoint doc. No live/demo MCP call anywhere in this entry.
+
+**Step 7 status at end of day**: PAUSED. Account flat, local `StateStore` fully reconciled for
+today's activity, no orphan process, stop-file present (expected). The recurring reconciliation
+gap that stopped runs #4/#6 is fixed, reviewed, and now more diagnosable; **still requires its own
+fresh, explicit go-ahead** per this project's standing live-testing-pause rule — today's review and
+improvement do not themselves constitute that go-ahead.
+
+**Tomorrow's plan** (not started today, per explicit instruction):
+A. Fresh read-only pre-flight (stop-file state, orphan/background process check, live MT5
+   positions/orders, local `StateStore` state).
+B. Confirm the demo account and local state are clean before anything else.
+C. Re-review the exact Step 7 configuration in force (`MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`,
+   `MAX_DAILY_LOSS=50.0`, `CYCLE_INTERVAL_SECONDS=300.0` — unchanged by today's work).
+D. Request explicit go-ahead before any relaunch.
+E. Launch a fresh, fully detached Step 7 process from cycle 1 (same `Start-Process` pattern proven
+   safe across runs #3–#7).
+F. Target one uninterrupted 1→30 cycle / ≤180-minute run — still never yet achieved.
+G. Specifically watch whether a real broker-generated SL/TP artifact (if one occurs) is now
+   correctly reconciled without a false `MANAGE_ONLY` halt — the direct test of today's fix.
+H. Genuinely unknown/ambiguous real activity must still hard-stop the loop via `MANAGE_ONLY` —
+   this is unchanged and must be preserved, not worked around, if it occurs.
+I. Reconcile and evaluate Step 7 acceptance only once the run actually finishes (or is stopped),
+   not mid-run.
+
 ## Status
 
 **Steps 1–3 done** (locked parameter set; loss-based kill-switch guard, built and unit tested;

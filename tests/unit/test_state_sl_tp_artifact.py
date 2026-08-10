@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 from mt5_mcp_trading.domain.models import Deal
 from mt5_mcp_trading.state.models import LocalOrderRecord
-from mt5_mcp_trading.state.sl_tp_artifact import classify_unknown_real_tickets
+from mt5_mcp_trading.state.sl_tp_artifact import SlTpArtifactRejection, classify_unknown_real_tickets
 
 _UTC = timezone.utc
 
@@ -158,6 +158,8 @@ def test_genuinely_foreign_ticket_with_no_deal_at_all_stays_unknown_real() -> No
     assert result.explained == ()
     assert result.unexplained == (999999,)
     assert result.evidence == ()
+    assert result.rejections == (SlTpArtifactRejection(ticket=999999, reason=result.rejections[0].reason),)
+    assert "no closing" in result.rejections[0].reason
 
 
 def test_deal_whose_position_id_matches_no_local_record_stays_unknown_real() -> None:
@@ -172,6 +174,7 @@ def test_deal_whose_position_id_matches_no_local_record_stays_unknown_real() -> 
         unknown_real=(999999,), local_open=[position], deals=[foreign_deal],
     )
     assert result.unexplained == (999999,)
+    assert "not a currently locally-open position" in result.rejections[0].reason
 
 
 def test_deal_with_no_sl_tp_comment_stays_unknown_real() -> None:
@@ -184,6 +187,7 @@ def test_deal_with_no_sl_tp_comment_stays_unknown_real() -> None:
         unknown_real=(171909600,), local_open=[position], deals=[ambiguous_deal],
     )
     assert result.unexplained == (171909600,)
+    assert "does not start with" in result.rejections[0].reason
 
 
 def test_multiple_matching_deals_for_the_same_order_stays_unknown_real() -> None:
@@ -202,6 +206,7 @@ def test_multiple_matching_deals_for_the_same_order_stays_unknown_real() -> None
         unknown_real=(171909600,), local_open=[position], deals=[deal_a, deal_b],
     )
     assert result.unexplained == (171909600,)
+    assert "ambiguous" in result.rejections[0].reason
 
 
 def test_price_far_from_requested_sl_stays_unknown_real() -> None:
@@ -215,6 +220,7 @@ def test_price_far_from_requested_sl_stays_unknown_real() -> None:
         unknown_real=(171909600,), local_open=[position], deals=[mismatched_deal],
     )
     assert result.unexplained == (171909600,)
+    assert "does not match requested_sl" in result.rejections[0].reason
 
 
 def test_comment_says_tp_but_price_matches_sl_stays_unknown_real() -> None:
@@ -228,6 +234,7 @@ def test_comment_says_tp_but_price_matches_sl_stays_unknown_real() -> None:
     )
     result = classify_unknown_real_tickets(unknown_real=(171909600,), local_open=[position], deals=[deal])
     assert result.unexplained == (171909600,)
+    assert "does not match requested_tp" in result.rejections[0].reason
 
 
 def test_wrong_closing_side_stays_unknown_real() -> None:
@@ -242,6 +249,7 @@ def test_wrong_closing_side_stays_unknown_real() -> None:
         unknown_real=(171909600,), local_open=[position], deals=[wrong_side_deal],
     )
     assert result.unexplained == (171909600,)
+    assert "not a valid closing side" in result.rejections[0].reason
 
 
 def test_symbol_mismatch_stays_unknown_real() -> None:
@@ -252,6 +260,7 @@ def test_symbol_mismatch_stays_unknown_real() -> None:
     )
     result = classify_unknown_real_tickets(unknown_real=(171909600,), local_open=[position], deals=[deal])
     assert result.unexplained == (171909600,)
+    assert "symbol mismatch" in result.rejections[0].reason
 
 
 def test_volume_mismatch_stays_unknown_real() -> None:
@@ -262,6 +271,7 @@ def test_volume_mismatch_stays_unknown_real() -> None:
     )
     result = classify_unknown_real_tickets(unknown_real=(171909600,), local_open=[position], deals=[deal])
     assert result.unexplained == (171909600,)
+    assert "volume mismatch" in result.rejections[0].reason
 
 
 def test_deal_before_position_submitted_stays_unknown_real() -> None:
@@ -276,6 +286,34 @@ def test_deal_before_position_submitted_stays_unknown_real() -> None:
         unknown_real=(171909600,), local_open=[position], deals=[time_travelling_deal],
     )
     assert result.unexplained == (171909600,)
+    assert "precedes local position's own submitted_at" in result.rejections[0].reason
+
+
+def test_explained_ticket_has_no_rejection_and_unexplained_has_no_evidence() -> None:
+    """Every unknown_real ticket lands in exactly one of the two (explained+evidence) /
+    (unexplained+rejections) pairings -- never both, never neither."""
+    position = _local(171908077, side="SELL", requested_sl=65087.71)
+    good_deal = _deal(
+        ticket=1, order=171909600, position_id=171908077, deal_type=0, entry=1,
+        price=65087.71, comment="[sl 65087.71]",
+    )
+    result = classify_unknown_real_tickets(
+        unknown_real=(171909600, 424242), local_open=[position], deals=[good_deal],
+    )
+    assert result.explained == (171909600,)
+    assert len(result.evidence) == 1
+    # 424242 has no matching deal -- unexplained, contributing exactly one rejection; the
+    # explained ticket (171909600) contributes none.
+    assert [r.ticket for r in result.rejections] == [424242]
+
+    # A second call where NEITHER ticket is explained -- confirms rejections has exactly one
+    # entry per unexplained ticket, in the same order, and evidence stays empty.
+    result2 = classify_unknown_real_tickets(
+        unknown_real=(424242, 555555), local_open=[position], deals=[],
+    )
+    assert result2.explained == ()
+    assert result2.evidence == ()
+    assert [r.ticket for r in result2.rejections] == [424242, 555555]
 
 
 def test_deal_time_offset_correction_is_applied_before_the_timestamp_sanity_check() -> None:

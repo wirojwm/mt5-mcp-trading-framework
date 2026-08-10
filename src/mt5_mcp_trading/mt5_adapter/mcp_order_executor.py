@@ -280,6 +280,15 @@ class McpOrderExecutor:
                 closed_at=ev.time,
             )
 
+        for rej in classification.rejections:
+            # Diagnostic only -- never affects the decision itself, which is already final by
+            # this point. Purely so a real MANAGE_ONLY trip is understandable from the log alone
+            # (which single check failed), instead of manually re-deriving it after the fact
+            # against a fresh get_deals() read the way every prior incident (runs #4/#6) required.
+            _logger.warning(
+                "unknown_real ticket=%d still unexplained -- %s", rej.ticket, rej.reason,
+            )
+
         return dataclasses.replace(report, unknown_real=classification.unexplained)
 
     async def submit(self, order_plan: OrderPlan) -> ExecutionResult:

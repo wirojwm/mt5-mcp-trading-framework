@@ -100,10 +100,23 @@ class SlTpArtifactEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class SlTpArtifactRejection:
+    """Why one specific unknown_real ticket was NOT explained -- diagnostic only, never fed back
+    into the accept/reject decision itself (that decision is already final by the time this is
+    constructed). Exists purely so a real MANAGE_ONLY trip can be understood from the log line
+    alone -- which single check failed -- instead of re-deriving it by hand against a fresh
+    get_deals() read after the fact, the way every prior incident (runs #4/#6) had to be."""
+
+    ticket: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class SlTpArtifactClassification:
     explained: tuple[int, ...]
     unexplained: tuple[int, ...]
     evidence: tuple[SlTpArtifactEvidence, ...]  # one per explained ticket, same order
+    rejections: tuple[SlTpArtifactRejection, ...] = ()  # one per unexplained ticket, same order
 
 
 def _volume_matches(deal_volume: float, record: LocalOrderRecord) -> bool:
@@ -134,40 +147,58 @@ def _explain_one(
     closing_deals: Sequence[Deal],
     local_by_ticket: dict[int, LocalOrderRecord],
     deal_time_offset: timedelta,
-) -> Optional[SlTpArtifactEvidence]:
+) -> tuple[Optional[SlTpArtifactEvidence], Optional[str]]:
+    """Returns (evidence, None) on success or (None, reason) on rejection -- `reason` is
+    diagnostic-only (see SlTpArtifactRejection), never itself part of the decision."""
     if len(closing_deals) != 1:
-        return None  # no deal, or ambiguous multiple deals for the same order -- fail closed
+        reason = (
+            "no closing (entry=out/inout) deal found whose order ticket matches this candidate"
+            if not closing_deals else
+            f"{len(closing_deals)} candidate closing deals found for this order ticket -- "
+            f"ambiguous, not strong evidence"
+        )
+        return None, reason
     deal = closing_deals[0]
 
     record = local_by_ticket.get(deal.position_id)
     if record is None:
-        return None  # doesn't close any position this project currently considers open
+        return None, (
+            f"deal closes position_id={deal.position_id}, which is not a currently "
+            f"locally-open position (never adopted, never guessed)"
+        )
 
     if record.symbol != deal.symbol:
-        return None
+        return None, f"symbol mismatch: local position={record.symbol!r}, deal={deal.symbol!r}"
     if not _volume_matches(deal.volume, record):
-        return None
+        reference = record.executed_volume if record.executed_volume is not None else record.requested_volume
+        return None, f"volume mismatch: local position={reference}, deal={deal.volume}"
     if not _is_closing_side(deal.type, record.side):
-        return None
+        return None, (
+            f"deal type={deal.type} is not a valid closing side for local position.side="
+            f"{record.side!r}"
+        )
 
     kind = _extract_sl_tp_kind(deal.comment)
     if kind is None:
-        return None
+        return None, f"deal comment does not start with '[sl ' or '[tp ': {deal.comment!r}"
 
     reference = record.requested_sl if kind == "sl" else record.requested_tp
     if reference is None or reference <= 0:
-        return None
+        return None, f"local position has no usable requested_{kind} (unset or <= 0)"
     if not _price_matches(deal.price, reference):
-        return None
+        return None, f"price {deal.price} does not match requested_{kind}={reference} within tolerance"
 
     corrected_time = deal.time - deal_time_offset
     if record.submitted_at is not None and corrected_time < record.submitted_at:
-        return None
+        return None, (
+            f"deal time {corrected_time} (offset-corrected) precedes local position's own "
+            f"submitted_at={record.submitted_at} -- a position cannot close before it opened"
+        )
 
     return SlTpArtifactEvidence(
         ticket=ticket, position_ticket=record.ticket, kind=kind, deal_ticket=deal.ticket,
         order_ticket=deal.order, price=deal.price, reference_price=reference, time=corrected_time,
-    )
+    ), None
 
 
 def classify_unknown_real_tickets(
@@ -193,15 +224,20 @@ def classify_unknown_real_tickets(
     explained: list[int] = []
     unexplained: list[int] = []
     evidence: list[SlTpArtifactEvidence] = []
+    rejections: list[SlTpArtifactRejection] = []
 
     for ticket in unknown_real:
-        result = _explain_one(ticket, deals_by_order.get(ticket, []), local_by_ticket, deal_time_offset)
+        result, reason = _explain_one(
+            ticket, deals_by_order.get(ticket, []), local_by_ticket, deal_time_offset,
+        )
         if result is not None:
             explained.append(ticket)
             evidence.append(result)
         else:
             unexplained.append(ticket)
+            rejections.append(SlTpArtifactRejection(ticket=ticket, reason=reason or "unexplained"))
 
     return SlTpArtifactClassification(
         explained=tuple(explained), unexplained=tuple(unexplained), evidence=tuple(evidence),
+        rejections=tuple(rejections),
     )

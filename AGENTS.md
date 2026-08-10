@@ -774,6 +774,27 @@ to avoid designing ahead of what's actually been asked for.
   fix's own verification and a fresh, explicit go-ahead** -- per this project's standing
   live-testing-pause rule, this fix being merged is not itself authorization to relaunch. Full
   incident and fix detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
+  **Same day, end-of-session review**: run #7 (halted mid-cycle-3 by an explicit stop-work order,
+  not a crash) reconciled clean, account confirmed flat. A dedicated false-positive-ownership
+  review of `state/sl_tp_artifact.py`, tracing `_explain_one()`'s actual control flow rather than
+  its docstring, confirmed: ownership is established ONLY via two exact matches against this
+  project's own real deal history and local records (`deal.order == ticket`,
+  `deal.position_id` in `local_open`) -- never by similarity/timing/magic; the only tolerance-based
+  signal (price, ±0.2%) is evaluated strictly after every hard check already passed, so no single
+  weak signal can classify a ticket alone; a genuinely foreign ticket cannot pass, structurally, no
+  matter how well other fields coincidentally align, because its `position_id` was never written to
+  local state by anything. Two lower-severity residual findings documented (a manual close near a
+  position's own stop price could be mislabeled `sl`/`tp` in the audit trail, but this is a labeling
+  risk, not an ownership risk, since the position was already known before the label is considered;
+  `deal_time_offset` falls back to zero with no session reference yet, loosening the timestamp
+  sanity bound only, never the ownership link). One safe, purely-additive improvement was made:
+  `_explain_one()`/`classify_unknown_real_tickets()` now return a specific rejection reason per
+  unexplained ticket (`SlTpArtifactRejection`), logged as a `WARNING` by
+  `McpOrderExecutor._explain_unknown_real()` -- verified to change zero accept/reject outcomes (every
+  pre-existing test passed unchanged before the 9 "stays unknown_real" tests were extended with
+  reason assertions and 1 new partition-exhaustiveness test was added). 537 passed total,
+  architecture tests still pass. Step 7 remains PAUSED, still needs its own fresh go-ahead
+  tomorrow. Full detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
