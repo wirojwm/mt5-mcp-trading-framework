@@ -11,8 +11,6 @@ only way the test can identify which OS process to kill -- McpClient/stdio_clien
 the child process object to callers).
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import os
