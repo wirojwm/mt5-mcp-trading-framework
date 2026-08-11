@@ -831,6 +831,17 @@ to avoid designing ahead of what's actually been asked for.
   Step 7 still has not completed an unbroken 30-cycle run (18/30 is the new high-water mark);
   remains PAUSED, needs its own fresh go-ahead. Full detail in
   `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
+  **Same day, run #9: the fix's first live test, then a safe lunch stop.** Fresh go-ahead,
+  launched detached (`PID 17904`). Cycle 1's runner MARKET position (`171985434`) got its SL/TP
+  attached and verified on the first attempt (`sl`/`tp` ~3%/~6% from entry, the new floor engaging
+  as designed) — **zero retcode-10016**, confirming the fix live. Ran cycles 1-5 cleanly (zero
+  `MANAGE_ONLY`, zero errors), stopped safely via the stop-file on explicit instruction (lunch, not
+  a failure) — clean exit, zero orphan process. Close-out state verified fresh: 1 protected
+  position + 5 pending grid orders, 0.06 lots, zero unprotected exposure, left in place across the
+  break by design. Step 7 still hasn't completed an unbroken 30-cycle run (18/30 remains the
+  high-water mark) but run #9 is the first run to reach a protected runner fill without touching
+  the retcode-10016 path at all. PAUSED, needs its own fresh go-ahead to continue. Full detail in
+  `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin

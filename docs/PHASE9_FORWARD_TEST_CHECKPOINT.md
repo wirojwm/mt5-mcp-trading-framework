@@ -2117,3 +2117,39 @@ Step 7 remains **PAUSED**, still needs its own fresh, explicit go-ahead before a
 attempt should watch specifically for whether a real runner MARKET fill with genuinely low
 volatility now gets a distance comfortably clear of `10016` — the direct test of this fix, the way
 runs after the `sl_tp_artifact.py` fix specifically watched for a clean `unknown_real` reconciliation.
+
+Commit `f41a5a1`, pushed to `origin/master` same session.
+
+**Run #9: the fix's first live test, and a safe lunch stop (2026-08-11, same day).** Fresh
+pre-flight (no orphan process, no stop-file, working tree clean, account state unchanged from
+run #8's close-out, config re-confirmed), explicit go-ahead given, launched detached (`PID
+17904`). **Cycle 1's runner MARKET position (`171985434`, SELL 0.01 BTCUSD @ 64024.12) got its
+SL/TP attached and verified on the first attempt** — `sl=65945.01` (~3% away: `1% ×
+sl_atr_mult(3.0)`, the new floor engaging exactly as designed, since ATR was evidently still
+small) / `tp=60182.82` (~6% away) — **zero retcode-10016**, the direct live confirmation this fix
+set out to get. Ran cycles 1-5 cleanly (grid placed 4 more pending orders across cycles;
+cycles 2-4's runner attempts were rejected by the position-limit guard, working as designed, not
+errors), zero `MANAGE_ONLY`/`unknown_real` trips. **Stopped safely for a lunch break** at cycle 5
+via the stop-file (user instruction, not a failure) — `Stop requested during inter-cycle wait`,
+`Done. 5 cycle(s) run.`, clean MT5 disconnect, zero orphan process confirmed after. Step 7 still
+has not completed an unbroken 30-cycle run; 18/30 (run #8, stopped by the now-fixed bug) remains
+the high-water mark, but run #9 is the first run in this project's history to reach even one
+protected runner MARKET fill without touching the retcode-10016 path at all.
+
+**Close-out state (verified fresh, read-only, before lunch)**: 1 open position (`171985434`,
+still correctly protected, unchanged) + 5 pending grid orders (`171975290`, `171975916`,
+`171985433`, `171986256`, `171986257`), 0.06 lots total — exactly at the nominal cap, all matched
+to local records, zero unprotected exposure, zero `unknown_real`. Left in place deliberately
+(protected exposure across a break, consistent with this project's established practice, e.g.
+run #1's 2026-08-07 lunch stop). Separately, local `StateStore` carries 107 stale `OPEN` records
+with no live counterpart (accumulated 2026-08-03 through 2026-08-11, mostly pre-dating today) —
+confirmed non-blocking (reconcile() only trips on `unknown_real`, which needs a *real* unmatched
+ticket; `grid_cycle.py`/`runner_cycle.py` intersect local tickets against the real live snapshot
+before computing exposure) and unrelated to today's work — flagged as optional cleanup debt, not
+touched this session (out of scope for a lunch close-out, no explicit request to mass-reconcile).
+
+Step 7 remains **PAUSED** over the lunch break. No new live run may start without a fresh,
+explicit go-ahead in a later session, per the standing rule. Two concrete continuation paths were
+prepared (same-machine afternoon relaunch vs. home-machine continuation) — see the session's own
+report to the user for the exact continuation prompts; not duplicated here to avoid drift between
+two copies.
