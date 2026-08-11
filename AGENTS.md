@@ -857,6 +857,15 @@ to avoid designing ahead of what's actually been asked for.
   read-only pre-flight and must not assume ownership of any ticket it finds live. PAUSED pending
   that pre-flight and its own explicit go-ahead. Full detail in
   `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
+  **End-of-day close-out, same day**: re-verified read-only, state unchanged from run #10's exit
+  (still not flat, 0.06 lots, 136 stale `StateStore` records), zero processes running, git clean.
+  No further live action taken. The checkpoint doc now also carries a **remaining-roadmap section**
+  (Phase 9 stages A. Complete Step 7 acceptance, B. Operational reliability hardening, C.
+  Demo-to-live readiness criteria, D. Locked demo forward testing — each with objective/entry/work/
+  evidence/exit/risk) and a **Live Pilot Preparation framework** (proposed only, not approved or
+  started — symbol recommendation XAUUSD over EURUSD with an explicit re-validation caveat, sizing/
+  deposit/loss-limit/rollback structure, hard human-approval gates) — see that doc's own
+  "Remaining roadmap" and "Live Pilot Preparation" sections for full detail, not duplicated here.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin

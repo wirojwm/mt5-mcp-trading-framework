@@ -2209,3 +2209,141 @@ relaunch) if the account isn't flat when that session starts, exactly the same d
 project has applied at every session boundary. See the session's own report to the user for the
 exact continuation prompt; not duplicated here to avoid drift between two copies. Step 7 is
 PAUSED pending that fresh pre-flight and its own explicit go-ahead on the home machine.
+
+**End-of-day close-out (2026-08-11, 16:26 local, no further live activity today).** Final
+read-only check (same script, re-run for the record): state unchanged since run #10's exit — 1
+open runner position (`171996467`, protected) + 5 pending grid orders, 0.06 lots, 136 local
+`StateStore` records still `OPEN`/`OPEN_UNPROTECTED` (6 confirmed live, 130 confirmed stale). No
+Step 7 loop, detached, background, or orphan process running (only the MT5 terminal application
+itself). Stop-file absent. Git clean at `d5ac974`, then this entry + the roadmap/live-pilot
+sections below pushed as a further commit same session. 541/541 tests pass (13 architecture).
+**No live MCP/MT5 trading action of any kind was taken this close-out** — every check this
+session was `get_positions`/`get_orders`/`get_deals`, read-only.
+
+## Remaining roadmap (as of 2026-08-11 end-of-day)
+
+Four remaining pieces of Phase 9 itself, then a proposed (not yet approved or started) Live Pilot
+Preparation framework. None of A–D or Live Pilot is authorized to begin by this entry — each still
+needs its own explicit go-ahead, same discipline as every phase in this project.
+
+### A. Complete Step 7 uninterrupted reliability acceptance
+
+- **Objective**: satisfy Step 7's own stated exit criteria (an honest performance report,
+  incidents, readiness-checklist scorecard) — the unbroken 30-cycle *operational* milestone is
+  now MET (run #10), but that alone is not the full acceptance bar.
+- **Entry criteria**: MET — one clean unbroken 1→30 run exists (run #10).
+- **Work to perform**: (1) a human decision on run #10's leftover exposure (1 protected position +
+  5 pending grid orders, 0.06 lots) — close now, or let expire/fill/stop naturally like every
+  prior run's leftovers; (2) re-run `scripts/run_demo_execution_live_performance_monitor.py`
+  against run #10's real trades for real expectancy/drawdown; (3) update
+  `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` rows 3–7 with the real outcome; (4) reconcile the
+  130-record stale `StateStore` backlog (bulk, human-reviewed, same shape as the 2026-08-10
+  end-of-day reconciliation); (5) decide whether a real kill-switch trigger at Step 7 scale is
+  still required for acceptance, or explicitly accepted as unproven.
+- **Tests/evidence required**: live-performance-monitor output (real, not backtested); a
+  reconciliation run showing 0 unexplained stale records remaining; the readiness checklist
+  updated in the same commit as any status change (its own stated discipline).
+- **Exit criteria**: readiness-checklist rows 3–7 each MET or explicitly-accepted PARTIAL with
+  reasoning; zero unresolved `OPEN_UNPROTECTED`; StateStore backlog at 0 or deliberately deferred
+  with a recorded reason.
+- **Risks**: items 2–4 are read-only/bookkeeping, no new order risk. Item 1 (closing leftover
+  exposure) IS an order-submitting action and needs its own explicit approval, same as every prior
+  close in this project.
+- **Live demo activity**: partial — item 1 if closing; items 2–4 can run from already-captured
+  deal history (item 2 needs one read-only `get_deals` call).
+
+### B. Operational reliability hardening
+
+- **Objective**: revisit the two explicitly-deferred decisions (`StateStore` O(N) scan cost,
+  "connection-drop-is-fatal, no reconnect") now that a real Step 7-scale data point exists.
+- **Entry criteria**: MET — run #10 provides real duration (~146 min single connection, zero
+  disconnects) and real StateStore scale (136 records) to check against the original "revisit once
+  real volume is known" trigger.
+- **Work to perform**: re-examine both prior "leave as-is" decisions against run #10's actual
+  numbers; most likely outcome is both get re-affirmed with real evidence (a single long-lived
+  connection already survived a full 146-minute/30-cycle run without incident).
+- **Tests/evidence required**: none new — a documented judgment call citing run #10's real numbers.
+- **Exit criteria**: `docs/OPERATIONAL_RELIABILITY_HARDENING_CHECKPOINT.md` updated with a
+  post-run-#10 re-affirmation, or a genuine re-scope if the new data changes the calculus.
+- **Risks**: low — documentation/decision only, no code required by default.
+- **Live demo activity**: no — analysis of already-produced logs only.
+
+### C. Demo-to-live readiness criteria
+
+- **Objective**: bring every row of `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` to a final, honest
+  status before Live pilot can even be scoped.
+- **Entry criteria**: depends on stage A (rows 3–7 need its evidence).
+- **Work to perform**: update all 11 rows with run #10's real evidence; explicitly decide (not
+  silently skip) any row remaining NOT MET/PARTIAL — acceptable to proceed to scoping Live pilot
+  anyway, or a hard blocker.
+- **Tests/evidence required**: the checklist itself, updated in place.
+- **Exit criteria**: every row has a final, evidenced status and, for anything not fully MET, an
+  explicit recorded human decision.
+- **Risks**: none directly — but a poorly-reasoned "MET" here is the actual safety risk (false
+  confidence going into Live pilot scoping).
+- **Live demo activity**: no, if stage A's evidence already exists.
+
+### D. Locked demo forward testing
+
+- **Objective**: Phase 9's longer-horizon purpose — sustained, repeated demo forward-testing with
+  the locked parameter set to build a real track record (multiple Step-7-scale runs, not one)
+  before trusting the strategy with real money.
+- **Entry criteria**: Step 7's first unbroken run done (MET); stages A–C substantially resolved.
+- **Work to perform**: run Step 7 (or a longer variant) repeatedly across sessions/days for a
+  larger real sample; specifically watch for rare-event failure modes a single run is unlikely to
+  surface (a real kill-switch trip, a new reconciliation edge case, a new retcode pattern).
+- **Tests/evidence required**: multiple real run logs, a live-performance-monitor trend (not one
+  point-in-time read), a cross-run incident log.
+- **Exit criteria**: inherently a human judgment call, not a formula — "enough real runs that the
+  forward-vs-backtest characterization and reliability posture are trustworthy."
+- **Risks**: same bounded risk profile as any Step 7 run (kill-switch, exposure caps, stop-file),
+  now proven to hold across one full 30-cycle window.
+- **Live demo activity**: yes, inherently — this stage IS repeated live demo activity.
+
+## Live Pilot Preparation (proposed framework — NOT approved, NOT started, NOT authorized by this entry)
+
+Per `AGENTS.md`'s existing hard blocker: no `LIVE` execution mode exists in this codebase, and no
+daily-loss/kill-switch/margin/spread-filter code was ever ported from the legacy project for
+real-money use. This phase cannot begin until Phase 9 (A–D above) is resolved AND the "no `LIVE`
+mode" boundary is itself explicitly revisited and approved. The framework below is planning
+input only, to be scrutinized and re-decided by that future, separately-scoped, explicitly-approved
+effort — not a decision made here.
+
+- **Symbol — recommend XAUUSD over EURUSD, with a caveat.** Every parameter this codebase has ever
+  tuned or live-validated (`min_stop_distance_fraction_of_price=0.01`, ATR periods, grid step,
+  `sl_atr_mult`/`tp_atr_mult`) was derived against BTCUSD's regime: high absolute price, multi-
+  hundred-to-thousand-dollar ATR, and a real broker minimum stop distance around 1% of price.
+  XAUUSD (~$2000–2600/oz) shares that structural profile far more than EURUSD does — EURUSD's
+  typical daily range is often under 1% of price with pip-level (0.0001) broker minimum stops, so
+  the existing 0.01 fraction-of-price floor would set a "minimum" stop around 100+ pips, wildly
+  oversized and likely to distort the intended risk:reward ratio. **Caveat, not a green light**:
+  nothing in this codebase has ever backtested or live-tested XAUUSD's actual point value, spread,
+  or broker-specific minimum stop distance — a dedicated Phase-8-equivalent research pass is
+  required before any parameter here is trusted, not assumed to transfer from BTCUSD.
+- **Minimum lot / sizing**: start at the broker's minimum for XAUUSD (typically 0.01 lot ≈ 1 oz,
+  ~$1 per $1/oz move) — same minimum-first discipline this project has used throughout its BTCUSD
+  demo history. Real $ risk-per-trade must be recalculated from XAUUSD's own point value and this
+  project's live-derived stop distances; BTCUSD's observed ~$0.55–0.90/trade figures do not
+  transfer.
+- **Initial deposit**: no fixed number is defensible yet. Derive it the same way `MAX_DAILY_LOSS`
+  was derived for BTCUSD — from a real, XAUUSD-specific backtested/forward max-drawdown-in-R times
+  the chosen $ risk-per-R, times a safety multiplier (e.g. 3–5x) — computed once XAUUSD research
+  exists, not picked arbitrarily now.
+- **Daily loss limit / max exposure**: reuse the existing kill-switch (`MAX_DAILY_LOSS`) and
+  `ExposureCaps` mechanisms, both re-derived for XAUUSD's real $ risk-per-trade — do not reuse
+  BTCUSD's `$50.0`/`0.06 lots` figures without re-deriving them.
+- **Rollback / shutdown rules**: reuse the proven stop-file + `Ctrl+C` mechanisms; add a genuine
+  `LIVE` execution mode (does not exist today — `config/settings.py` currently defines only
+  `READ_ONLY`/`MOCK`/`DRY_RUN`/`SHADOW`/`DEMO_EXECUTION`) with its own harder gates, separate from
+  `DEMO_EXECUTION`'s `trading_enabled` flag; carry forward, unweakened, the "any `MANAGE_ONLY` trip
+  requires human review before further code-initiated action, no auto-resume" rule; define an
+  explicit maximum unattended runtime shorter than demo's 180 minutes until a real track record
+  exists.
+- **Human approval**: hard-required at three points, unweakened from today's discipline — before
+  writing any real-order-submitting `LIVE`-mode code, before its first-ever run of any kind, and
+  before every individual session's launch, exactly as `DEMO_EXECUTION` already requires.
+- **Risks**: the highest-severity category in this project — real money, real broker execution, no
+  prior track record on the chosen symbol.
+- **Live demo activity**: yes for the XAUUSD research/re-validation stage (still demo, not real
+  money); the pilot itself is real-money by definition and is its own separate, future,
+  explicitly-approved proposal — not scoped further than this planning framework by this entry.
