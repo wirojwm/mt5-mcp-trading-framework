@@ -842,6 +842,21 @@ to avoid designing ahead of what's actually been asked for.
   high-water mark) but run #9 is the first run to reach a protected runner fill without touching
   the retcode-10016 path at all. PAUSED, needs its own fresh go-ahead to continue. Full detail in
   `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
+  **Same day, run #10: the first unbroken 1→30 cycle / 180-minute run in this project's
+  history.** Fresh go-ahead, launched detached (`PID 6556`). Ran all 30 cycles cleanly
+  (~146 min) — zero `MANAGE_ONLY`, zero `unknown_real`, zero retcode-10016, zero kill-switch
+  trigger, zero unhandled exceptions — self-stopped on `max cycles (30) reached`, a clean
+  expected exit. Final state verified read-only: **not flat** — 1 protected runner position +
+  5 pending grid orders, 0.06 lots (at the cap), zero unprotected exposure, left in place by the
+  loop's own no-cleanup design. Step 7's operational milestone (an unbroken 30-cycle window) is
+  now MET; its full "what done looks like" criteria are **not** — no kill-switch trigger observed
+  yet at this scale, no post-run live-performance report vs. Phase 8 backtests, readiness
+  checklist rows 3–7 not updated, and a 130-record `StateStore` reconciliation backlog remains
+  (non-blocking bookkeeping, not a safety gap). Continuation moves to the user's home machine;
+  `var/order_state` is machine-local and gitignored, so that session must do its own fresh
+  read-only pre-flight and must not assume ownership of any ticket it finds live. PAUSED pending
+  that pre-flight and its own explicit go-ahead. Full detail in
+  `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin

@@ -2153,3 +2153,59 @@ explicit go-ahead in a later session, per the standing rule. Two concrete contin
 prepared (same-machine afternoon relaunch vs. home-machine continuation) — see the session's own
 report to the user for the exact continuation prompts; not duplicated here to avoid drift between
 two copies.
+
+**Run #10: the first unbroken 1→30 cycle / 180-minute run in this project's history
+(2026-08-11, same day, resumed after the lunch break).** Fresh pre-flight: git clean at `674b244`,
+no orphan/detached process, stop-file present as expected (cleared before launch), live MT5
+confirmed flat (0 positions, 0 pending orders, 0.00 lots) via a dedicated read-only script
+(`scripts/run_demo_execution_check_20260811_lunch_preflight.py`). Config re-confirmed unchanged
+(`MAX_CYCLES=30`, `MAX_RUNTIME_MINUTES=180.0`, `MAX_DAILY_LOSS=50.0`,
+`ExposureCaps(max_open_lots=0.06)`); both the retcode-10016 stop-distance floor (`runner.py`'s
+`min_stop_distance_fraction_of_price=0.01`) and the SL/TP-artifact reconciliation fix
+(`state/sl_tp_artifact.py`) re-verified present in the checked-out code before relaunch. 113
+stale `StateStore` records (`OPEN`/`OPEN_UNPROTECTED` with no live counterpart, accumulated since
+2026-08-03) were noted as non-blocking pre-existing bookkeeping debt, not touched. Explicit
+go-ahead given, launched detached (`PID 6556`, `Start-Process` pattern).
+
+**Ran all 30 cycles cleanly, ~146 minutes wall time (13:48:18–16:14:27), self-stopped on
+`Stop requested during inter-cycle wait: max cycles (30) reached` — a clean, expected exit, not a
+kill or a safety trip.** Zero `MANAGE_ONLY`, zero `unknown_real`, zero retcode-10016, zero
+kill-switch trigger, zero unhandled exception across the full run (grepped both the run's own
+stdout/stderr and the internal `pipeline_loop_20260811T064824Z.log` for every incident keyword
+seen in prior runs — the only hit was the informational kill-switch config line logged at
+startup). This is the first time either fix has been live-tested across a full, uninterrupted
+30-cycle window rather than a partial run.
+
+**Final state, verified fresh and read-only immediately after exit**
+(`scripts/run_demo_execution_check_20260811_run10_post_completion_reconcile.py`): account is
+**not flat** — 1 open runner position (`171996467`, SELL 0.01 BTCUSD, `sl=65780.01`/
+`tp=60032.24`, protected) + 5 pending grid LIMIT orders (`171998867`, `171999144`, `171999433`,
+`171999616`, `172001367`, all magic `71101` BUY), 0.06 lots total — exactly at the nominal cap,
+zero unprotected exposure, all 6 tickets matched to local `StateStore` records. This is expected:
+the loop's own design (see its module docstring) never cleans up on exit — left in place
+deliberately, consistent with every prior run's close-out. Local `StateStore` now carries 136
+records still marked `OPEN`/`OPEN_UNPROTECTED`, of which 130 are confirmed not live (stale
+bookkeeping — 23 from today's window, the rest pre-existing debt back to 2026-08-03); none of
+this backlog was written back to `CLOSED`/`CANCELLED` this session, deliberately deferred as a
+read-only-only diagnostic action given the departure-time constraint, matching this project's
+established pattern of treating bulk reconciliation as its own separately-reviewed pass (e.g. the
+2026-08-10 end-of-day entry above).
+
+**Step 7 acceptance status.** MET for the first time: an unbroken 1→30 cycle/≤180-minute run with
+zero safety trips of any kind. **NOT yet met** (Step 7's own stated "what done looks like", above
+this entry): (1) the kill-switch has still never observed a real trigger at Step 7 scale —
+cumulative real P&L across every Step 7 run to date has never approached the $50.0 threshold; (2)
+no post-run live-performance report (real expectancy/drawdown from run #10's actual trades vs.
+Phase 8's backtested figures) has been computed yet; (3) `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`
+rows 3–7 have not been updated with this run's real outcome; (4) the 130-record `StateStore`
+reconciliation backlog remains unaddressed. None of these block the account or introduce risk —
+they are analysis/bookkeeping follow-ups, not safety gaps.
+
+**Continuation plan**: work moves to the user's home machine. `var/order_state` (the local
+`StateStore`, including the 6 live tickets above) is machine-local and `.gitignore`d, so the home
+machine starts with an empty/different local state — it must not assume ownership of any ticket
+it discovers live, must do its own fresh read-only MT5 pre-flight, and must stop and ask (not
+relaunch) if the account isn't flat when that session starts, exactly the same discipline this
+project has applied at every session boundary. See the session's own report to the user for the
+exact continuation prompt; not duplicated here to avoid drift between two copies. Step 7 is
+PAUSED pending that fresh pre-flight and its own explicit go-ahead on the home machine.
