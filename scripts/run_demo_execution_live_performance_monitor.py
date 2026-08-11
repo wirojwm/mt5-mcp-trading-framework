@@ -69,11 +69,14 @@ from mt5_mcp_trading.backtest.metrics import (
     expectancy_r,
     has_minimum_sample,
     max_drawdown_r,
+    profit_factor,
+    win_rate,
 )
 from mt5_mcp_trading.config.settings import ExecutionMode, load_settings
 from mt5_mcp_trading.execution.composition import demo_execution_session
 from mt5_mcp_trading.monitoring.live_performance import (
     build_closed_trades,
+    compute_slippage,
     infer_deal_time_offset,
     realized_pnl_since,
 )
@@ -141,6 +144,8 @@ async def main() -> None:
         print(f"  trades:        {len(trades)}")
         print(f"  expectancy_r:  {expectancy_r(trades):+.3f} R")
         print(f"  max_drawdown_r:{max_drawdown_r(trades):.3f} R")
+        print(f"  win_rate:      {win_rate(trades):.1%}")
+        print(f"  profit_factor: {profit_factor(trades):.3f}")
         print(f"  min sample ({MIN_TRADES_FOR_A_CLAIM}+)?  "
               f"{'yes' if has_minimum_sample(trades) else 'no'}")
 
@@ -155,6 +160,19 @@ async def main() -> None:
         print(f"\n--- skipped local records ({len(result.skipped)}) ---")
         for skip in result.skipped:
             print(f"  ticket={skip.ticket}: {skip.reason}")
+
+    slippage_results, slippage_skipped = compute_slippage(all_records)
+    print(f"\n--- slippage (requested vs executed price, {len(slippage_results)} "
+          f"comparable record(s), {len(slippage_skipped)} skipped) ---")
+    if slippage_results:
+        market_only = [s for s in slippage_results if s.order_type == "MARKET"]
+        by = market_only or list(slippage_results)
+        avg_slippage = sum(s.slippage_price_units for s in by) / len(by)
+        label = "MARKET-order" if market_only else "all-order (no MARKET records)"
+        print(f"  average {label} slippage: {avg_slippage:+.5f} price units "
+              f"(positive = unfavorable)")
+    else:
+        print("  no comparable records")
 
     # all_records(), not all_closed() -- mirrors the real kill-switch wiring's own fix (Step 5's
     # second bug): a same-session SL/TP close stays locally "OPEN" until reconciled, and must

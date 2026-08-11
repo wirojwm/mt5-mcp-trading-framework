@@ -40,3 +40,24 @@ def max_drawdown_r(trades: list[ClosedTrade]) -> float:
 
 def has_minimum_sample(trades: list[ClosedTrade], minimum: int = MIN_TRADES_FOR_A_CLAIM) -> bool:
     return len(trades) >= minimum
+
+
+def win_rate(trades: list[ClosedTrade]) -> float:
+    """Fraction of trades with a strictly positive r_multiple. A breakeven trade (r_multiple ==
+    0) counts in the denominator but not as a win, same convention as most trading literature."""
+    if not trades:
+        raise ValueError("win_rate() requires at least one trade")
+    wins = sum(1 for t in trades if t.r_multiple > 0)
+    return wins / len(trades)
+
+
+def profit_factor(trades: list[ClosedTrade]) -> float:
+    """Gross winning R divided by gross losing R (both positive by construction). `inf` when
+    there are winners and zero losers; `0.0` when there are neither (e.g. all-breakeven)."""
+    if not trades:
+        raise ValueError("profit_factor() requires at least one trade")
+    gross_profit = sum(t.r_multiple for t in trades if t.r_multiple > 0)
+    gross_loss = sum(-t.r_multiple for t in trades if t.r_multiple < 0)
+    if gross_loss == 0:
+        return float("inf") if gross_profit > 0 else 0.0
+    return gross_profit / gross_loss

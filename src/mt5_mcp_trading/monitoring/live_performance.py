@@ -95,6 +95,20 @@ class LiveTradeJoinResult:
     skipped: tuple[SkippedRecord, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SlippageResult:
+    """Signed slippage in price units for one `system_owned` record with both a requested and
+    an executed price on file. Positive = unfavorable (paid more than requested on a BUY, sold
+    for less than requested on a SELL); negative = favorable; zero = filled exactly as
+    requested. MARKET orders are the meaningful case (price moves between decision and fill);
+    a nonzero value on a LIMIT order's own requested price is itself a real anomaly worth
+    seeing, not filtered out here."""
+
+    ticket: int
+    order_type: str
+    slippage_price_units: float
+
+
 def _weighted_average_price(deals: list[Deal]) -> float:
     total_volume = sum(d.volume for d in deals)
     return sum(d.price * d.volume for d in deals) / total_volume
@@ -168,6 +182,45 @@ def build_closed_trades(
         ))
 
     return LiveTradeJoinResult(trades=tuple(trades), skipped=tuple(skipped))
+
+
+def compute_slippage(
+    records: Sequence[LocalOrderRecord],
+) -> tuple[tuple[SlippageResult, ...], tuple[SkippedRecord, ...]]:
+    """Signed requested-vs-executed price slippage for every `system_owned` record that has
+    both prices on file. `manual_adoption` records never went through a real submission (see
+    this module's docstring / state/models.py's LocalOrderRecord docstring), so they carry no
+    real "requested" price to compare against -- skipped, not fabricated as zero slippage.
+    Records with no `executed_price` (e.g. a cancelled pending order that never filled) are
+    skipped for the same reason: there is nothing real to compare."""
+    results: list[SlippageResult] = []
+    skipped: list[SkippedRecord] = []
+
+    for record in records:
+        if record.origin != "system_owned":
+            skipped.append(SkippedRecord(
+                ticket=record.ticket,
+                reason=f"origin={record.origin!r} -- no real submission, no requested price "
+                       f"to compare against",
+            ))
+            continue
+        if record.requested_price is None or record.executed_price is None:
+            skipped.append(SkippedRecord(
+                ticket=record.ticket,
+                reason="requested_price or executed_price is None -- order never reached a "
+                       "comparable fill",
+            ))
+            continue
+
+        signed = (
+            record.executed_price - record.requested_price if record.side == "BUY"
+            else record.requested_price - record.executed_price
+        )
+        results.append(SlippageResult(
+            ticket=record.ticket, order_type=record.order_type, slippage_price_units=signed,
+        ))
+
+    return tuple(results), tuple(skipped)
 
 
 def infer_deal_time_offset(

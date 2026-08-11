@@ -884,15 +884,40 @@ to avoid designing ahead of what's actually been asked for.
   difference. Local `StateStore` correctly shows 0 stale records (`var/order_state` is
   machine-local/gitignored, never synced from the work machine, as expected). No MCP write call, no
   order of any kind. Still PAUSED, pending its own explicit go-ahead before any relaunch.
+  **Same day, later**: with no network path to the work machine, its `var/order_state` genuinely
+  can't be transferred tonight — used the session instead on everything Phase 9 still needs that
+  doesn't depend on it. Inventoried all remaining Phase 9 work (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`,
+  new this entry) and classified each item by real blocker, not just "needs more data" generically:
+  work-machine-only (rows 3-4, the 130-record `StateStore` backlog) vs. merely live-call-blocked-
+  tonight (XAUUSD symbol research) vs. genuinely completable now. Completed everything in the last
+  category: added `win_rate()`/`profit_factor()` (`backtest/metrics.py`) and `compute_slippage()`
+  (`monitoring/live_performance.py`) — real code, synthetic-data unit tests only, no live call, no
+  execution-path code touched — and wired both into the live-performance monitor script's output.
+  Formalized the Live Pilot Preparation framework's existing narrative into explicit, checkable
+  criteria: EURUSD-vs-XAUUSD decision criteria, a minimum-lot/exposure derivation procedure,
+  daily-loss/shutdown/rollback rules, and a 5-gate human-approval sequence. Classified the optional
+  kill-switch-at-$50 smoke test as RECOMMENDED not REQUIRED (checklist row 2 is already MET from
+  Step 5; not run tonight). Proposed (design only, not implemented) a one-way, read-only,
+  never-git, never-ownership-affecting export/import workflow for moving `StateStore` visibility
+  between machines without weakening any safeguard. Full detail, including the honest "not yet
+  implemented" status of the rejected-orders/safety-stops/reconciliation-errors metrics (a real
+  data-persistence gap, verified by reading `mcp_order_executor.py`/`loop_control.py`/
+  `reconcile.py`, not built tonight), in that new checkpoint doc. 556 passed (was 541), no
+  live/demo call anywhere in this increment.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
-  scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
-  guards, spread filters, and daily shutdown rules were never ported from the legacy project and
-  don't exist here — there is no daily-loss-limit or kill-switch code anywhere in this codebase
-  today (`pipeline/loop_control.py`'s cycle/runtime ceilings bound *time*, not *loss*). This phase
-  cannot begin until that's written and tested, Phase 9 defines objective readiness criteria, and
-  this doc's "No `LIVE` mode exists in this codebase" boundary (see "Execution modes" below) is
-  itself explicitly revisited and approved.
+  live-tested. Preparation framework now formalized (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`,
+  above) but nothing in it is a decision or an authorization — still planning input only. **Hard
+  blockers, not just gaps**: no `LIVE` execution mode exists in this codebase (`config/settings.py`
+  defines only `READ_ONLY`/`MOCK`/`DRY_RUN`/`SHADOW`/`DEMO_EXECUTION`); margin guards and spread
+  filters were never ported from the legacy project and don't exist here (`risk/__init__.py`).
+  Note: a real daily-loss kill-switch (`risk/daily_loss_guard.py`) and cycle/runtime ceilings
+  (`pipeline/loop_control.py`) DO now exist, built fresh during Phase 9 Steps 2-5 for demo use —
+  correcting this bullet's own prior claim that no such code existed anywhere; whether that demo
+  mechanism is fit to reuse as-is for real money is itself part of what Live Pilot scoping must
+  decide, not assumed. This phase cannot begin until Phase 9 (A-D) is resolved, this doc's "No
+  `LIVE` mode exists in this codebase" boundary (see "Execution modes" below) is itself explicitly
+  revisited and approved, and margin/spread-filter guards are built and tested.
 
 ## Safety rules
 

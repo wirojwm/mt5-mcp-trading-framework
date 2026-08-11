@@ -16,6 +16,7 @@ from mt5_mcp_trading.domain.models import Deal
 from mt5_mcp_trading.monitoring.live_performance import (
     build_closed_trades,
     compute_daily_loss_decision,
+    compute_slippage,
     infer_deal_time_offset,
     realized_pnl_since,
 )
@@ -191,6 +192,65 @@ def test_multiple_records_each_resolve_independently() -> None:
     result = build_closed_trades([record_a, record_b], deals)
     assert {t.ticket for t in result.trades} == {1}
     assert {s.ticket for s in result.skipped} == {2}
+
+
+# ---------- compute_slippage ----------
+
+def test_buy_paying_more_than_requested_is_positive_unfavorable_slippage() -> None:
+    record = _record(side="BUY", requested_price=63000.0, executed_price=63005.0)
+    results, skipped = compute_slippage([record])
+    assert skipped == ()
+    assert len(results) == 1
+    assert results[0].ticket == record.ticket
+    assert results[0].slippage_price_units == pytest.approx(5.0)
+
+
+def test_buy_paying_less_than_requested_is_negative_favorable_slippage() -> None:
+    record = _record(side="BUY", requested_price=63000.0, executed_price=62995.0)
+    results, _ = compute_slippage([record])
+    assert results[0].slippage_price_units == pytest.approx(-5.0)
+
+
+def test_sell_filling_lower_than_requested_is_positive_unfavorable_slippage() -> None:
+    record = _record(side="SELL", requested_price=63000.0, executed_price=62995.0)
+    results, _ = compute_slippage([record])
+    assert results[0].slippage_price_units == pytest.approx(5.0)
+
+
+def test_exact_fill_is_zero_slippage() -> None:
+    record = _record(requested_price=63000.0, executed_price=63000.0)
+    results, _ = compute_slippage([record])
+    assert results[0].slippage_price_units == pytest.approx(0.0)
+
+
+def test_manual_adoption_record_is_skipped_not_fabricated() -> None:
+    record = _record(origin="manual_adoption", retcode=None)
+    results, skipped = compute_slippage([record])
+    assert results == ()
+    assert len(skipped) == 1
+    assert skipped[0].ticket == record.ticket
+
+
+def test_record_with_no_executed_price_is_skipped() -> None:
+    record = _record(executed_price=None)
+    results, skipped = compute_slippage([record])
+    assert results == ()
+    assert len(skipped) == 1
+
+
+def test_record_with_no_requested_price_is_skipped() -> None:
+    record = _record(requested_price=None)
+    results, skipped = compute_slippage([record])
+    assert results == ()
+    assert len(skipped) == 1
+
+
+def test_multiple_records_resolve_independently() -> None:
+    ok = _record(ticket=1, requested_price=63000.0, executed_price=63005.0)
+    bad = _record(ticket=2, executed_price=None)
+    results, skipped = compute_slippage([ok, bad])
+    assert {r.ticket for r in results} == {1}
+    assert {s.ticket for s in skipped} == {2}
 
 
 # ---------- infer_deal_time_offset ----------
