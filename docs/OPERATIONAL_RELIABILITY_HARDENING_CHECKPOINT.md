@@ -141,6 +141,50 @@ pytest -q -> unaffected (pure documentation, no src/tests/ changed)
 **Files changed this entry**: this checkpoint doc, `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`
 (rows 8-9 updated), `AGENTS.md`.
 
+## Post-run #10 re-affirmation (2026-08-11, home machine)
+
+Phase 9's remaining roadmap (`docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`, stage B) named run #10 as
+the trigger this checkpoint's two "revisit once real volume is known" clauses were waiting for.
+Run #10 (2026-08-11, work machine) provides that real data point: a single unbroken 1→30 cycle
+run, ~146 minutes, one long-lived connection, zero disconnects, zero `MANAGE_ONLY`, zero
+`unknown_real`, zero retcode-`10016`, zero kill-switch trigger, zero unhandled exceptions
+(`AGENTS.md`, run #10 entry). Local `StateStore` reached a 136-record scale during that run, of
+which a 130-record stale-status backlog remains for reconciliation — that reconciliation is a
+separate, still-open bookkeeping task (Phase 9 roadmap stage A, item 4), not evaluated here, and is
+currently blocked on this home machine specifically because `var/order_state` is machine-local and
+gitignored — the actual 130 stale records exist only on the work machine that produced them, not
+here. Nothing below required a new benchmark, a new live call, or access to that local state; both
+decisions are re-affirmed purely as a documented judgment call citing the real numbers already on
+record.
+
+**Item 1 (`StateStore` O(N) scan cost) — re-affirmed: do nothing yet.** Documented judgment call,
+not new measurement: the original "do nothing" decision was already anchored on cost staying flat
+across scale (~1.3 ms/ticket-file benchmarked up to 5000 tickets, 6.2s worst case) with ~170ms at
+134 tickets. Growth to 136 tickets over run #10's full 146-minute session is not a material change
+to that curve — nothing here shifts the calculus enough to warrant archiving now. Still revisitable
+if a future run's scale materially exceeds today's.
+
+**Item 2 (connection-drop-is-fatal, no reconnect) — re-affirmed: leave as-is.** This one has a
+stronger evidentiary basis than item 1: a single long-lived connection now has direct, real-world
+proof surviving a full Step-7-scale session (~146 minutes, 30 cycles, zero disconnects) without
+incident — exactly the kind of real volume the original "revisit once known" trigger asked for.
+The still-unresolved dependency this decision was originally entangled with (Phase 7's "an in-flight
+order whose response is lost to the same disconnect leaves no local record" gap) remains open and
+untouched by this re-affirmation — building auto-reconnect on top of it would still be building on
+a foundation this project has already flagged as shaky. No code change.
+
+**What this re-affirmation is, and isn't**: it closes Phase 9 roadmap stage B (operational
+reliability hardening) as evidenced. It does **not** touch, resolve, or claim anything about stage A
+items 2-4 (live-performance report, StateStore reconciliation) — those remain genuinely blocked on
+this machine by the missing local `var/order_state` data, not by anything decided here.
+
+```
+pytest -q -> 541 passed (unaffected -- pure documentation, no src/tests/ changed)
+```
+
+**Files changed this entry**: this checkpoint doc, `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`
+(rows 5-7 updated).
+
 ## Explicitly not in this doc
 
 - Doesn't itself change any production code — a proposal only, matching Phase 9's own opening
