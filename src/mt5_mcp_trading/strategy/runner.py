@@ -50,6 +50,19 @@ class RunnerStrategyConfig:
     sl_atr_mult: float = 3.0
     tp_atr_mult: float = 6.0  # 2:1 reward:risk, unchanged
     min_stop_distance_points: float = 10.0  # matches GridStrategyConfig.min_step_points's floor
+    # Added 2026-08-11 (Phase 9 Step 7 run #8 root cause): min_stop_distance_points above is a
+    # *fixed points* floor (10 * point = $0.10 for BTCUSD) that only ever activates when ATR
+    # computation fails outright (atr_value <= 0) -- it was never max()'d against a small-but-
+    # positive ATR value, unlike strategy/grid.py's compute_grid_levels(), which does apply its
+    # equivalent floor unconditionally. On a high-priced instrument like BTCUSD, M1-bar ATR is
+    # routinely a few dollars -- 6/6 recorded retcode-10016 ("Invalid stops") SL/TP-attach
+    # rejections in this project's history had a requested SL distance under 0.03% of price,
+    # every time. Phase 6 (docs/PHASE6_CONTROLLED_DEMO_EXECUTION_CHECKPOINT.md) already
+    # live-confirmed BTCUSD's real broker-side minimum is roughly 1% of price -- this constant
+    # reuses that proven value, applied as a floor on `base` (pre-multiplier, alongside
+    # min_stop_distance_points) so the existing sl_atr_mult/tp_atr_mult ratio is preserved
+    # automatically. See compute_stop_distances().
+    min_stop_distance_fraction_of_price: float = 0.01
     # NO legacy precedent either -- ema_crossover_core_multi.py's runner had no re-entry
     # throttle at all, just like it had no SL/TP. New, project-original: run_runner_cycle() had
     # no protection against re-entering the same direction repeatedly beyond the raw lot-based
@@ -101,7 +114,11 @@ def compute_stop_distances(
     there is no legacy formula to preserve here. ATR-based, reusing features/atr.py's existing
     helper (the same one strategy/grid.py already uses for its own step/tp sizing) -- falls back
     to a fixed points floor when ATR can't be computed (insufficient bars), mirroring
-    strategy/grid.py's compute_grid_levels() fallback."""
+    strategy/grid.py's compute_grid_levels() fallback. `base` is then also floored against
+    `min_stop_distance_fraction_of_price` of the latest close -- see that field's docstring for
+    why: neither the ATR-derived value nor the points floor alone is reliably large enough for a
+    high-priced instrument's real broker-side minimum stop distance."""
     atr_value = compute_atr(bars, config.atr_period)
     base = atr_value if atr_value > 0 else config.min_stop_distance_points * point
+    base = max(base, bars[-1].close * config.min_stop_distance_fraction_of_price)
     return base * config.sl_atr_mult, base * config.tp_atr_mult

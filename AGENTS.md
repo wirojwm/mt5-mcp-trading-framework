@@ -432,6 +432,14 @@ Do not skip ahead. Do not broadly refactor already-approved work without being a
   correctly. Retcode `10016` itself is a separate, already-anticipated broker-side
   stops_level/freeze_level rejection, not explained or caused by the trust bug. **Watch item
   closed, no fix needed.**
+  **Correction, 2026-08-11 (Phase 9 Step 7 run #8)**: this conclusion was wrong about the
+  broker-side rejection being unavoidable/unexplained. Root-caused precisely: `runner.py`'s
+  `compute_stop_distances()` had no floor against a small-but-*positive* ATR value (only against
+  ATR computing to exactly 0), and even its zero-ATR floor was far too small for a high-priced
+  instrument. Every recorded occurrence, including this project's very first (`171617865`)
+  through Step 7 run #8's `171979510`, requested an SL distance under 0.03% of price — Phase 6
+  had already live-confirmed BTCUSD's real minimum is roughly 1%. Fixed — see the Phase 9 bullet
+  below and `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
   **Step 29**: fifth live loop run, user-approved relaunch with unchanged config. Ran 4/12 cycles
   (6 grid tickets + 3 runner positions all succeeded in cycles 1-3) before cycle 4's runner MARKET
   order (`171653006`) hit the same retcode-10016 bug a fourth time — loop correctly stopped
@@ -795,6 +803,34 @@ to avoid designing ahead of what's actually been asked for.
   reason assertions and 1 new partition-exhaustiveness test was added). 537 passed total,
   architecture tests still pass. Step 7 remains PAUSED, still needs its own fresh go-ahead
   tomorrow. Full detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
+  **Next day (2026-08-11)**: fresh pre-flight (account flat, no orphans, config unchanged),
+  explicit go-ahead given, **run #8 launched**. Ran cycles 1-18 cleanly (zero `MANAGE_ONLY`/
+  `unknown_real` trips — the `sl_tp_artifact.py` fix held under real load), then cycle 18's
+  runner MARKET position (`171979510`) hit the retcode-10016 SL/TP-attach failure again, loop
+  correctly stopped itself, left it `OPEN_UNPROTECTED`. A read-only retry-sanity-check correctly
+  refused a blind re-attempt (price had moved past the original intended stop in the ~2 hours
+  since open); user chose to close instead (`close_position()`, retcode `10009`, verified absent,
+  realized loss -$0.91). Then **root-caused the retcode-10016 pattern for real** (corrects Step
+  28's "no fix needed" conclusion above): `strategy/runner.py`'s `compute_stop_distances()` only
+  applied its points-based floor when ATR computed to exactly `0.0`, never as a `max()` against a
+  small-but-positive ATR value the way `grid.py`'s equivalent already does, and even that floor
+  (`10 * point` = $0.10 on BTCUSD) was itself far too small. Checked every recorded retcode-10016
+  occurrence project-to-date (6, now including `171979510`): every single one requested an SL
+  distance between 0.0019% and 0.0270% of price — 35-500x smaller than the ~1% minimum Phase 6
+  already live-confirmed BTCUSD actually requires. **Fixed**: `RunnerStrategyConfig` gained
+  `min_stop_distance_fraction_of_price: float = 0.01`, and `compute_stop_distances()` now floors
+  `base` (the pre-multiplier ATR-or-points value) against `latest_close * that fraction`, so the
+  existing `sl_atr_mult`/`tp_atr_mult` ratio is preserved automatically regardless of which floor
+  ends up dominating. 5 new/updated unit tests (one renamed to isolate the pre-existing
+  points-floor path via `min_stop_distance_fraction_of_price=0.0`, four new: the bug reproduced
+  with the floor disabled, the fraction floor dominating both the zero-ATR and small-positive-ATR
+  cases, and a large-ATR case proving the floor is a pure no-op when ATR already exceeds it) — 541
+  passed total (was 537), architecture tests still pass. `grid.py` was deliberately left unchanged
+  — LIMIT orders carry SL/TP at placement (a clean reject, not a silent unprotected position), a
+  materially lower-severity failure mode, flagged as a possible latent risk but out of scope here.
+  Step 7 still has not completed an unbroken 30-cycle run (18/30 is the new high-water mark);
+  remains PAUSED, needs its own fresh go-ahead. Full detail in
+  `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin

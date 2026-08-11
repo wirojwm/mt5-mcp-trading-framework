@@ -2028,3 +2028,92 @@ cycle counts still don't carry forward across launches, though all real trade/st
 accumulates regardless. The kill-switch still has not had a real chance to trip at Step 7 scale.
 Next continuation: relaunch via the same proven detached-process pattern, its own fresh explicit
 go-ahead, this afternoon.
+
+**Bridging note**: this Status section's own narrative above stops at run #5 (2026-08-07
+afternoon) and was never caught up for runs #6/#7 (2026-08-10) or the `sl_tp_artifact.py`
+reconciliation fix — those are covered in this doc's main narrative above (the "Stop-work
+order, root-cause fix..." and "End-of-day: run #7 reconciled..." entries) and in `AGENTS.md`'s
+Phase 9 bullet. Picking back up here with **run #8 (2026-08-11)**.
+
+**Run #8, and the retcode-10016 SL/TP-attach failure finally root-caused (2026-08-11).**
+Fresh pre-flight (stop-file present as expected, no orphan processes, account flat 0/0, config
+re-confirmed unchanged: `MAX_CYCLES=30`/`MAX_RUNTIME_MINUTES=180.0`/`MAX_DAILY_LOSS=50.0`), then
+explicit go-ahead given. Launched detached (`PID 7516`). Ran cycles 1–18 cleanly — **zero
+`MANAGE_ONLY`/`unknown_real` trips**, the `sl_tp_artifact.py` fix's first real test at Step 7
+scale, and it held. Cycle 18's runner MARKET position (`171979510`, SELL 0.01 BTCUSD @ 63962.57)
+then hit the recurring retcode-10016 ("Invalid stops") SL/TP-attach failure (the same pattern
+first seen in Phase 6, recurring 5 times through 2026-08-10's Step 30) — loop correctly stopped
+itself (no error tolerance), left the position `OPEN_UNPROTECTED`. A fresh read-only check
+confirmed real live state: 1 position (the unprotected one) + 4 legitimate pending grid orders,
+0.05 lots total, no repeat of the `unknown_real` condition.
+
+User was asked how to handle the unprotected position and chose "retry SL/TP attach" first. A
+new one-off script (`scripts/run_demo_execution_retry_sltp_171979510.py`) did a read-only
+sanity check before attempting anything: fetched a fresh tick and compared it against the
+originally-intended SL (`63975.3`)/TP (`63937.1`) — by then (~2 hours after open, mid-conversation
+gap) price had moved to bid `64057.14`/ask `64072.14`, past the intended SL, which would have made
+a blind retry either meaningless or immediately-triggering. **Aborted with no mutating call**,
+reported the live P&L (-$0.95) back to the user, who then chose to close instead. Closed via
+`McpOrderExecutor.close_position()` directly (`scripts/run_demo_execution_close_171979510.py`) —
+retcode `10009`, verified absent, realized loss **-$0.91**. Final verified state: 0 open
+positions, 4 legitimate pending grid orders, zero unprotected exposure. Step 7 still has not
+completed an unbroken 30-cycle run — 18/30 (run #8) is the new high-water mark, stopped by a
+different failure mode than runs #4/#6 (reconciliation) or the duration-cap runs (#2/#5).
+
+**Root cause, finally traced (not just handled) — corrects this doc's own and `AGENTS.md`'s
+prior "Step 28: watch item closed, no fix needed" conclusion.** That conclusion correctly ruled
+out the vendored `metatrader_client` package's `send_order()` retcode-trust bug as the cause (our
+own `parse_trade_response()` already reads the real retcode, never the tool's misleading
+`success` flag) but then treated retcode `10016` itself as an unavoidable, already-anticipated
+broker-side rejection — never traced to a specific, fixable cause. It is fixable. Pulled every
+recorded retcode-10016 occurrence in this project's history (6, across Phase 6 through today) and
+computed the requested SL distance as a percentage of price:
+
+| ticket | SL distance | % of price |
+|---|---|---|
+| `171617865` (Phase 6, first live attempt) | $1.20 | 0.0019% |
+| `171647565` | $15.97 | 0.0251% |
+| `171651880` (Step 27) | $9.87 | 0.0155% |
+| `171653006` (Step 29) | $17.16 | 0.0270% |
+| `171654324` (Step 30) | $17.02 | 0.0268% |
+| `171979510` (Step 7 run #8, today) | $12.73 | 0.0199% |
+
+Every single one is 35–500x smaller than the ~1% minimum this same doc's Phase 6 entry already
+live-confirmed BTCUSD's broker actually requires (a $1.20 offset on a ~$62,880 price was rejected;
+the fix that worked there was a `MIN_SL_TP_FRACTION_OF_PRICE = 0.01` floor — but only in that
+one-off smoke-test script, never propagated into the production strategy code the live pipeline
+loop actually uses). Traced to `strategy/runner.py`'s `compute_stop_distances()`: its points-based
+floor (`min_stop_distance_points=10.0 * point` = $0.10 on BTCUSD) only ever activated when ATR
+computation failed outright (`atr_value <= 0`) — never `max()`'d against a small-but-*positive*
+ATR value, unlike `strategy/grid.py`'s equivalent (`compute_grid_levels()`), which correctly
+applies its floor via `max()` unconditionally. M1-bar ATR on a $60k+ instrument routinely lands in
+the single-digit-dollar range, so with `sl_atr_mult=3.0` the resulting SL distance was almost
+never going to clear the real ~1% requirement — not occasional bad luck, a structural undersizing
+bug.
+
+**Fixed** (`src/mt5_mcp_trading/strategy/runner.py`): added
+`RunnerStrategyConfig.min_stop_distance_fraction_of_price: float = 0.01` (reusing the exact value
+already proven live in Phase 6), and `compute_stop_distances()` now does
+`base = max(base, bars[-1].close * config.min_stop_distance_fraction_of_price)` before applying
+`sl_atr_mult`/`tp_atr_mult` — flooring the pre-multiplier `base` (not the final distances
+separately) so the existing SL:TP ratio is preserved automatically regardless of which floor
+dominates. `grid.py` was deliberately left unchanged: LIMIT orders carry SL/TP at placement, so an
+undersized value there fails cleanly at submission (no silent unprotected position) — a materially
+lower-severity version of the same latent risk, flagged for a possible future look but out of
+scope for this fix.
+
+**Tests** (`tests/unit/test_strategy_runner.py`): the pre-existing zero-ATR-floor test was
+renamed and given `min_stop_distance_fraction_of_price=0.0` to isolate the still-real points-floor
+path from the new fraction floor. Four new tests added: (1) reproduces the actual bug directly —
+with the fraction floor disabled, a BTCUSD-priced flat series really does produce a distance
+<0.01% of price; (2) confirms the fraction floor dominates and produces the expected value when
+ATR is exactly zero; (3) confirms the fraction floor dominates a genuinely small-but-positive ATR
+built from realistic single-digit-dollar wiggle around the actual failing price, reproducing
+`171979510`'s scenario directly; (4) confirms the floor is a pure no-op — never shrinks a distance
+— when ATR is already large relative to price. 541 passed total (was 537, +4 net after the
+rename), architecture tests still pass (13).
+
+Step 7 remains **PAUSED**, still needs its own fresh, explicit go-ahead before any relaunch. Next
+attempt should watch specifically for whether a real runner MARKET fill with genuinely low
+volatility now gets a distance comfortably clear of `10016` — the direct test of this fix, the way
+runs after the `sl_tp_artifact.py` fix specifically watched for a clean `unknown_real` reconciliation.
