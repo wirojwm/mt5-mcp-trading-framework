@@ -866,6 +866,24 @@ to avoid designing ahead of what's actually been asked for.
   started — symbol recommendation XAUUSD over EURUSD with an explicit re-validation caveat, sizing/
   deposit/loss-limit/rollback structure, hard human-approval gates) — see that doc's own
   "Remaining roadmap" and "Live Pilot Preparation" sections for full detail, not duplicated here.
+  **Home-machine session, 2026-08-11**: repo fast-forwarded clean (97 commits, local `master` now
+  matches `origin/master`), `.venv` re-verified on Python 3.12.10 with `requirements.txt`/
+  `requirements-dev.txt` fully installed (`metatrader5` and `pytest`/`pytest-asyncio` were missing
+  or off-pin, fixed). Found and fixed an unrelated pre-existing bug along the way: the throwaway
+  `tests/integration/_stub_mcp_server.py` had `from __future__ import annotations`, which turned
+  its tool function's parameter hints into strings at runtime; installed `mcp` 1.9.4's
+  `Tool.from_function` calls `issubclass()` on that annotation without resolving it, so the stub
+  subprocess crashed on import before it could even write its pidfile, failing all 4
+  `test_mcp_client_disconnect.py` tests. Fixed by dropping that one import (541 passed, was 537).
+  Then ran this machine's own fresh read-only pre-flight
+  (`scripts/run_demo_execution_check_20260811_home_machine_preflight.py`, modeled on the work
+  machine's Step 7 pre-flight pattern): confirmed login 181299/ThinkMarkets-Demo (visually, in the
+  terminal — this MCP server exposes no login/server field) and AutoTrading enabled, then found the
+  account **flat** — 0 positions, 0 pending orders, 0.00 lots — a change from run #10's not-flat
+  close-out state above; user confirmed a manual close earlier the same day accounts for the
+  difference. Local `StateStore` correctly shows 0 stale records (`var/order_state` is
+  machine-local/gitignored, never synced from the work machine, as expected). No MCP write call, no
+  order of any kind. Still PAUSED, pending its own explicit go-ahead before any relaunch.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   scoped. **Hard blocker, not just a gap**: `risk/__init__.py` already documents that margin
