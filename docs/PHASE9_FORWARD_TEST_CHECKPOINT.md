@@ -2401,3 +2401,79 @@ note), `docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md` (status table), this checkpoi
 
 **Step 7 has NOT been relaunched by this entry.** No live order action of any kind was taken —
 still waiting on a fresh, explicit go-ahead before any next detached-process launch (run #11).
+
+### Stage A item 5 closed (2026-08-13 midday, work machine): kill-switch smoke test at the real production path, explicit go-ahead given, self-stopped cleanly
+
+Same-day continuation, explicit go-ahead given specifically for this one action. Objective: prove
+the kill-switch trips inside the *actual* `run_demo_execution_pipeline_loop.py` production path at
+Step 7 scale (it had only ever been proven at Step 5's earlier wiring). Flagged before launch: a
+fresh read confirmed today's realized P&L since reset was exactly `$0.00` (unlike Step 5, where a
+pre-existing real loss let it trip before cycle 1), so this could not be a guaranteed "1-2 cycle"
+trip — user chose to run the real loop with a low threshold and let it trip naturally against
+whatever real closes occurred.
+
+**Setup (temporary, code-reverted after)**: `scripts/run_demo_execution_pipeline_loop.py`'s
+`MAX_DAILY_LOSS` 50.0 → 0.01 (same value/reasoning as Step 5's own smoke test), `MAX_CYCLES` 30 →
+12, `MAX_RUNTIME_MINUTES` 180.0 → 70.0 (Step 5's own historical smoke-test bound, not a full Step 7
+run). 556 tests passed before launch. Launched detached (`Start-Process`, PID `10900`) after a
+clean pre-flight (git clean, no orphan process, no stop-file, no MCP write call).
+
+**Ran 8 real cycles, then self-stopped cleanly**: `Stopping before cycle 9: daily loss limit
+breached (realized_pnl_since_reset=-0.04 breaches max_daily_loss=0.01)`, then `Done. 8 cycle(s)
+run. No cleanup performed...` — the real production kill-switch path halted itself correctly,
+mid-run, against a real (if tiny) observed loss, with zero further orders submitted after the
+trip. Process exit confirmed clean (no orphan `python.exe`/`pythonw.exe`). Zero `MANAGE_ONLY`, zero
+`unknown_real`, zero retcode-`10016`, zero unhandled exception across the full run (grepped both
+the detached process's stdout/stderr and the internal `pipeline_loop_20260813T035037Z.log`).
+
+**Fresh read-only post-stop check**
+(`scripts/run_demo_execution_check_20260813_killswitch_smoke_test_post_stop.py`, new,
+`get_positions`/`get_orders`/`get_deals` only): final state is **1 open runner position**
+(`172109374`, BUY 0.01, SL=61687.72/TP=67409.93, fully protected) + **3 pending grid BUY LIMIT
+orders** (`172109372`, `172109669`, `172109797`), **0.04 lots total** exposure (well under the
+0.06 cap), **zero unprotected positions**. 5 of the run's 9 submitted tickets had already closed by
+check time — all via real broker-side TP/SL, none via this project's own code (`pipeline_loop.py`
+never explicitly closes anything, matching its documented no-cleanup design):
+
+| Ticket | Outcome | Real P&L |
+|---|---|---|
+| `172109373` | TP hit | +0.12 |
+| `172109798` | TP hit | +0.09 |
+| `172110787` | SL hit | −0.25 |
+| `172110790` | SL hit | −0.21 |
+| `172109670` | SL hit | −0.30 |
+
+Net across those 5: −0.55. The kill-switch's own trip value (−0.04) reflects what `get_deals`
+returned at that specific cycle-boundary check instant, not the full day's eventual total — later
+closes (broker-side SL/TP firing after the loop had already stopped submitting anything new) kept
+accumulating in the background, exactly as expected under this project's "no cleanup on stop"
+design; the loop correctly used the real data available at its own check time and does not need to
+poll continuously afterward to have behaved correctly. Not a bug, a real-time-data characteristic
+already implicit in every prior kill-switch discussion in this project.
+
+**Constants reverted immediately after** (before any commit): `MAX_CYCLES` 12 → 30,
+`MAX_RUNTIME_MINUTES` 70.0 → 180.0, `MAX_DAILY_LOSS` 0.01 → 50.0 — back to Step 7 production
+values. 77 relevant tests re-run and passed
+(`tests/integration/test_pipeline_loop_daily_loss_wiring.py`,
+`tests/unit/test_monitoring_live_performance.py`, `tests/unit/test_backtest_metrics.py`,
+`tests/test_architecture.py`).
+
+**Stage A item 5 status: DONE.** A real trip inside the actual production `pipeline_loop.py` path
+at Step 7 scale is now proven, not just the earlier Step 5 wiring. **Stage A is now fully closed
+(items 1-5 all done).**
+
+```
+pytest -q (relevant subset) -> 77 passed
+```
+
+**Files changed this entry**: `scripts/run_demo_execution_pipeline_loop.py` (temporarily edited for
+the smoke test, then reverted to production values — net diff after revert is a comment-only
+change), `scripts/run_demo_execution_check_20260813_killswitch_smoke_test_post_stop.py` (new,
+one-off read-only diagnostic), this checkpoint doc, `AGENTS.md`. `var/order_state/*.json` and
+`var/logs/*`/`var/*smoke_test*.log` are machine-local/gitignored, not tracked.
+
+**Leftover exposure** (1 protected runner position + 3 pending grid LIMIT orders, 0.04 lots) is
+left in place, matching every prior run's documented no-cleanup-on-exit pattern — not touched by
+this entry, no human decision on it has been made yet. **No further live/demo action was taken
+after the post-stop check.** Step 7 (run #11) still needs its own separate, fresh, explicit
+go-ahead — closing this item does not authorize it.

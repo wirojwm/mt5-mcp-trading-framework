@@ -930,6 +930,29 @@ to avoid designing ahead of what's actually been asked for.
   Criteria 2-3 read as satisfied; criteria 1 (dedicated backtest/live-verified research pass) and 4
   (explicit recorded rejection of EURUSD) are still open — this was data-gathering only, not a
   symbol decision. Full detail in `docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`.
+  **Same day, midday, explicit go-ahead given specifically for this action**: Stage A item 5, the
+  kill-switch smoke test, run for real at Step 7 scale (previously RECOMMENDED-not-REQUIRED,
+  deferred 2026-08-11). Flagged before launch that today's realized P&L since reset was exactly
+  $0.00 (unlike Step 5, no pre-existing loss to trip against), so the trip couldn't be guaranteed
+  in 1-2 cycles the way Step 5's was -- user chose to run the real loop with a low threshold
+  (`MAX_DAILY_LOSS` temporarily 50.0->0.01, `MAX_CYCLES` 30->12, `MAX_RUNTIME_MINUTES` 180.0->70.0,
+  same historical smoke-test bound as Step 5) and let it trip naturally. Launched detached (PID
+  10900) after a clean pre-flight and 556 passing tests. **Ran 8 real cycles, then self-stopped
+  cleanly**: `Stopping before cycle 9: daily loss limit breached (realized_pnl_since_reset=-0.04
+  breaches max_daily_loss=0.01)`, `Done. 8 cycle(s) run.` -- the real production kill-switch path
+  proven to trip correctly for the first time (previously only proven at Step 5's earlier wiring).
+  Zero `MANAGE_ONLY`/`unknown_real`/retcode-10016/unhandled exception. Fresh read-only post-stop
+  check (new script, `get_positions`/`get_orders`/`get_deals` only): final state is 1 protected
+  runner position (`172109374`) + 3 pending grid LIMIT orders, 0.04 lots, **zero unprotected
+  positions**. 5 of the run's 9 tickets had already closed via real broker-side TP/SL by check time
+  (net -0.55 across those 5 -- the kill-switch's own -0.04 trip value reflects what `get_deals`
+  returned at that specific check instant, not the eventual full-day total; not a bug, later closes
+  kept landing in the background after the loop had already stopped submitting anything new, per
+  its documented no-cleanup-on-stop design). **Constants reverted immediately after** back to
+  production values (30/180.0/50.0) -- 77 relevant tests re-run and passed. **Stage A is now fully
+  closed (items 1-5 all done).** Full detail in `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`. Leftover
+  exposure left in place (no cleanup decision made); Step 7 run #11 still needs its own separate,
+  fresh, explicit go-ahead.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   live-tested. Preparation framework now formalized (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`,

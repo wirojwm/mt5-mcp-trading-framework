@@ -149,6 +149,8 @@ MAX_RUNTIME_MINUTES = 180.0      # hard ceiling regardless of cycle count
 # (grid 14.240 R, runner 62.999 R) for a combined (not per-strategy) kill-switch total -- a
 # judgment call in the derived $40-60 range, not a precise answer; still adjustable. RESET_HOUR_UTC
 # kept at Step 2's default (0, UTC midnight) -- no operational reason found yet to pick otherwise.
+# 2026-08-13: temporarily set to 0.01 for a real kill-switch smoke test (Stage A item 5), which
+# tripped correctly (8 cycles run, clean self-stop) -- reverted back to 50.0 here immediately after.
 MAX_DAILY_LOSS: float | None = 50.0
 RESET_HOUR_UTC = 0
 DAILY_LOSS_CONFIG = DailyLossLimitConfig(max_daily_loss=MAX_DAILY_LOSS, reset_hour_utc=RESET_HOUR_UTC)
