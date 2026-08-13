@@ -145,6 +145,19 @@ is a restatement of a bar it already clears, not a new hurdle it must re-clear.
 
 ## Locked demo forward-test plan (Stage D, formalized)
 
+**Status update, 2026-08-13 end-of-day**: deliberately PAUSED, not just unstarted. Stage A/B/C
+(execution readiness) closed the same day, but the same session's Phase 8 continuation
+investigation (`docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md`) found both current
+production strategies still show confirmed negative edge (grid: 169 trades, −0.683 R; runner:
+statistically indistinguishable from random-direction chance, classification C). Building a
+"locked parameter" track record now would lock in a strategy already shown to lack edge — Stage D
+should not resume until either strategy has credible, out-of-sample-confirmed positive edge (the
+M15/H1 mean-reversion lead from Experiments 4/5 is the current best candidate for that, not yet
+tested for economic viability after costs) or an explicit, separate decision is made to proceed
+despite negative edge for a different stated reason. This is a standing pause, same discipline as
+[[project_live_testing_paused]] — revisit only with a fresh, explicit go-ahead citing new edge
+evidence.
+
 Phase 9's own stated longer-horizon purpose is a real track record, not one data point. Proposed
 structure for when further live sessions are separately authorized:
 

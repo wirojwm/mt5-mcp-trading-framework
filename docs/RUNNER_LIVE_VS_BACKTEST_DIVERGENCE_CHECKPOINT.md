@@ -141,46 +141,126 @@ temporally sequential slices of one price history, not independent markets, so L
 mean-reversion signal could reflect either noise or a genuine recent regime shift — this
 experiment can't distinguish the two.
 
-## Overall recommendation: REDESIGN, and deprioritize BTCUSD M1 directional research specifically
+## Experiment 4 (approved 2026-08-13): does BTCUSD show more reliable structure at M15/H1 than M1?
 
-Two independent lines of evidence now converge: Experiment 2 showed one specific signal
-(MACD-sign) has no edge; Experiment 3 shows the underlying M1 price series itself has no
-*reliable* exploitable directional structure at runner's actual trading horizons — only a tiny,
-likely-microstructure 1-bar effect. KEEP remains ruled out. Full ABANDON remains broader than
-what was tested — the runner's execution/risk-management shape (ATR-based SL/TP sizing,
-position-limit guard, exposure caps, cost model, backtest harness) is sound and reusable
-regardless of what drives entries; only the signal-search premise on this specific
-instrument/timeframe is now in question.
+Full design and results: this session's transcript; scripts:
+`scripts/run_demo_execution_check_20260813_experiment4_cache_seed.py` (new read-only caches:
+M15 60,000 bars, 2024-11-10→2026-08-13, ~641 days; H1 60,000 bars, 2015-07-28→2026-08-13, ~11
+years) and `scripts/run_demo_execution_check_20260813_experiment4_randomwalk_m15_h1.py` (Experiment
+3's identical methodology, reused verbatim — same ACF/Lo-MacKinlay/runs-test formulas, same
+`{1,5,15,30,60}` bar-count horizon set). Two approved, explicit departures from Experiment 3: (1)
+windows are three roughly-equal **chronological thirds** of each timeframe's cached history
+(EARLY/MIDDLE/RECENT) rather than Experiment 3's exact calendar boundaries, which would have left
+M15/H1 badly underpowered (Experiment 3's spans collapse to ~800–5,000 bars at these coarser
+timeframes); none is labeled "LIVE" since neither timeframe has ever been live-traded. (2) M15/H1
+corrected separately (45 tests each), not pooled.
 
-**Recommended next steps (not yet approved/scoped as a formal experiment), in order of
-information value per cost**:
-1. Re-run Experiment 3's exact methodology at a longer BTCUSD timeframe (M15 or H1) — cheap, no
-   new strategy, directly answers whether M1 specifically is the problem or BTCUSD is broadly
-   hard to predict directionally.
-2. Before assuming any other instrument (e.g., XAUUSD, already under separate Live Pilot symbol
-   research for unrelated ATR/spread reasons) would behave differently, apply this same
-   randomness test to it rather than assuming a symbol switch fixes the underlying question.
-3. Grid's mean-reversion-around-a-center shape is already in the portfolio and already shows its
-   own confirmed negative edge (169 trades, −0.683 R) — "switch to mean-reversion" is not implied
-   as a free win by this result and would need its own re-validation, not a re-use of grid as-is.
+**Headline finding — the first result in this whole investigation to clear the full pre-committed
+bar (same sign, significant, AND Bonferroni-robust, across all three independent windows):**
+- **M15**: the 1-bar (15-minute) runs test is fully confirmed — more sign-reversals than random,
+  same direction, Bonferroni-significant in all three ~20-month windows (Nov 2024→Aug 2026).
+  Corroborated (not contradicted, unlike M1) by the ACF at the same horizon: 2 of 3 windows
+  individually significant in the same direction, the third non-significant but not opposite.
+  Nothing confirmed beyond 75 minutes.
+- **H1**: the same pattern at the 1-bar (1-hour) horizon — fully confirmed, Bonferroni-significant
+  in all three ~2-year windows spanning 2015→2026 (i.e., across meaningfully different BTC market
+  eras, not just adjacent similar periods). A weaker version extends to 5 hours (same direction,
+  raw-significant in all three, only 2/3 Bonferroni-robust). Nothing confirmed beyond that.
+- Secondary, below-bar observation: M15's variance ratio shows the *same sign*
+  (mean-reversion-like) in all 15/15 window×horizon cells, just not always significant — more
+  directionally coherent than anything M1 produced even where it falls short of confirmation.
+
+**Classification: M15 — B (Consistent mean-reversion structure, at the 1-bar horizon). H1 — B
+(Consistent mean-reversion structure, at the 1-bar horizon, weaker support to 5 hours).** Both
+contrast with M1's Experiment 3 result (C — mixed/unstable).
+
+Limitations carried forward: same homoskedastic-variance-ratio caveat as Experiment 3; windows
+are chronological thirds of one continuous history each, not independent markets (though H1's
+spans genuinely different market-maturity eras); confirms serial structure exists, not that it
+survives real transaction costs as a tradeable edge — that is Experiment 5's job, not assumed
+here.
+
+## Overall recommendation, updated: REDESIGN, deprioritize BTCUSD M1 directional, pursue M15/H1 mean-reversion as the next candidate
+
+Three lines of evidence now converge on the M1-specific conclusion: Experiment 2 (MACD-sign has
+no edge), Experiment 3 (M1 price action itself has no reliable directional structure at runner's
+horizons). Experiment 4 adds a genuinely new, more promising direction: M15 and H1 both show a
+real, confirmed, cross-era-robust short-horizon mean-reversion signature that M1 never showed.
+KEEP (the current runner) remains ruled out. Full ABANDON remains too broad — the
+execution/risk-management shape is sound and reusable; the signal-search premise on BTCUSD-M1
+specifically is what's now deprioritized, not directional trading in general.
+
+## Experiment 5 (approved 2026-08-13 as a scoping exercise, NOT YET RUN): does M15/H1 mean-reversion survive real costs as an economic edge?
+
+**Design only, no execution this entry** — per explicit instruction to scope, not build/tune a
+strategy. Full design: this session's transcript. Two candidates, tested independently, not
+combined: **A. M15 single-bar mean-reversion**, **B. H1 single-bar mean-reversion**.
+
+- **Signal** (zero free parameters): "fade the last closed bar" — SHORT if last bar's return was
+  positive, LONG if negative. The most mechanically direct possible translation of Experiment 4's
+  actual finding (the runs test measures exactly this relationship).
+- **Exit — the one real, explicitly-flagged design decision awaiting approval before any code is
+  written**: a fixed 1-bar holding period (enter at bar close, force-close at next bar's close),
+  not runner's existing ATR-based bracket (built for a longer-hold momentum signal, would bury
+  the confirmed 1-bar effect). Requires a small, additive, **backtest-harness-only** capability
+  (a wrapper around the existing engine, not a change to `backtest/engine.py`/`pipeline/`/
+  `strategy/`/`execution/`) plus a nominal ATR-based SL/TP sized to essentially never trigger
+  inside 1 bar, purely to satisfy the existing MARKET-order-must-have-SL/TP safety rule and to
+  give `r_multiple` a well-defined denominator.
+- **Baselines**: random-direction (20 pre-registered seeds, same shape as Experiment 2),
+  always-long, always-short.
+- **Windows**: reuses Experiment 4's exact EARLY/MIDDLE/RECENT chronological thirds per
+  timeframe — no new windows invented.
+- **Costs**: same spread-only model as every prior experiment; each run done twice
+  (`spread_multiplier=0` and `=1`) so cost drag is measured directly, not estimated.
+- **Predefined classification**: A (robust economic edge, consistent across all 3 windows, beats
+  both baseline families, survives cost) / B (weak/inconclusive) / C (structure exists at
+  zero-cost, real-cost erases it) / D (no usable edge either way). A single good window cannot
+  promote a candidate to A.
+- **M15 vs. H1 comparison lens** (pre-committed, not yet filled in): sample span/regime diversity
+  (H1 spans ~11 years incl. very different BTC eras; M15 spans ~641 days), execution practicality
+  (H1's 1-hour cadence fits the existing bounded pipeline-loop shape far more naturally than M15's
+  tighter, higher-turnover requirement), overfitting risk (H1's longer, more regime-diverse
+  history is stronger out-of-sample evidence).
+
+Not yet approved to execute — the fixed-1-bar-hold-plus-nominal-SL/TP mechanism needs explicit
+sign-off before any harness code is written or any backtest is run.
 
 ## What this investigation deliberately did not do
 
 No Step 7 run (run #11 or any other). No Live Pilot work (XAUUSD research, sizing, margin
 guards). No live/demo order of any kind. No production `RunnerStrategyConfig`/`GridStrategyConfig`
-default changed — every config instance built across all five new scripts is local to that
+default changed — every config instance built across all seven new scripts is local to that
 script. No parameter search/sweep beyond the pre-specified, fixed concurrency set in Experiment 1
-and the pre-specified, fixed horizon set in Experiment 3 — neither expanded after seeing results.
+and the pre-specified, fixed horizon set in Experiments 3–4 — none expanded after seeing results.
+Experiment 5 is design-only — no strategy code, no harness code, no backtest run for it yet.
+
+## Continuation plan for the next session
+
+Smallest safe next step: get explicit sign-off on Experiment 5's one open design decision (fixed
+1-bar hold + nominal ATR-based SL/TP, backtest-harness-only), then build and run it — offline
+only, no MT5 live call beyond the same read-only pattern every prior experiment has used (none
+needed at all if the M15/H1 caches seeded today remain sufficient). Success/failure is read
+directly off the predefined A/B/C/D classification per candidate; the decision it supports is
+whether M15 or H1 mean-reversion is worth carrying into a real (still demo-only) parameter
+adoption discussion, or whether this research direction should also be deprioritized. Do not
+adopt any production parameter from Experiment 5 without separate, explicit approval and
+out-of-sample confirmation, per Phase 8's own standing discipline.
 
 ```
-pytest -q -> unaffected (no src/ file changed; five new one-off scripts + one doc update only)
+pytest -q -> 556 passed, unaffected (no src/ file changed this whole investigation; seven new
+one-off scripts + doc updates only)
 ```
 
-**Files changed this entry**: `scripts/run_demo_execution_check_20260813_runner_param_split.py`
-(new), `scripts/run_demo_execution_check_20260813_live_window_backtest.py` (new),
+**Files changed across this whole investigation (2026-08-13 afternoon session)**:
+`scripts/run_demo_execution_check_20260813_runner_param_split.py` (new),
+`scripts/run_demo_execution_check_20260813_live_window_backtest.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment1_concurrency.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment2_edge_test.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment3_randomwalk.py` (new),
+`scripts/run_demo_execution_check_20260813_experiment4_cache_seed.py` (new),
+`scripts/run_demo_execution_check_20260813_experiment4_randomwalk_m15_h1.py` (new),
 `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` (rows 3–4 and the "How to use this" note updated),
-this checkpoint doc, `AGENTS.md`. `var/market_data/BTCUSD_M1.csv` (re-seeded, machine-local,
-gitignored, not tracked).
+this checkpoint doc, `AGENTS.md`. `var/market_data/BTCUSD_M1.csv` (re-seeded),
+`var/market_data/BTCUSD_M15.csv` (new), `var/market_data/BTCUSD_H1.csv` (new) — all
+machine-local, gitignored, not tracked.

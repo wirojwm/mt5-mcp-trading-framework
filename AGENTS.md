@@ -504,8 +504,19 @@ either (classification C, "mixed/unstable" — only a tiny, likely-microstructur
 **recommendation: REDESIGN the signal (not KEEP or fully ABANDON the runner framework), and
 deprioritize BTCUSD M1 directional research specifically** in favor of testing a longer timeframe
 first, research only, no Step 7/Live Pilot/live order/production-parameter change anywhere in
-this effort) in `docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md` — read whichever is relevant before
-continuing that work in a new session.
+this effort. **Same session, Experiment 4 tested that longer-timeframe direction**: BTCUSD M15
+and H1 (new read-only caches, 641 days and ~11 years respectively) both show a real, confirmed,
+cross-era-robust short-horizon (1-bar) mean-reversion signature M1 never showed (classification B
+for both, vs. M1's C) — the first result in this whole investigation to clear the full
+pre-committed significance-plus-consistency bar. **Experiment 5 was then scoped (not run)** to
+test whether that statistical structure survives realistic transaction costs as an economic
+edge — two candidates (M15, H1 single-bar mean-reversion, "fade the last bar," zero free
+parameters), pending explicit sign-off on one design decision (a fixed 1-bar hold via a new,
+backtest-harness-only capability) before any code is written) in
+`docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md` — read whichever is relevant before
+continuing that work in a new session. **2026-08-13 end-of-day**: session closed safely, account
+confirmed flat (0 positions/orders), no process running; next session's smallest safe step is
+approving and running Experiment 5, not another live/Step 7 action.
 
 ## Forward phases (named, not yet scoped)
 
