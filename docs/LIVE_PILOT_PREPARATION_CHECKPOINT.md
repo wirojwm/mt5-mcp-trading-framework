@@ -190,6 +190,40 @@ regime). Formalized as criteria the actual decision must satisfy before either s
 **Status**: criteria defined; satisfying criterion 2 needs a live `get_symbol_info` call — a
 live-call blocker, not a work-machine blocker, doable on this machine once authorized.
 
+**Criteria 2 and 3 data gathered (2026-08-13, work machine, explicit go-ahead)** — new read-only
+script `scripts/run_demo_execution_xauusd_symbol_research.py` (`get_symbols`, `get_symbol_info`,
+`get_candles_latest` M1/D1 for both XAUUSD and BTCUSD, all `READ_ONLY`-classified, no `executor`
+reference, no order of any kind). First resolved the real broker symbol name via
+`get_symbols(group="*XAU*")` — this broker (ThinkMarkets-Demo) exposes it as literally `XAUUSD`,
+no quirk to work around. Real, same-session, directly-comparable read:
+
+| | XAUUSD | BTCUSD (this project's only live-validated regime) |
+|---|---|---|
+| price | $4,408.47 | $63,524.85 |
+| spread | 19 points (~0.0043% of price) | 1,632 points (~0.0257% of price) |
+| broker `trade_stops_level` | 1 point = 0.0002% of price | 10 points = 0.0002% of price |
+| M1 ATR(14) | 0.0209% of price | 0.0267% of price |
+| D1 ATR(14) | 2.0682% of price | 1.8294% of price |
+| `min_stop_distance_fraction_of_price=0.01` design floor vs. broker minimum | floor dominates (deliberate design choice, not a collision) | floor dominates (same, already proven live) |
+| `volume_min`/`volume_max`/`volume_step` | 0.01 / 10.0 / 0.01 | 0.01 / 5.0 / 0.01 |
+
+**Reading**: criterion 2 is satisfied — XAUUSD's broker-side minimum stop distance is negligible
+(0.0002% of price, identical in relative terms to BTCUSD's), so the 1%-of-price design floor stays
+the deliberate binding constraint on both symbols, exactly the situation already proven live for
+BTCUSD, not the EURUSD failure mode (pip-level minimum colliding with/dominating the floor).
+Criterion 3 is satisfied — XAUUSD's M1 and D1 ATR-to-price ratios are structurally close to
+BTCUSD's (M1: 0.021% vs 0.027%; D1: 2.07% vs 1.83%), a genuine "high absolute volatility relative
+to price" match, not a superficial resemblance. XAUUSD's spread is also proportionally tighter
+than BTCUSD's on this broker (~0.004% vs ~0.026% of price), a cost-efficiency point in its favor,
+not one of the four decision criteria itself.
+
+**Not satisfied by this read**: criterion 1 (a dedicated Phase-8-equivalent backtest +
+live-verified session specifically for XAUUSD — none exists yet, still needed before any real
+sizing/parameter is trusted) and criterion 4 (an explicit recorded decision rejecting EURUSD,
+which is a human call, not something this data-gathering script should pre-empt). This entry is
+evidence toward the decision, not the decision itself — no symbol has been approved by this
+session.
+
 ### Minimum-lot and exposure framework
 
 - **Procedure, not a number**: at Live Pilot scoping time, read the chosen symbol's real

@@ -918,6 +918,18 @@ to avoid designing ahead of what's actually been asked for.
   `OPEN`/`OPEN_UNPROTECTED` records remain. Full detail in
   `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`'s new entry. 556 passed, unchanged. **No MCP write call,
   no order of any kind, Step 7 not relaunched.**
+  **Same session, later, explicit go-ahead**: first live-data action toward the Live Pilot
+  Preparation framework's EURUSD-vs-XAUUSD decision (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`,
+  criteria 2-3) — new read-only script `scripts/run_demo_execution_xauusd_symbol_research.py`
+  (`get_symbols`/`get_symbol_info`/`get_candles_latest`, all `READ_ONLY`-classified). Resolved the
+  real broker symbol (`XAUUSD`, no naming quirk on ThinkMarkets-Demo) and read it directly against
+  BTCUSD for comparison: XAUUSD's M1/D1 ATR-to-price ratios (0.021%/2.07%) are structurally close
+  to BTCUSD's (0.027%/1.83%) and its broker-side minimum stop distance is equally negligible
+  (0.0002% of price on both), so the existing `min_stop_distance_fraction_of_price=0.01` design
+  floor stays the deliberate binding constraint on XAUUSD too, not the EURUSD failure mode.
+  Criteria 2-3 read as satisfied; criteria 1 (dedicated backtest/live-verified research pass) and 4
+  (explicit recorded rejection of EURUSD) are still open — this was data-gathering only, not a
+  symbol decision. Full detail in `docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`.
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   live-tested. Preparation framework now formalized (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`,
