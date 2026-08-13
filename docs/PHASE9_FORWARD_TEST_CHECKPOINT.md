@@ -2347,3 +2347,57 @@ effort — not a decision made here.
 - **Live demo activity**: yes for the XAUUSD research/re-validation stage (still demo, not real
   money); the pilot itself is real-money by definition and is its own separate, future,
   explicitly-approved proposal — not scoped further than this planning framework by this entry.
+
+### Stage A items 2–4 closed (2026-08-13, work machine): real live-performance numbers, readiness checklist rows 3–4, 130→136-record backlog reconciled
+
+Continuation of the 2026-08-11 home-machine session (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`) —
+back on the work machine, with the real `var/order_state` available, closing the three items that
+session could only prepare. **No MCP write call of any kind was made. No order was placed,
+modified, cancelled, or closed. Step 7 was not relaunched.**
+
+- **Re-ran `run_demo_execution_live_performance_monitor.py`** (read-only, `get_deals` only) against
+  the real `StateStore`: 125 locally closed records, matched to 123 real trades (2 skipped, no
+  matching OUT-entry deal). Real numbers, superseding the 2026-08-07 read: **grid** 90 trades (MET,
+  min sample) / −0.566 R expectancy / 51.332 R max drawdown / 36.7% win rate / 0.199 profit factor;
+  **runner** 28 trades (NOT MET, 2 short of 30) / −0.958 R expectancy / 31.586 R max drawdown /
+  14.3% win rate / 0.182 profit factor. 5 matched trades carried a magic outside `{71101, 72101}`,
+  excluded from both totals per this project's own never-blend convention. Average MARKET-order
+  slippage: `+0.11159` price units (unfavorable). The `require_demo_account` informational warning
+  fired again (`trade_mode='REAL'`) — expected, the same confirmed upstream MCP inversion bug
+  already documented (`docs/MCP_ADAPTER_WIRING_CHECKPOINT.md`), not a real account issue; the hard
+  gate (`MT5_ACCOUNT_KIND=DEMO`, env-sourced) is what actually matters and passed.
+- **Updated `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` rows 3–4** in place with the numbers above:
+  row 3 stays PARTIAL (runner still short of the 30-trade bar); row 4 stays MET-for-grid/
+  PARTIAL-for-runner, both real figures directionally consistent with Phase 8's negative-expectancy
+  backtested finding. Also corrected the "How to use this" note, which claimed the monitor script
+  was blocked on any machine other than the one that originally wrote the records — no longer
+  accurate; the script runs from whichever machine currently holds the real `var/order_state`.
+- **Reconciled the stale `StateStore` backlog** — new one-off script
+  (`scripts/run_demo_execution_reconcile_20260813_backlog.py`, same classify-by-deal-history pattern
+  as every prior leftover-reconciliation script, this time deliberately *not* date-scoped since the
+  point was clearing the whole accumulated backlog in one bulk pass): found 136 records still
+  `OPEN`/`OPEN_UNPROTECTED` (grew from the 130 confirmed stale at run #10's 2026-08-11 close-out, as
+  6 more accumulated since — all from that same already-known-stale population, no new incident).
+  Classified against a fresh `get_positions`/`get_orders` read (account currently flat, 0 live) and
+  `get_deals` from `2026-08-03` to `2026-08-14`: **0 still genuinely live**, **115 reconciled to
+  `CLOSED`** (real OUT-entry deal found, `closed_at` corrected for `Deal.time`'s confirmed +UTC
+  offset via `infer_deal_time_offset()`), **21 reconciled to `CANCELLED`** (no deal found — unfilled
+  grid LIMIT orders). Re-verified immediately after with a fresh `StateStore` read: **0 stale
+  `OPEN`/`OPEN_UNPROTECTED` records remain** (281 total records: 240 `CLOSED`, 41 `CANCELLED`,
+  historical data from 2026-08-03 onward left fully intact, only status/`closed_at` fields written).
+
+```
+pytest -q -> 556 passed (unchanged -- no src/tests/ touched this entry, two new one-off scripts only)
+```
+
+**Stage A (Complete Step 7 acceptance) status**: items 1, 2, 3, 4 now all done. Item 5 (kill-switch
+smoke test) remains RECOMMENDED-not-REQUIRED per the 2026-08-11 decision, not run. Stage A is
+effectively closed pending only that optional, separately-approved item.
+
+**Files changed this entry**: `scripts/run_demo_execution_reconcile_20260813_backlog.py` (new,
+one-off reconciliation), `var/order_state/*.json` (136 records updated to `CLOSED`/`CANCELLED`, not
+tracked by git), `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` (rows 3–4 and the "How to use this"
+note), `docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md` (status table), this checkpoint doc, `AGENTS.md`.
+
+**Step 7 has NOT been relaunched by this entry.** No live order action of any kind was taken —
+still waiting on a fresh, explicit go-ahead before any next detached-process launch (run #11).

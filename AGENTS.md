@@ -904,6 +904,20 @@ to avoid designing ahead of what's actually been asked for.
   data-persistence gap, verified by reading `mcp_order_executor.py`/`loop_control.py`/
   `reconcile.py`, not built tonight), in that new checkpoint doc. 556 passed (was 541), no
   live/demo call anywhere in this increment.
+  **Work-machine session, 2026-08-13**: back on the machine with the real `var/order_state`,
+  closing the three items the 2026-08-11 home-machine session could only prepare. Re-ran
+  `run_demo_execution_live_performance_monitor.py` (read-only) against the real `StateStore`: grid
+  90 trades / -0.566 R expectancy / 51.332 R max drawdown / 36.7% win rate / 0.199 profit factor;
+  runner 28 trades (still 2 short of the 30-trade minimum sample) / -0.958 R expectancy / 31.586 R
+  max drawdown / 14.3% win rate / 0.182 profit factor. Updated
+  `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` rows 3-4 with those real numbers. Reconciled the stale
+  `StateStore` backlog (136 records, grown from the 130 confirmed at run #10's close-out) via a new
+  bulk, not-date-scoped classify-by-deal-history script
+  (`scripts/run_demo_execution_reconcile_20260813_backlog.py`, same pattern as every prior leftover
+  reconciliation): 0 still live, 115 -> `CLOSED`, 21 -> `CANCELLED`; re-verified 0 stale
+  `OPEN`/`OPEN_UNPROTECTED` records remain. Full detail in
+  `docs/PHASE9_FORWARD_TEST_CHECKPOINT.md`'s new entry. 556 passed, unchanged. **No MCP write call,
+  no order of any kind, Step 7 not relaunched.**
 - **Live pilot (symbol selection, minimum lot, initial deposit calculation, strict daily loss
   limit, limited symbols/orders, human approval before real-money execution)**: not started, not
   live-tested. Preparation framework now formalized (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md`,

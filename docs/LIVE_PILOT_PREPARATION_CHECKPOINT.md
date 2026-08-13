@@ -35,9 +35,9 @@ Items below are tagged with which kind applies, where relevant.
 | Item | Status | Bucket |
 |---|---|---|
 | 1. Human decision on run #10's leftover exposure | **Already resolved** (2026-08-11, home machine) — manual close, account verified flat | done |
-| 2. Re-run `run_demo_execution_live_performance_monitor.py` against run #10's real trades | Script now reports `win_rate`/`profit_factor`/slippage (built tonight, see below) | **B** built here, **C** to actually run — needs work-machine `StateStore` |
-| 3. Update readiness checklist rows 3–7 | Rows 5–7 already MET (prior session). Rows 3–4 need item 2's real numbers | rows 5-7 done; rows 3-4 **C** |
-| 4. Reconcile the 130-record stale `StateStore` backlog | Not started | **C** — the records themselves only exist on the work machine |
+| 2. Re-run `run_demo_execution_live_performance_monitor.py` against run #10's real trades | **Done (2026-08-13, work machine)** — real read: grid 90 trades / −0.566 R / 51.332 R drawdown / 36.7% win rate / 0.199 profit factor; runner 28 trades / −0.958 R / 31.586 R drawdown / 14.3% win rate / 0.182 profit factor | done |
+| 3. Update readiness checklist rows 3–7 | **All 7 rows now MET or PARTIAL with reasoning** — rows 5–7 done prior session; rows 3–4 updated 2026-08-13 with item 2's real numbers | done |
+| 4. Reconcile the 130-record stale `StateStore` backlog | **Done (2026-08-13, work machine)** — bulk classify-by-deal-history pass (`scripts/run_demo_execution_reconcile_20260813_backlog.py`): 136 stale records found (grew from 130 since 2026-08-11), 0 still live, 115 reconciled to `CLOSED`, 21 to `CANCELLED`. Re-verified: 0 stale `OPEN`/`OPEN_UNPROTECTED` records remain | done |
 | 5. Decide whether a real kill-switch trigger at Step 7 scale ($50 threshold) is required for acceptance | **Decided tonight** — see "Kill-switch smoke test" section below | **A**, done |
 
 ### Stage B — Operational reliability hardening
