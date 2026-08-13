@@ -495,13 +495,16 @@ now**) in `docs/OPERATIONAL_RELIABILITY_HARDENING_CHECKPOINT.md`, and the runner
 divergence investigation (a new, separately-scoped Phase 8 continuation, same pattern as the grid
 regime filter effort — triggered by a 2026-08-13 finding that the live-performance readiness
 numbers blended three different runner SL/TP configs and that the currently-deployed config had
-never actually been backtested; two approved experiments found concurrency is a real
-opportunity-cost bottleneck but doesn't explain the negative expectancy (classification B), and
-the MACD-sign signal itself is statistically indistinguishable from a random-direction baseline
-across three windows (classification C, "no edge") — **recommendation: REDESIGN the signal, not
-KEEP or fully ABANDON the runner framework**, research only, no Step 7/Live Pilot/live order/
-production-parameter change anywhere in this effort) in
-`docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md` — read whichever is relevant before
+never actually been backtested; three approved experiments found concurrency is a real
+opportunity-cost bottleneck but doesn't explain the negative expectancy (classification B), the
+MACD-sign signal itself is statistically indistinguishable from a random-direction baseline
+across three windows (classification C, "no edge"), and the underlying BTCUSD M1 price series
+shows no reliable, cross-window-consistent directional structure at runner's trading horizons
+either (classification C, "mixed/unstable" — only a tiny, likely-microstructure 1-bar effect) —
+**recommendation: REDESIGN the signal (not KEEP or fully ABANDON the runner framework), and
+deprioritize BTCUSD M1 directional research specifically** in favor of testing a longer timeframe
+first, research only, no Step 7/Live Pilot/live order/production-parameter change anywhere in
+this effort) in `docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md` — read whichever is relevant before
 continuing that work in a new session.
 
 ## Forward phases (named, not yet scoped)

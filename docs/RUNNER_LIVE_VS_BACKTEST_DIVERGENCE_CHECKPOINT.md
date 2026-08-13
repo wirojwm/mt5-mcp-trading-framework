@@ -106,37 +106,81 @@ doesn't push win rate above the bar it would need to clear.
 **Classification: C — No edge.** Real is statistically indistinguishable from random-direction
 chance in all three independent-ish windows.
 
-## Overall recommendation: REDESIGN (not KEEP, not full ABANDON)
+## Experiment 3 (approved 2026-08-13): is BTCUSD M1 price action distinguishable from a random walk?
 
-KEEP is ruled out — no edge is not a basis for production use. Full ABANDON is broader than what
-was actually tested — this investigation rules out one specific naive signal (MACD-sign, no
-filter, no regime-awareness), not the runner's execution/risk-management shape (ATR-based SL/TP
-sizing, position-limit guard, exposure caps, cost model, backtest harness), which is sound and
-reusable regardless of what drives entries.
+Full design and results: this session's transcript; script:
+`scripts/run_demo_execution_check_20260813_experiment3_randomwalk.py`. Directly tests Experiment
+2's "or is this just a random walk" branch instead of searching for alternative signals —
+carries zero parameter-search/overfitting risk (standard, off-the-shelf tests, no free
+parameters). Three tests (ACF, Lo–MacKinlay homoskedastic variance ratio, Wald–Wolfowitz runs
+test on non-overlapping q-bar return signs), five pre-specified fixed horizons `{1, 5, 15, 30,
+60}` bars (spanning runner's own observed holding times), same three windows as Experiments 1–2.
+Fully offline — no MCP call of any kind, not even the usual `get_symbol_info` (reads only the
+already-cached CSV). 45 total individual tests; Bonferroni-corrected α = 0.00111 applied
+alongside a pre-committed cross-window-consistency requirement (same sign, significant in all
+three windows) before anything counts as real structure.
 
-**Next research question (not parameter values)**: is there *any* directional/predictive signal
-capable of pushing win rate meaningfully above the ~33–34% fair-game-plus-costs threshold this
-bracket shape requires on BTCUSD at this timeframe — or is BTCUSD M1 price action close enough to
-a driftless random walk at this horizon that *any* momentum/trend-following directional signal is
-structurally unable to clear that bar, regardless of design? If the latter, the useful next
-question becomes whether a fundamentally different strategy shape is needed, not a better signal
-within the current one. Not yet scoped as a formal next experiment — awaiting direction.
+- **The only cross-window-consistent, Bonferroni-significant finding anywhere in the sweep is the
+  1-bar runs test** (fewer runs than random in all three windows, z = −3.92 to −6.29). It's
+  economically negligible (implied R² ≈ 0.002–0.23% of variance from the matching ACF magnitude)
+  and it **contradicts** the 1-bar ACF's own sign in the LIVE window (ACF says mean-reversion,
+  runs test says momentum, same window, same horizon) — the signature of microstructure noise
+  (bid-ask bounce/quantization), not genuine predictability, and far below any horizon runner
+  actually trades on.
+- **At the horizons that matter (5–60 bars), the evidence is directionally inconsistent across
+  windows.** LIVE shows a strong, Bonferroni-significant mean-reversion signal via variance ratio
+  at every horizon (VR 0.72–0.91, all p<0.001) — but TRAIN shows no departure at all (VR≈1.00)
+  and HELD-OUT leans the *opposite* direction (momentum-like, VR 1.04–1.10, only raw-significant).
+  Nothing at these horizons clears the pre-committed consistency bar.
+
+**Classification: C — Mixed/unstable structure.** Not D (there is a real, robust 1-bar effect);
+not A/B (nothing at a trading-relevant horizon replicates across all three windows with the same
+sign). Limitation flagged, not resolved: the homoskedastic variance-ratio null doesn't model
+known volatility clustering, so its p-values are indicative, not exact; the three windows are
+temporally sequential slices of one price history, not independent markets, so LIVE's isolated
+mean-reversion signal could reflect either noise or a genuine recent regime shift — this
+experiment can't distinguish the two.
+
+## Overall recommendation: REDESIGN, and deprioritize BTCUSD M1 directional research specifically
+
+Two independent lines of evidence now converge: Experiment 2 showed one specific signal
+(MACD-sign) has no edge; Experiment 3 shows the underlying M1 price series itself has no
+*reliable* exploitable directional structure at runner's actual trading horizons — only a tiny,
+likely-microstructure 1-bar effect. KEEP remains ruled out. Full ABANDON remains broader than
+what was tested — the runner's execution/risk-management shape (ATR-based SL/TP sizing,
+position-limit guard, exposure caps, cost model, backtest harness) is sound and reusable
+regardless of what drives entries; only the signal-search premise on this specific
+instrument/timeframe is now in question.
+
+**Recommended next steps (not yet approved/scoped as a formal experiment), in order of
+information value per cost**:
+1. Re-run Experiment 3's exact methodology at a longer BTCUSD timeframe (M15 or H1) — cheap, no
+   new strategy, directly answers whether M1 specifically is the problem or BTCUSD is broadly
+   hard to predict directionally.
+2. Before assuming any other instrument (e.g., XAUUSD, already under separate Live Pilot symbol
+   research for unrelated ATR/spread reasons) would behave differently, apply this same
+   randomness test to it rather than assuming a symbol switch fixes the underlying question.
+3. Grid's mean-reversion-around-a-center shape is already in the portfolio and already shows its
+   own confirmed negative edge (169 trades, −0.683 R) — "switch to mean-reversion" is not implied
+   as a free win by this result and would need its own re-validation, not a re-use of grid as-is.
 
 ## What this investigation deliberately did not do
 
 No Step 7 run (run #11 or any other). No Live Pilot work (XAUUSD research, sizing, margin
 guards). No live/demo order of any kind. No production `RunnerStrategyConfig`/`GridStrategyConfig`
-default changed — every config instance built across all four new scripts is local to that
-script. No parameter search/sweep beyond the pre-specified, fixed concurrency set in Experiment 1.
+default changed — every config instance built across all five new scripts is local to that
+script. No parameter search/sweep beyond the pre-specified, fixed concurrency set in Experiment 1
+and the pre-specified, fixed horizon set in Experiment 3 — neither expanded after seeing results.
 
 ```
-pytest -q -> unaffected (no src/ file changed; four new one-off scripts + one doc update only)
+pytest -q -> unaffected (no src/ file changed; five new one-off scripts + one doc update only)
 ```
 
 **Files changed this entry**: `scripts/run_demo_execution_check_20260813_runner_param_split.py`
 (new), `scripts/run_demo_execution_check_20260813_live_window_backtest.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment1_concurrency.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment2_edge_test.py` (new),
+`scripts/run_demo_execution_check_20260813_experiment3_randomwalk.py` (new),
 `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` (rows 3–4 and the "How to use this" note updated),
 this checkpoint doc, `AGENTS.md`. `var/market_data/BTCUSD_M1.csv` (re-seeded, machine-local,
 gitignored, not tracked).
