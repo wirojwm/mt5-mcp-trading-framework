@@ -491,8 +491,18 @@ attempts should launch via the detached-process pattern, not backgrounded Bash.*
 (see also `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md`), and operational reliability hardening (a
 new, separately-scoped effort named by Phase 9's own Design section and the readiness checklist's
 rows 8-9, **scoped and decided 2026-08-07: both items left as-is, no code changes needed for
-now**) in `docs/OPERATIONAL_RELIABILITY_HARDENING_CHECKPOINT.md` — read whichever is relevant
-before continuing that work in a new session.
+now**) in `docs/OPERATIONAL_RELIABILITY_HARDENING_CHECKPOINT.md`, and the runner live-vs-backtest
+divergence investigation (a new, separately-scoped Phase 8 continuation, same pattern as the grid
+regime filter effort — triggered by a 2026-08-13 finding that the live-performance readiness
+numbers blended three different runner SL/TP configs and that the currently-deployed config had
+never actually been backtested; two approved experiments found concurrency is a real
+opportunity-cost bottleneck but doesn't explain the negative expectancy (classification B), and
+the MACD-sign signal itself is statistically indistinguishable from a random-direction baseline
+across three windows (classification C, "no edge") — **recommendation: REDESIGN the signal, not
+KEEP or fully ABANDON the runner framework**, research only, no Step 7/Live Pilot/live order/
+production-parameter change anywhere in this effort) in
+`docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md` — read whichever is relevant before
+continuing that work in a new session.
 
 ## Forward phases (named, not yet scoped)
 
