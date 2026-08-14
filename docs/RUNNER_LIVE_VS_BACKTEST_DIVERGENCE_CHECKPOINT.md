@@ -226,33 +226,113 @@ combined: **A. M15 single-bar mean-reversion**, **B. H1 single-bar mean-reversio
 Not yet approved to execute — the fixed-1-bar-hold-plus-nominal-SL/TP mechanism needs explicit
 sign-off before any harness code is written or any backtest is run.
 
+**Execution approved 2026-08-14.** Script:
+`scripts/run_demo_execution_check_20260813_experiment5_cost_edge_test.py`. Built exactly as
+scoped above — a harness-only wrapper driving `backtest.engine`'s `ReplayCursor`/
+`BacktestOrderExecutor`/`BacktestLedger` classes directly (bypassing `run_backtest()`'s own
+pipeline-cycle orchestration, which cannot express a forced 1-bar exit), reusing
+`strategy.runner.compute_stop_distances()` unmodified for a nominal SL/TP
+(`sl_atr_mult=tp_atr_mult=50`, `min_stop_distance_fraction_of_price=0.05`) sized wide enough to
+avoid triggering inside one bar. Confirmed clean: 0 SL/TP leaks in all 12
+window x cost-setting x timeframe cells (every trade closed "MANUAL", i.e. the intended 1-bar
+exit, not the nominal stop) — full 19,984-trade samples throughout, no min-sample concern
+anywhere. Offline only, per this session's instruction: no MCP call of any kind (reused the
+already-on-record static `SymbolInfo`, same one
+`run_demo_execution_backtest_regime_filter_test_window_validation_0013.py` uses).
+
+**Results** (both timeframes, EARLY/MIDDLE/RECENT windows, zero-cost vs. real-cost
+`spread_multiplier=1`):
+
+| Timeframe | Window | Zero-cost expectancy | Real-cost expectancy | Beats all 3 baselines, zero-cost | Beats all 3 baselines, real-cost |
+|---|---|---|---|---|---|
+| M15 | EARLY | +0.0000 R | -0.0001 R | No | No |
+| M15 | MIDDLE | +0.0000 R (z=3.12, outside random range) | -0.0000 R | Yes | Yes |
+| M15 | RECENT | +0.0000 R (z=2.14) | -0.0001 R | Yes | Yes |
+| H1 | EARLY | +0.0000 R | -0.0004 R | No | No |
+| H1 | MIDDLE | +0.0000 R (z=-0.00) | -0.0004 R | No | No |
+| H1 | RECENT | +0.0000 R (z=1.24) | -0.0001 R | Yes | Yes |
+
+The decisive fact, not captured by the "beats baselines" column alone: **real expectancy is
+negative in all 6 real-cost cells, every window, both timeframes, no exception.** Where "beats
+all 3 baselines" reads Yes, it means the fade rule loses *less* than always-long/always-short/
+random — none of the four (real signal or any baseline) is ever profitable after cost in any
+window tested. "Beats baselines" never once coincides with a positive real-cost expectancy.
+Zero-cost expectancy is also economically negligible everywhere (rounds to +0.0000 R in every
+cell) even where statistically distinguishable from the random baseline (M15 MIDDLE/RECENT, H1
+RECENT) — consistent with Experiment 4's own flag that the underlying 1-bar runs-test effect is
+"economically negligible" even where statistically real.
+
+**Classification, applying the pre-registered A/B/C/D rule exactly as specified:**
+- **M15 — B.** EARLY window fails to beat baselines at either cost setting; MIDDLE/RECENT beat
+  all three baselines at both zero- and real-cost. Not full 3-window consistency (misses the A
+  bar), not a clean zero-cost-only pattern either (misses the C bar, since it's not fully erased
+  by cost — MIDDLE/RECENT still nominally "beat" at real cost too, just while both are
+  themselves negative).
+- **H1 — B.** Only RECENT beats all three baselines at either cost setting; EARLY and MIDDLE
+  fail both zero-cost and real-cost. Weaker support than M15.
+
+**Recommendation: ABANDON the naive "fade last bar, fixed 1-bar hold" rule for both M15 and H1**,
+despite the literal B classification. The pre-registered A/B/C/D rubric was built around a
+binary "beats baselines" test and doesn't by itself surface the more important number: real-cost
+expectancy for the actual signal is negative in every single window tested, for both candidates,
+with no exception. A rule that never produces a positive real-cost expectancy in 6/6 tested
+windows is not "weak but promising" in any substantive sense — the confirmed runs-test structure
+from Experiment 4 does not translate into a tradeable economic edge at this mechanical
+translation (fade-last-bar, 1-bar hold). This closes out the M15/H1 mean-reversion research
+thread opened by Experiment 4: statistically real (Exp3/4), but not exploitable as tested (Exp5).
+Does not rule out a differently-shaped strategy around the same statistical structure (different
+entry filter, position sizing, or holding period) — that would be a new, separately-scoped
+research thread, not a continuation of this one.
+
+```
+Full run: var/experiment5_output.log (this session, 2026-08-14). No pytest changes — no src/
+file touched, one new script only.
+```
+
 ## What this investigation deliberately did not do
 
 No Step 7 run (run #11 or any other). No Live Pilot work (XAUUSD research, sizing, margin
 guards). No live/demo order of any kind. No production `RunnerStrategyConfig`/`GridStrategyConfig`
-default changed — every config instance built across all seven new scripts is local to that
+default changed — every config instance built across all eight new scripts is local to that
 script. No parameter search/sweep beyond the pre-specified, fixed concurrency set in Experiment 1
 and the pre-specified, fixed horizon set in Experiments 3–4 — none expanded after seeing results.
-Experiment 5 is design-only — no strategy code, no harness code, no backtest run for it yet.
+Experiment 5's harness/costs/baselines/windows were fixed at design time (2026-08-13) and run
+unmodified (2026-08-14) — no tuning after seeing intermediate results.
+
+## Overall status (updated 2026-08-14): M15/H1 mean-reversion thread also closed out
+
+Experiment 5 completes the escalation this checkpoint has followed since Experiment 2: MACD-sign
+directional (Exp2 — C, no edge) → M1 price action itself (Exp3 — C, mixed/unstable) → M15/H1
+price action (Exp4 — B, confirmed statistical structure) → M15/H1 traded as a mechanical rule
+(Exp5 — B by the letter of the pre-registered rubric, but ABANDON in substance: real-cost
+expectancy negative in 6/6 tested window×timeframe cells). No candidate examined across this
+whole investigation (grid or runner, M1/M15/H1, real signal or best-supported alternative) has
+produced a real-cost-positive expectancy in any independently-tested window. The
+execution/risk-management shape (Phase 9 Stage A/B/C) remains sound and reusable; the
+signal-search premise specifically — BTCUSD, MACD-sign or 1-bar-fade, at any of the three
+timeframes tried — is what's exhausted, not directional trading in general. Next step, if
+pursued, is a new, separately-scoped research thread (different instrument, different signal
+shape, or a non-mechanical variant of the fade idea), not a continuation of this one.
 
 ## Continuation plan for the next session
 
-Smallest safe next step: get explicit sign-off on Experiment 5's one open design decision (fixed
-1-bar hold + nominal ATR-based SL/TP, backtest-harness-only), then build and run it — offline
-only, no MT5 live call beyond the same read-only pattern every prior experiment has used (none
-needed at all if the M15/H1 caches seeded today remain sufficient). Success/failure is read
-directly off the predefined A/B/C/D classification per candidate; the decision it supports is
-whether M15 or H1 mean-reversion is worth carrying into a real (still demo-only) parameter
-adoption discussion, or whether this research direction should also be deprioritized. Do not
-adopt any production parameter from Experiment 5 without separate, explicit approval and
-out-of-sample confirmation, per Phase 8's own standing discipline.
+Experiment 5 is done; this checkpoint's own investigation has no further pre-scoped open item.
+Before starting a new signal-search thread, revisit whether BTCUSD is the right instrument at
+all (`docs/LIVE_PILOT_PREPARATION_CHECKPOINT.md` already gathered some comparative XAUUSD data
+for an unrelated reason — worth a look before assuming BTCUSD-only continues) and whether a non-
+mechanical variant of the fade signal (position sizing by structure strength, a confirmation
+filter, asymmetric SL/TP) is worth its own pre-registered design before building anything. Do not
+adopt any production parameter from this investigation without separate, explicit approval and
+out-of-sample confirmation, per Phase 8's own standing discipline — none of Experiments 1–5 found
+grounds to recommend one anyway.
 
 ```
-pytest -q -> 556 passed, unaffected (no src/ file changed this whole investigation; seven new
+pytest -q -> 556 passed, unaffected (no src/ file changed this whole investigation; eight new
 one-off scripts + doc updates only)
 ```
 
-**Files changed across this whole investigation (2026-08-13 afternoon session)**:
+**Files changed across this whole investigation (2026-08-13 afternoon session, Experiment 5
+added 2026-08-14)**:
 `scripts/run_demo_execution_check_20260813_runner_param_split.py` (new),
 `scripts/run_demo_execution_check_20260813_live_window_backtest.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment1_concurrency.py` (new),
@@ -260,7 +340,8 @@ one-off scripts + doc updates only)
 `scripts/run_demo_execution_check_20260813_experiment3_randomwalk.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment4_cache_seed.py` (new),
 `scripts/run_demo_execution_check_20260813_experiment4_randomwalk_m15_h1.py` (new),
+`scripts/run_demo_execution_check_20260813_experiment5_cost_edge_test.py` (new, 2026-08-14),
 `docs/DEMO_TO_LIVE_READINESS_CHECKLIST.md` (rows 3–4 and the "How to use this" note updated),
 this checkpoint doc, `AGENTS.md`. `var/market_data/BTCUSD_M1.csv` (re-seeded),
-`var/market_data/BTCUSD_M15.csv` (new), `var/market_data/BTCUSD_H1.csv` (new) — all
-machine-local, gitignored, not tracked.
+`var/market_data/BTCUSD_M15.csv` (new), `var/market_data/BTCUSD_H1.csv` (new),
+`var/experiment5_output.log` (new, 2026-08-14) — all machine-local, gitignored, not tracked.
