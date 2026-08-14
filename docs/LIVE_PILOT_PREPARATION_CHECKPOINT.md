@@ -149,14 +149,22 @@ is a restatement of a bar it already clears, not a new hurdle it must re-clear.
 (execution readiness) closed the same day, but the same session's Phase 8 continuation
 investigation (`docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md`) found both current
 production strategies still show confirmed negative edge (grid: 169 trades, −0.683 R; runner:
-statistically indistinguishable from random-direction chance, classification C). Building a
-"locked parameter" track record now would lock in a strategy already shown to lack edge — Stage D
-should not resume until either strategy has credible, out-of-sample-confirmed positive edge (the
-M15/H1 mean-reversion lead from Experiments 4/5 is the current best candidate for that, not yet
-tested for economic viability after costs) or an explicit, separate decision is made to proceed
-despite negative edge for a different stated reason. This is a standing pause, same discipline as
-[[project_live_testing_paused]] — revisit only with a fresh, explicit go-ahead citing new edge
-evidence.
+statistically indistinguishable from random-direction chance, classification C).
+
+**Update, 2026-08-14**: the M15/H1 mean-reversion lead named below as "the current best
+candidate, not yet tested" has since been tested and closed negative — Experiment 5
+(`docs/RUNNER_LIVE_VS_BACKTEST_DIVERGENCE_CHECKPOINT.md`) found real-cost expectancy negative in
+all 6 tested window x timeframe cells, no exception, for both M15 and H1. A parallel, separately
+scoped research pass on XAUUSD (`docs/XAUUSD_SIGNAL_EDGE_CHECKPOINT.md`, satisfying this
+document's own criterion 1) reached the same negative conclusion there too. **There is currently
+no open candidate strategy/instrument combination with credible, cost-surviving edge** — both
+signal-search lines this project has run are closed. Building a "locked parameter" track record
+now would lock in a strategy already shown to lack edge — Stage D should not resume until either
+a new strategy/instrument combination has credible, out-of-sample-confirmed positive edge, or an
+explicit, separate decision is made to proceed despite negative edge for a different stated
+reason (e.g. as a pure execution/operations exercise, not a profit expectation). This is a
+standing pause, same discipline as [[project_live_testing_paused]] — revisit only with a fresh,
+explicit go-ahead citing new edge evidence or an explicit reason to proceed without it.
 
 Phase 9's own stated longer-horizon purpose is a real track record, not one data point. Proposed
 structure for when further live sessions are separately authorized:
