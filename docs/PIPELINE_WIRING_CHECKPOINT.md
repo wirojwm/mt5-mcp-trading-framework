@@ -1856,8 +1856,8 @@ its child, the real wrapper (`miniconda3\python.exe run_metatrader_mcp_stdio.py`
 args) → extended-server stub (`.venv\Scripts\python.exe metatrader_mcp_extended_server.py`) →
 its child, the real extended server (`miniconda3\python.exe`, identical args). **Root-caused, not
 guessed**: `.venv/Scripts/python.exe` is a ~235KB CPython venv launcher stub (confirmed via file
-size, and `.venv/pyvenv.cfg`: `home = C:\Users\PC\miniconda3`, `executable =
-C:\Users\PC\miniconda3\python.exe`) that spawns the base interpreter as a genuine child OS process
+size, and `.venv/pyvenv.cfg`: `home = <user-home>\miniconda3`, `executable =
+<user-home>\miniconda3\python.exe`) that spawns the base interpreter as a genuine child OS process
 rather than exec'ing in place — a structural property of this machine's Python install, happening
 identically at every level of the spawn chain (both the wrapper and the extended server), not a
 second connection from anywhere.

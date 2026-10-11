@@ -4,7 +4,7 @@ A clean-architecture rebuild of an MT5 trading system, designed from the start t
 MetaTrader 5 MCP server through a single, isolated adapter boundary — never from strategy code.
 
 This project is **not** a fork or refactor of the legacy project at
-`../RealTrade/2509_17_mix_supercross`. That project is kept as a **read-only reference**: useful
+a private sibling location. That project is kept as a **read-only reference**: useful
 business logic (grid/runner/guard math, sizing formulas, broker-constraint handling) is being
 re-derived and ported deliberately, one piece at a time, with tests — not copied wholesale. See
 `AGENTS.md` for the full safety rules and phase workflow this project follows.

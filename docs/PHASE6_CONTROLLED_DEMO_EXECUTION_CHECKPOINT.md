@@ -709,7 +709,7 @@ pytest -q -> 304 passed (unchanged by this live run -- no code changed)
   but `NORMAL` (`cancel()` may additionally proceed on `MANAGE_ONLY` for `matched`/`local_only`
   tickets only — never `unknown_real`).
 - `.env` (real demo credentials) must never be read, logged, or displayed.
-- Legacy project (`../RealTrade/2509_17_mix_supercross`) must remain untouched — re-verify
+- Legacy project (private, separate location) must remain untouched — re-verify
   `git status` there is clean before and after any further work.
 - No trading tool may be called without explicit, separate user approval for that specific live
   step — honored for every call so far, including Step 4's three live attempts (place/cancel

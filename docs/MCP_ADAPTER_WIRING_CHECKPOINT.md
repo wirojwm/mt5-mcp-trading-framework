@@ -5,8 +5,8 @@ continuing in a new session.
 
 ## Current project goal
 
-Rebuild the legacy `2509_17_mix_supercross` MT5 trading bot (at
-`../RealTrade/2509_17_mix_supercross`, read-only reference, kept untouched throughout) as a
+Rebuild the private legacy MT5 trading bot (at
+a separate private location, read-only reference, kept untouched throughout) as a
 new clean-architecture project (`mt5_mcp_trading`) that talks to MT5 only through an isolated
 MCP adapter, with strategy/risk/sizing logic kept pure and untestable-without-mocks trading
 capability gated behind explicit approval. Full phase history and all safety rules are in
@@ -504,7 +504,7 @@ None. Everything that exists compiles, imports, and passes its own tests. The ga
   reintroduce a sentinel/fabricated fallback for something that now has a real source.
 - `.env` (real demo credentials) must never be read, logged, or displayed by any Claude Code
   action.
-- Legacy project (`../RealTrade/2509_17_mix_supercross`) must remain untouched — re-verify
+- Legacy project (private, separate location) must remain untouched — re-verify
   `git status` there is clean before and after any further work.
 - No trading/order-execution tool may be called — confirmed not done this session.
 
@@ -604,6 +604,6 @@ Read docs/MCP_ADAPTER_WIRING_CHECKPOINT.md first for full context, then AGENTS.m
 README.md at the project root. Do the "Exact next smallest task" list in that checkpoint file,
 in order, stopping after each numbered step to confirm before continuing. Do not call any
 trading/order-execution MCP tool. Do not read, log, or display anything from .env. Verify the
-legacy project at ../RealTrade/2509_17_mix_supercross remains untouched (git status clean)
+legacy project at its separate private location remains untouched (git status clean)
 before and after your work.
 ```

@@ -2053,9 +2053,9 @@ sanity check before attempting anything: fetched a fresh tick and compared it ag
 originally-intended SL (`63975.3`)/TP (`63937.1`) — by then (~2 hours after open, mid-conversation
 gap) price had moved to bid `64057.14`/ask `64072.14`, past the intended SL, which would have made
 a blind retry either meaningless or immediately-triggering. **Aborted with no mutating call**,
-reported the live P&L (-$0.95) back to the user, who then chose to close instead. Closed via
+reported the live P&L (a small loss) back to the user, who then chose to close instead. Closed via
 `McpOrderExecutor.close_position()` directly (`scripts/run_demo_execution_close_171979510.py`) —
-retcode `10009`, verified absent, realized loss **-$0.91**. Final verified state: 0 open
+retcode `10009`, verified absent, a small realized loss. Final verified state: 0 open
 positions, 4 legitimate pending grid orders, zero unprotected exposure. Step 7 still has not
 completed an unbroken 30-cycle run — 18/30 (run #8) is the new high-water mark, stopped by a
 different failure mode than runs #4/#6 (reconciliation) or the duration-cap runs (#2/#5).

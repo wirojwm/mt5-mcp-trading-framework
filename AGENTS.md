@@ -834,7 +834,7 @@ to avoid designing ahead of what's actually been asked for.
   correctly stopped itself, left it `OPEN_UNPROTECTED`. A read-only retry-sanity-check correctly
   refused a blind re-attempt (price had moved past the original intended stop in the ~2 hours
   since open); user chose to close instead (`close_position()`, retcode `10009`, verified absent,
-  realized loss -$0.91). Then **root-caused the retcode-10016 pattern for real** (corrects Step
+  a small realized loss). Then **root-caused the retcode-10016 pattern for real** (corrects Step
   28's "no fix needed" conclusion above): `strategy/runner.py`'s `compute_stop_distances()` only
   applied its points-based floor when ATR computed to exactly `0.0`, never as a `max()` against a
   small-but-positive ATR value the way `grid.py`'s equivalent already does, and even that floor
@@ -901,7 +901,7 @@ to avoid designing ahead of what's actually been asked for.
   `test_mcp_client_disconnect.py` tests. Fixed by dropping that one import (541 passed, was 537).
   Then ran this machine's own fresh read-only pre-flight
   (`scripts/run_demo_execution_check_20260811_home_machine_preflight.py`, modeled on the work
-  machine's Step 7 pre-flight pattern): confirmed login 181299/ThinkMarkets-Demo (visually, in the
+  machine's Step 7 pre-flight pattern): confirmed the login (number omitted) on ThinkMarkets-Demo (visually, in the
   terminal — this MCP server exposes no login/server field) and AutoTrading enabled, then found the
   account **flat** — 0 positions, 0 pending orders, 0.00 lots — a change from run #10's not-flat
   close-out state above; user confirmed a manual close earlier the same day accounts for the
