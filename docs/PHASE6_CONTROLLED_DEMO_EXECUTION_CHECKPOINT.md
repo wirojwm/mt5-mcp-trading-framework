@@ -15,7 +15,7 @@ unit-tested `McpOrderExecutor` for LIMIT-order submit/cancel only. **No live exe
 happened yet.** The plan deliberately does *not* wire this executor into
 `run_grid_cycle`/`run_runner_cycle` — that's an explicitly separate, later, phase-gated step.
 
-Full approved plan: `C:\Users\Wiroj\.claude\plans\moonlit-swinging-koala.md` (outside the repo,
+Full approved plan: an external local planning artifact (outside the repo,
 local to the machine this was planned on — the summary below is self-contained, don't assume
 that file is reachable in a future session).
 
