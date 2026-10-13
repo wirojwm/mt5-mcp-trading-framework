@@ -3,6 +3,45 @@
 A clean-architecture rebuild of an MT5 trading system, designed from the start to talk to a
 MetaTrader 5 MCP server through a single, isolated adapter boundary — never from strategy code.
 
+## At a glance
+
+**What this is:** a Python 3.12 research and engineering framework for building MetaTrader 5
+trading systems that talk to a MetaTrader 5 MCP server through a single isolated adapter boundary.
+It is demo-account only and is not a production trading system.
+
+**What it demonstrates**
+
+- **Modular architecture:** strategy, risk and order-planning code is pure and synchronous, and an
+  import-boundary test (`tests/test_architecture.py`) enforces that it never imports the execution
+  or MCP/MT5 adapter layers.
+- **Tool authorization:** a tool registry refuses any MCP tool that has not been explicitly
+  classified as read-only or trading, and refuses trading tools unless trading is enabled. Outside
+  tests, the only place that enables it is the demo-execution composition point.
+- **Order-state safety checks:** orders placed by the demo executor are recorded in a local
+  per-ticket store. Before each submit, cancel or close, those records are cross-checked, by ticket
+  only, against live MT5 positions and pending orders. If live tickets exist with no local record,
+  the executor refuses new orders instead of guessing at ownership. This is a fail-closed safety
+  gate, not a general state-synchronization system, and local records for tickets that closed on
+  their own are generally not cleaned up automatically.
+- **Offline tests:** the test suite is designed to run on mocks and a local stub server, without a
+  broker connection, credentials or an MT5 terminal. Documentation records historical passing runs
+  from earlier development checkouts; they have not been re-run against this commit, and there is
+  no CI configured.
+- **Historical supervised demo runs:** operator-supervised runs on one broker demo environment are
+  recorded in `docs/*_CHECKPOINT.md`. They are not evidence of current behavior.
+- **Research discipline:** the strategies and signal ideas examined (grid, runner, mean reversion,
+  session and weekday seasonality) produced negative, null, inconclusive or abandoned results, and
+  they are documented as such. No profitability or production readiness is established.
+
+**Limits**
+
+- No live-account support: no `LIVE` execution mode exists, and nothing here is validated or
+  authorized for real money.
+- The demo gate is an operator declaration (`MT5_ACCOUNT_KIND=DEMO`); no code confirms with the
+  broker that the connected account is a demo account.
+- Margin guards and spread filters are not implemented.
+- See `AGENTS.md` and the sections below for the full safety rules and research verdicts.
+
 This project is **not** a fork or refactor of the legacy project at
 a private sibling location. That project is kept as a **read-only reference**: useful
 business logic (grid/runner/guard math, sizing formulas, broker-constraint handling) is being
